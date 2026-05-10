@@ -2,3 +2,6 @@
 --extra-index-url https://pypi.org/simple
 torch>=2.4.0
 torchaudio>=2.4.0
+transformers>=4.48.0
+accelerate>=1.2.0
+gliner>=0.2.18

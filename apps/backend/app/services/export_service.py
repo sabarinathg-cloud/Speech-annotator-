@@ -43,6 +43,7 @@ class ExportService:
         language: str | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
+        task_ids: list[str] | None = None,
     ) -> tuple[bytes, str]:
         stmt = select(AnnotationTask).options(
             joinedload(AnnotationTask.assignee),
@@ -65,6 +66,8 @@ class ExportService:
             filters.append(AnnotationTask.updated_at >= datetime.combine(date_from, time.min, tzinfo=UTC))
         if date_to:
             filters.append(AnnotationTask.updated_at <= datetime.combine(date_to, time.max, tzinfo=UTC))
+        if task_ids:
+            filters.append(AnnotationTask.id.in_(task_ids))
         if filters:
             stmt = stmt.where(and_(*filters))
 

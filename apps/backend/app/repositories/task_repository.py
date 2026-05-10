@@ -25,6 +25,45 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+SENSITIVE_AUDIT_FIELDS = {
+    "final_transcript",
+    "notes",
+    "file_location",
+    "original_row",
+    "custom_metadata",
+    "pii_annotations",
+    "masked_audio_location",
+    "masked_intervals",
+}
+
+
+def _summarize_pii_annotations(value: Any) -> dict[str, Any]:
+    annotations = value if isinstance(value, list) else []
+    labels = sorted({str(item.get("label")) for item in annotations if isinstance(item, dict) and item.get("label")})
+    ranges = [
+        {
+            "label": str(item.get("label", "")),
+            "start": item.get("start"),
+            "end": item.get("end"),
+        }
+        for item in annotations
+        if isinstance(item, dict)
+    ]
+    return {"count": len(annotations), "labels": labels, "ranges": ranges}
+
+
+def _audit_safe_mapping(values: dict[str, Any]) -> dict[str, Any]:
+    safe_values: dict[str, Any] = {}
+    for key, value in values.items():
+        if key == "pii_annotations":
+            safe_values[key] = _summarize_pii_annotations(value)
+        elif key in SENSITIVE_AUDIT_FIELDS:
+            safe_values[key] = "[REDACTED_TEXT]"
+        else:
+            safe_values[key] = _json_safe(value)
+    return safe_values
+
+
 class TaskRepository:
     def __init__(self, db: Session):
         self.db = db
@@ -45,6 +84,7 @@ class TaskRepository:
         duration_seconds: Any,
         custom_metadata: dict[str, Any],
         original_row: dict[str, Any],
+        due_date: date | None = None,
     ) -> AnnotationTask:
         task = AnnotationTask(
             upload_job_id=upload_job_id,
@@ -58,6 +98,7 @@ class TaskRepository:
             language=language,
             channel=channel,
             duration_seconds=duration_seconds,
+            due_date=due_date,
             custom_metadata=custom_metadata,
             original_row=original_row,
             pii_annotations=[],
@@ -138,8 +179,10 @@ class TaskRepository:
         total = self.db.execute(count_stmt).scalar_one()
         return items, int(total)
 
-    def get_status_counts(self) -> dict[str, int]:
+    def get_status_counts(self, *, assignee_id: str | None = None) -> dict[str, int]:
         stmt = select(AnnotationTask.status, func.count(AnnotationTask.id)).group_by(AnnotationTask.status)
+        if assignee_id:
+            stmt = stmt.where(AnnotationTask.assignee_id == assignee_id)
         rows = self.db.execute(stmt).all()
         return {status.value: count for status, count in rows}
 
@@ -155,16 +198,26 @@ class TaskRepository:
         )
         return self.db.execute(stmt).unique().scalar_one_or_none()
 
-    def get_prev_next_task_ids(self, task: AnnotationTask) -> tuple[str | None, str | None]:
+    def get_prev_next_task_ids(
+        self,
+        task: AnnotationTask,
+        *,
+        assignee_id: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        prev_filters = [AnnotationTask.created_at < task.created_at]
+        next_filters = [AnnotationTask.created_at > task.created_at]
+        if assignee_id:
+            prev_filters.append(AnnotationTask.assignee_id == assignee_id)
+            next_filters.append(AnnotationTask.assignee_id == assignee_id)
         prev_stmt = (
             select(AnnotationTask.id)
-            .where(AnnotationTask.created_at < task.created_at)
+            .where(and_(*prev_filters))
             .order_by(AnnotationTask.created_at.desc())
             .limit(1)
         )
         next_stmt = (
             select(AnnotationTask.id)
-            .where(AnnotationTask.created_at > task.created_at)
+            .where(and_(*next_filters))
             .order_by(AnnotationTask.created_at.asc())
             .limit(1)
         )
@@ -172,13 +225,15 @@ class TaskRepository:
         next_id = self.db.execute(next_stmt).scalar_one_or_none()
         return prev_id, next_id
 
-    def get_next_unfinished_task(self) -> str | None:
+    def get_next_unfinished_task(self, *, assignee_id: str | None = None) -> str | None:
         stmt = (
             select(AnnotationTask.id)
             .where(AnnotationTask.status != TaskStatusEnum.APPROVED)
             .order_by(AnnotationTask.updated_at.asc())
             .limit(1)
         )
+        if assignee_id:
+            stmt = stmt.where(AnnotationTask.assignee_id == assignee_id)
         return self.db.execute(stmt).scalar_one_or_none()
 
     def get_next_unassigned_task(self) -> AnnotationTask | None:
@@ -292,8 +347,8 @@ class TaskRepository:
                 actor_user_id=actor_user_id,
                 action=action,
                 changed_fields=_json_safe(changed_fields),
-                previous_values=_json_safe(previous_values),
-                new_values=_json_safe(new_values),
+                previous_values=_audit_safe_mapping(previous_values),
+                new_values=_audit_safe_mapping(new_values),
             )
         )
         self.db.flush()

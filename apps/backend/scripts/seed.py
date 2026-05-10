@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from sqlalchemy import delete, select
 
 from app.core.database import SessionLocal
@@ -6,6 +8,7 @@ from app.models.enums import RoleEnum
 from app.models.task import AnnotationTask, TaskStatusHistory, TaskTranscriptVariant
 from app.models.upload import UploadFile, UploadJob
 from app.models.user import User
+from app.services.security_audit_service import CONFIDENTIALITY_ACKNOWLEDGEMENT_VERSION
 
 LEGACY_DEMO_TASK_EXTERNAL_IDS = ("OUT-0001", "OUT-0002")
 LEGACY_DEMO_UPLOAD_FILENAME = "sample_tasks.xlsx"
@@ -14,6 +17,9 @@ LEGACY_DEMO_UPLOAD_FILENAME = "sample_tasks.xlsx"
 def upsert_user(session, email: str, full_name: str, password: str, role: RoleEnum) -> User:
     existing = session.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if existing:
+        if not existing.confidentiality_acknowledged_at:
+            existing.confidentiality_acknowledged_at = datetime.now(UTC)
+            existing.confidentiality_acknowledged_version = CONFIDENTIALITY_ACKNOWLEDGEMENT_VERSION
         return existing
     user = User(
         email=email,
@@ -21,6 +27,8 @@ def upsert_user(session, email: str, full_name: str, password: str, role: RoleEn
         password_hash=get_password_hash(password),
         role=role,
         is_active=True,
+        confidentiality_acknowledged_at=datetime.now(UTC),
+        confidentiality_acknowledged_version=CONFIDENTIALITY_ACKNOWLEDGEMENT_VERSION,
     )
     session.add(user)
     session.flush()

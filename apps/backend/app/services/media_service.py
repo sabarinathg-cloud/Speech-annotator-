@@ -11,6 +11,15 @@ from app.storage.audio_resolver import AudioResolver
 settings = get_settings()
 
 
+SECURE_AUDIO_HEADERS = {
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "no-store, max-age=0",
+    "Content-Disposition": "inline",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
 class MediaService:
     def __init__(self) -> None:
         self.serializer = URLSafeTimedSerializer(settings.audio_signing_secret)
@@ -35,7 +44,7 @@ class MediaService:
 
         stream = self.audio_resolver.open_audio(location)
         media_type = mimetypes.guess_type(location.key or file_location)[0] or "application/octet-stream"
-        return StreamingResponse(stream, media_type=media_type, headers={"Accept-Ranges": "bytes"})
+        return StreamingResponse(stream, media_type=media_type, headers=SECURE_AUDIO_HEADERS)
 
     def _build_local_audio_response(self, path: Path, range_header: str | None):
         if not path.is_file():
@@ -43,7 +52,7 @@ class MediaService:
 
         file_size = path.stat().st_size
         media_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-        headers = {"Accept-Ranges": "bytes"}
+        headers = dict(SECURE_AUDIO_HEADERS)
         if not range_header:
             return FileResponse(path, media_type=media_type, headers=headers)
 

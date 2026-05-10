@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db_session, require_roles
+from app.core.dependencies import get_db_session, require_confidentiality_ack, require_roles
 from app.models.enums import RoleEnum
 from app.models.user import User
 from app.schemas.pii_label import PIILabelCreateRequest, PIILabelListResponse, PIILabelResponse, PIILabelUpdateRequest
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/pii-labels", tags=["pii-labels"])
 @router.get("", response_model=PIILabelListResponse)
 def list_active_pii_labels(
     db: Session = Depends(get_db_session),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_confidentiality_ack),
 ):
     service = PIILabelService(db)
     return PIILabelListResponse(items=service.list_active_labels())

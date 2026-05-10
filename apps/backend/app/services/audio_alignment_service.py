@@ -8,7 +8,7 @@ import wave
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from app.core.config import get_settings
 from app.models.task import AnnotationTask
@@ -18,13 +18,29 @@ from app.storage.audio_resolver import AudioResolver
 settings = get_settings()
 
 ALIGNMENT_MODEL_NAME = "torchaudio.WAV2VEC2_ASR_BASE_960H"
-MASK_PADDING_SECONDS = 0.04
+MASK_PADDING_SECONDS = 0.08
+MASK_MIN_DURATION_SECONDS = 0.25
 ALIGNMENT_ENERGY_MARGIN_SECONDS = 0.025
 ALIGNMENT_ENERGY_SEARCH_PADDING_SECONDS = 0.12
 ALIGNMENT_ENERGY_FRAME_SECONDS = 0.02
 ALIGNMENT_ENERGY_HOP_SECONDS = 0.01
 ALIGNMENT_ENERGY_THRESHOLD_RATIO = 0.12
 ALIGNMENT_MIN_WORD_SECONDS = 0.04
+BEEP_FREQUENCY_HZ = 1000.0
+BEEP_VOLUME_RATIO = 0.35
+AudioMaskMode = Literal["silence", "beep"]
+DIGIT_WORDS_UPPER = {
+    "0": "ZERO",
+    "1": "ONE",
+    "2": "TWO",
+    "3": "THREE",
+    "4": "FOUR",
+    "5": "FIVE",
+    "6": "SIX",
+    "7": "SEVEN",
+    "8": "EIGHT",
+    "9": "NINE",
+}
 
 
 @dataclass(frozen=True)
@@ -66,14 +82,21 @@ class MaskInterval:
     end_seconds: float
     labels: list[str]
     text: str
+    id: str | None = None
+    source_annotation_ids: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "start_seconds": round(self.start_seconds, 3),
             "end_seconds": round(self.end_seconds, 3),
             "labels": self.labels,
             "text": self.text,
         }
+        if self.id is not None:
+            payload["id"] = self.id
+        if self.source_annotation_ids is not None:
+            payload["source_annotation_ids"] = self.source_annotation_ids
+        return payload
 
 
 @dataclass(frozen=True)
@@ -102,7 +125,17 @@ def transcript_hash(transcript: str) -> str:
     return hashlib.sha256(transcript.encode("utf-8")).hexdigest()
 
 
-def pii_hash(pii_annotations: list[dict[str, Any]]) -> str:
+def normalize_audio_mask_mode(mask_mode: str) -> AudioMaskMode:
+    if mask_mode not in {"silence", "beep"}:
+        raise ServiceError("Audio mask mode must be either silence or beep", status_code=422)
+    return cast(AudioMaskMode, mask_mode)
+
+
+def pii_hash(
+    pii_annotations: list[dict[str, Any]],
+    mask_mode: AudioMaskMode = "silence",
+    mask_intervals: list[dict[str, Any]] | None = None,
+) -> str:
     normalized = [
         {
             "label": str(item.get("label") or ""),
@@ -113,25 +146,86 @@ def pii_hash(pii_annotations: list[dict[str, Any]]) -> str:
         for item in pii_annotations
     ]
     normalized.sort(key=lambda item: (item["start"], item["end"], item["label"], item["value"]))
-    return hashlib.sha256(json.dumps(normalized, sort_keys=True).encode("utf-8")).hexdigest()
+    normalized_intervals = None
+    if mask_intervals is not None:
+        normalized_intervals = [
+            {
+                "start_seconds": round(float(item.get("start_seconds") or 0), 3),
+                "end_seconds": round(float(item.get("end_seconds") or 0), 3),
+                "labels": [str(label) for label in item.get("labels", [])],
+                "text": str(item.get("text") or ""),
+                "id": str(item.get("id")) if item.get("id") is not None else None,
+                "source_annotation_ids": [
+                    str(annotation_id) for annotation_id in (item.get("source_annotation_ids") or [])
+                ],
+            }
+            for item in mask_intervals
+        ]
+        normalized_intervals.sort(key=lambda item: (item["start_seconds"], item["end_seconds"], item["labels"], item["text"]))
+    payload = {"annotations": normalized, "mask_intervals": normalized_intervals, "mask_mode": mask_mode}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _silence_pcm_frame(sample_width: int, channels: int) -> bytes:
+    if sample_width == 1:
+        return bytes([128] * channels)
+    return b"\x00" * sample_width * channels
+
+
+def _beep_pcm_frame(frame_index: int, frame_rate: int, sample_width: int, channels: int) -> bytes:
+    if frame_rate <= 0:
+        return _silence_pcm_frame(sample_width, channels)
+    max_value = (2 ** (sample_width * 8 - 1)) - 1
+    amplitude = max_value * BEEP_VOLUME_RATIO
+    value = int(amplitude * math.sin(2 * math.pi * BEEP_FREQUENCY_HZ * frame_index / frame_rate))
+    sample = _pack_pcm_sample(value, sample_width)
+    return sample * channels
+
+
+def _pack_pcm_sample(value: int, sample_width: int) -> bytes:
+    if sample_width == 1:
+        unsigned_value = max(0, min(255, value + 128))
+        return bytes([unsigned_value])
+    min_value = -(2 ** (sample_width * 8 - 1))
+    max_value = (2 ** (sample_width * 8 - 1)) - 1
+    clamped = max(min_value, min(max_value, value))
+    return int(clamped).to_bytes(sample_width, byteorder="little", signed=True)
 
 
 def tokenize_transcript_words(transcript: str) -> list[TranscriptWord]:
     words: list[TranscriptWord] = []
     for match in re.finditer(r"\S+", transcript):
         text = match.group(0)
-        normalized = normalize_alignment_word(text)
-        if not normalized:
+        if any(char.isdigit() for char in text):
+            for unit in re.finditer(r"\d|[^\d\s]+", text):
+                unit_text = unit.group(0)
+                unit_start = match.start() + unit.start()
+                unit_end = match.start() + unit.end()
+                normalized = DIGIT_WORDS_UPPER[unit_text] if unit_text.isdigit() else normalize_alignment_word(unit_text)
+                if not normalized:
+                    continue
+                words.append(
+                    TranscriptWord(
+                        index=len(words),
+                        text=unit_text,
+                        normalized_text=normalized,
+                        start_char=unit_start,
+                        end_char=unit_end,
+                    )
+                )
             continue
-        words.append(
-            TranscriptWord(
-                index=len(words),
-                text=text,
-                normalized_text=normalized,
-                start_char=match.start(),
-                end_char=match.end(),
+
+        normalized = normalize_alignment_word(text)
+        if normalized:
+            words.append(
+                TranscriptWord(
+                    index=len(words),
+                    text=text,
+                    normalized_text=normalized,
+                    start_char=match.start(),
+                    end_char=match.end(),
+                )
             )
-        )
     return words
 
 
@@ -151,6 +245,7 @@ def build_mask_intervals(
     for annotation in pii_annotations:
         annotation_start = int(annotation.get("start") or 0)
         annotation_end = int(annotation.get("end") or 0)
+        annotation_id = str(annotation.get("id") or f"{annotation_start}:{annotation_end}:{annotation.get('label') or 'PII'}")
         matched_words = [
             word
             for word in words
@@ -168,6 +263,21 @@ def build_mask_intervals(
             start_seconds = max(0.0, start_seconds)
         if end_seconds <= start_seconds:
             continue
+        if end_seconds - start_seconds < MASK_MIN_DURATION_SECONDS:
+            midpoint = (start_seconds + end_seconds) / 2
+            start_seconds = midpoint - MASK_MIN_DURATION_SECONDS / 2
+            end_seconds = midpoint + MASK_MIN_DURATION_SECONDS / 2
+            if audio_duration is not None:
+                if start_seconds < 0:
+                    end_seconds = min(audio_duration, end_seconds - start_seconds)
+                    start_seconds = 0.0
+                if end_seconds > audio_duration:
+                    start_seconds = max(0.0, start_seconds - (end_seconds - audio_duration))
+                    end_seconds = audio_duration
+            else:
+                if start_seconds < 0:
+                    end_seconds -= start_seconds
+                    start_seconds = 0.0
 
         raw_intervals.append(
             MaskInterval(
@@ -175,6 +285,8 @@ def build_mask_intervals(
                 end_seconds=end_seconds,
                 labels=[str(annotation.get("label") or "PII")],
                 text=" ".join(str(word.get("text") or "") for word in matched_words).strip(),
+                id=annotation_id,
+                source_annotation_ids=[annotation_id],
             )
         )
 
@@ -192,11 +304,19 @@ def merge_mask_intervals(intervals: list[MaskInterval]) -> list[MaskInterval]:
         if interval.start_seconds <= previous.end_seconds:
             labels = sorted({*previous.labels, *interval.labels})
             text_parts = [part for part in [previous.text, interval.text] if part]
+            source_annotation_ids = sorted(
+                {
+                    *(previous.source_annotation_ids or ([previous.id] if previous.id else [])),
+                    *(interval.source_annotation_ids or ([interval.id] if interval.id else [])),
+                }
+            )
             merged[-1] = MaskInterval(
                 start_seconds=previous.start_seconds,
                 end_seconds=max(previous.end_seconds, interval.end_seconds),
                 labels=labels,
                 text=" / ".join(dict.fromkeys(text_parts)),
+                id=source_annotation_ids[0] if len(source_annotation_ids) == 1 else f"mask:{'+'.join(source_annotation_ids)}",
+                source_annotation_ids=source_annotation_ids,
             )
         else:
             merged.append(interval)
@@ -232,35 +352,121 @@ class AudioAlignmentService:
         task.alignment_updated_at = datetime.now(UTC)
         return task.alignment_words
 
-    def build_pii_masked_audio(self, task: AnnotationTask, *, force: bool = False) -> tuple[str, list[dict[str, Any]]]:
-        if not task.pii_annotations:
+    def build_pii_masked_audio(
+        self,
+        task: AnnotationTask,
+        *,
+        force: bool = False,
+        mask_mode: str = "silence",
+        custom_intervals: list[dict[str, Any]] | None = None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        normalized_mask_mode = normalize_audio_mask_mode(mask_mode)
+        if not task.pii_annotations and custom_intervals is None:
             raise ServiceError("No PII annotations are available to mask", status_code=422)
 
-        words = self.align_task_audio(task, force=force)
-        current_pii_hash = pii_hash(task.pii_annotations or [])
+        if task.pii_annotations:
+            words = self.align_task_audio(task, force=force)
+        else:
+            words = task.alignment_words or []
+        current_pii_hash = pii_hash(task.pii_annotations or [], normalized_mask_mode, custom_intervals)
         if (
             not force
             and task.masked_audio_location
             and task.masked_audio_pii_hash == current_pii_hash
             and Path(task.masked_audio_location).is_file()
         ):
-            intervals = build_mask_intervals(words, task.pii_annotations or [])
+            reference_intervals = build_mask_intervals(words, task.pii_annotations or []) if task.pii_annotations else []
+            intervals = (
+                self._custom_mask_intervals(custom_intervals)
+                if custom_intervals is not None
+                else reference_intervals
+            )
+            accepted_reference_intervals = intervals if custom_intervals is not None else reference_intervals
+            self._store_mask_metadata(
+                task,
+                intervals,
+                accepted_reference_intervals,
+                reference_intervals,
+                normalized_mask_mode,
+            )
             return task.masked_audio_location, [interval.to_dict() for interval in intervals]
 
         with self._materialized_audio_path(task.file_location) as source_path:
             duration = self._get_audio_duration(source_path)
-            intervals = build_mask_intervals(words, task.pii_annotations or [], audio_duration=duration)
+            reference_intervals = (
+                build_mask_intervals(words, task.pii_annotations or [], audio_duration=duration)
+                if task.pii_annotations
+                else []
+            )
+            intervals = (
+                self._custom_mask_intervals(custom_intervals, audio_duration=duration)
+                if custom_intervals is not None
+                else reference_intervals
+            )
             if not intervals:
                 raise ServiceError("PII annotations could not be mapped to aligned audio words", status_code=422)
 
             output_path = self._masked_audio_path(task.id, current_pii_hash)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_masked_audio(source_path, output_path, intervals)
+            self._write_masked_audio(source_path, output_path, intervals, mask_mode=normalized_mask_mode)
 
         task.masked_audio_location = str(output_path)
         task.masked_audio_pii_hash = current_pii_hash
         task.masked_audio_updated_at = datetime.now(UTC)
+        accepted_reference_intervals = intervals if custom_intervals is not None else reference_intervals
+        self._store_mask_metadata(
+            task,
+            intervals,
+            accepted_reference_intervals,
+            reference_intervals,
+            normalized_mask_mode,
+        )
         return str(output_path), [interval.to_dict() for interval in intervals]
+
+    def _store_mask_metadata(
+        self,
+        task: AnnotationTask,
+        intervals: list[MaskInterval],
+        reference_intervals: list[MaskInterval],
+        alignment_intervals: list[MaskInterval],
+        mask_mode: AudioMaskMode,
+    ) -> None:
+        task.masked_audio_intervals = [interval.to_dict() for interval in intervals]
+        task.masked_audio_reference_intervals = [interval.to_dict() for interval in reference_intervals]
+        task.masked_audio_alignment_intervals = [interval.to_dict() for interval in alignment_intervals]
+        task.masked_audio_mode = mask_mode
+
+    def _custom_mask_intervals(
+        self,
+        custom_intervals: list[dict[str, Any]] | None,
+        *,
+        audio_duration: float | None = None,
+    ) -> list[MaskInterval]:
+        if not custom_intervals:
+            raise ServiceError("At least one mask interval is required", status_code=422)
+
+        intervals: list[MaskInterval] = []
+        for item in custom_intervals:
+            start_seconds = max(0.0, float(item.get("start_seconds") or 0.0))
+            end_seconds = max(0.0, float(item.get("end_seconds") or 0.0))
+            if audio_duration is not None:
+                start_seconds = min(start_seconds, audio_duration)
+                end_seconds = min(end_seconds, audio_duration)
+            if end_seconds <= start_seconds:
+                raise ServiceError("Mask interval end time must be greater than start time", status_code=422)
+            labels = [str(label) for label in item.get("labels", []) if str(label)]
+            source_annotation_ids = [str(annotation_id) for annotation_id in (item.get("source_annotation_ids") or [])]
+            intervals.append(
+                MaskInterval(
+                    start_seconds=start_seconds,
+                    end_seconds=end_seconds,
+                    labels=labels,
+                    text=str(item.get("text") or ""),
+                    id=str(item.get("id")) if item.get("id") is not None else None,
+                    source_annotation_ids=source_annotation_ids or None,
+                )
+            )
+        return sorted(intervals, key=lambda interval: (interval.start_seconds, interval.end_seconds, interval.text))
 
     def _run_wav2vec_alignment(self, file_location: str, words: list[TranscriptWord]) -> list[AlignedWord]:
         torch, torchaudio = self._load_torch_audio()
@@ -455,12 +661,33 @@ class AudioAlignmentService:
     def _masked_audio_path(self, task_id: str, current_pii_hash: str) -> Path:
         return settings.upload_path / "masked-audio" / f"{task_id}-{current_pii_hash[:16]}.wav"
 
-    def _write_masked_audio(self, source_path: Path, output_path: Path, intervals: list[MaskInterval]) -> None:
-        if source_path.suffix.lower() == ".wav" and self._try_mask_wav_file(source_path, output_path, intervals):
+    def _write_masked_audio(
+        self,
+        source_path: Path,
+        output_path: Path,
+        intervals: list[MaskInterval],
+        *,
+        mask_mode: str = "silence",
+    ) -> None:
+        normalized_mask_mode = normalize_audio_mask_mode(mask_mode)
+        if source_path.suffix.lower() == ".wav" and self._try_mask_wav_file(
+            source_path,
+            output_path,
+            intervals,
+            mask_mode=normalized_mask_mode,
+        ):
             return
-        self._mask_with_torchaudio(source_path, output_path, intervals)
+        self._mask_with_torchaudio(source_path, output_path, intervals, mask_mode=normalized_mask_mode)
 
-    def _try_mask_wav_file(self, source_path: Path, output_path: Path, intervals: list[MaskInterval]) -> bool:
+    def _try_mask_wav_file(
+        self,
+        source_path: Path,
+        output_path: Path,
+        intervals: list[MaskInterval],
+        *,
+        mask_mode: str = "silence",
+    ) -> bool:
+        normalized_mask_mode = normalize_audio_mask_mode(mask_mode)
         try:
             with wave.open(str(source_path), "rb") as reader:
                 params = reader.getparams()
@@ -474,7 +701,15 @@ class AudioAlignmentService:
                     end_frame = min(params.nframes, int(math.ceil(interval.end_seconds * frame_rate)))
                     for frame_index in range(start_frame, end_frame):
                         offset = frame_index * frame_width
-                        frames[offset : offset + frame_width] = b"\x00" * frame_width
+                        if normalized_mask_mode == "beep":
+                            frames[offset : offset + frame_width] = _beep_pcm_frame(
+                                frame_index,
+                                frame_rate,
+                                sample_width,
+                                channels,
+                            )
+                        else:
+                            frames[offset : offset + frame_width] = _silence_pcm_frame(sample_width, channels)
             with wave.open(str(output_path), "wb") as writer:
                 writer.setparams(params)
                 writer.writeframes(bytes(frames))
@@ -482,7 +717,15 @@ class AudioAlignmentService:
         except wave.Error:
             return False
 
-    def _mask_with_torchaudio(self, source_path: Path, output_path: Path, intervals: list[MaskInterval]) -> None:
+    def _mask_with_torchaudio(
+        self,
+        source_path: Path,
+        output_path: Path,
+        intervals: list[MaskInterval],
+        *,
+        mask_mode: str = "silence",
+    ) -> None:
+        normalized_mask_mode = normalize_audio_mask_mode(mask_mode)
         torch, torchaudio = self._load_torch_audio()
         waveform, sample_rate = torchaudio.load(str(source_path))
         masked = waveform.clone()
@@ -490,7 +733,14 @@ class AudioAlignmentService:
         for interval in intervals:
             start_sample = max(0, min(total_samples, int(math.floor(interval.start_seconds * sample_rate))))
             end_sample = max(start_sample, min(total_samples, int(math.ceil(interval.end_seconds * sample_rate))))
-            masked[:, start_sample:end_sample] = 0
+            if normalized_mask_mode == "beep":
+                sample_count = end_sample - start_sample
+                if sample_count > 0:
+                    t = torch.arange(sample_count, device=masked.device, dtype=masked.dtype) / float(sample_rate)
+                    tone = torch.sin(2 * math.pi * BEEP_FREQUENCY_HZ * t) * BEEP_VOLUME_RATIO
+                    masked[:, start_sample:end_sample] = tone.expand(masked.size(0), sample_count)
+            else:
+                masked[:, start_sample:end_sample] = 0
         torchaudio.save(str(output_path), masked.cpu(), sample_rate)
 
 

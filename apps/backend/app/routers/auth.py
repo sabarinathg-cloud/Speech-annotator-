@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db_session
+from app.core.device_policy import require_laptop_or_desktop_device
 from app.models.user import User
 from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse, UserResponse
 from app.services.auth_service import AuthService
@@ -18,6 +19,7 @@ def _http_error(exc: ServiceError) -> HTTPException:
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db_session)):
+    require_laptop_or_desktop_device(request)
     service = AuthService(db)
     try:
         return service.login(payload.email, payload.password, request.client.host if request.client else None)
@@ -26,7 +28,8 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db_
 
 
 @router.post("/refresh", response_model=TokenResponse)
-def refresh(payload: RefreshRequest, db: Session = Depends(get_db_session)):
+def refresh(payload: RefreshRequest, request: Request, db: Session = Depends(get_db_session)):
+    require_laptop_or_desktop_device(request)
     service = AuthService(db)
     try:
         return service.refresh(payload.refresh_token)
@@ -37,3 +40,17 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db_session)):
 @router.get("/me", response_model=UserResponse)
 def me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+@router.post("/confidentiality-acknowledgement", response_model=TokenResponse)
+def acknowledge_confidentiality(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+):
+    service = AuthService(db)
+    return service.acknowledge_confidentiality(
+        user=current_user,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )

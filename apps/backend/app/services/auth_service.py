@@ -1,3 +1,4 @@
+import secrets
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
@@ -13,6 +14,9 @@ from app.repositories.user_repository import UserRepository
 from app.schemas.auth import TokenResponse, UserResponse
 from app.services.errors import ServiceError
 from app.services.rate_limit_service import LoginRateLimiter
+from app.services.security_audit_service import CONFIDENTIALITY_ACKNOWLEDGEMENT_VERSION, SecurityAuditService
+
+SESSION_REPLACED_MESSAGE = "Session ended because this account signed in on another device."
 
 
 class AuthService:
@@ -29,6 +33,9 @@ class AuthService:
             now = datetime.now(UTC)
             user.last_login_at = now
             user.last_activity_at = now
+            user.active_session_id = secrets.token_urlsafe(32)
+            user.active_session_started_at = now
+            user.confidentiality_acknowledged_session_id = None
             self.db.commit()
             self.db.refresh(user)
             self.rate_limiter.reset(email, client_host)
@@ -52,11 +59,41 @@ class AuthService:
         user = self.user_repo.get_by_id(user_id)
         if not user or not user.is_active:
             raise ServiceError("User no longer available", status_code=401)
+        session_id = payload.get("sid")
+        if not session_id or not user.active_session_id or session_id != user.active_session_id:
+            raise ServiceError(SESSION_REPLACED_MESSAGE, status_code=401)
+        return self._build_token_response(user)
+
+    def acknowledge_confidentiality(
+        self,
+        *,
+        user: User,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> TokenResponse:
+        now = datetime.now(UTC)
+        user.confidentiality_acknowledged_at = now
+        user.confidentiality_acknowledged_version = CONFIDENTIALITY_ACKNOWLEDGEMENT_VERSION
+        user.confidentiality_acknowledged_session_id = user.active_session_id
+        user.last_activity_at = now
+        self.db.flush()
+        SecurityAuditService(self.db).log_event(
+            action="ACKNOWLEDGE_CONFIDENTIALITY",
+            actor=user,
+            resource_type="user",
+            resource_id=user.id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            metadata={"acknowledgement_version": CONFIDENTIALITY_ACKNOWLEDGEMENT_VERSION},
+            commit=False,
+        )
+        self.db.commit()
+        self.db.refresh(user)
         return self._build_token_response(user)
 
     def _build_token_response(self, user: User) -> TokenResponse:
-        access_token = create_access_token(user.id, user.role.value)
-        refresh_token = create_refresh_token(user.id, user.role.value)
+        access_token = create_access_token(user.id, user.role.value, session_id=user.active_session_id)
+        refresh_token = create_refresh_token(user.id, user.role.value, session_id=user.active_session_id)
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,

@@ -1,4 +1,6 @@
 import uuid
+import re
+import wave
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -32,6 +34,7 @@ ALLOWED_CORE_METADATA_FIELDS = {"speaker_gender", "speaker_role", "language", "c
 AUDIO_VALIDATION_SAMPLE_SIZE = 12
 AUDIO_VALIDATION_FAIL_RATIO = 0.5
 MIN_ROWS_WITH_ANY_TRANSCRIPT_RATIO = 0.8
+SUPPORTED_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".webm"}
 GateStatus = Literal["pass", "warning", "fail"]
 
 
@@ -308,8 +311,12 @@ class UploadService:
         errors: list[dict[str, Any]] = []
         valid_indexes: list[int] = []
         seen_ids: set[str] = set()
+        duplicate_id_count = 0
         non_empty_transcript_by_source: dict[str, int] = {item.source_key: 0 for item in mapping.transcript_columns}
         rows_with_any_transcript = 0
+        rows_with_final_transcript = 0
+        language_values: list[str] = []
+        duration_samples: list[tuple[str, Decimal]] = []
         audio_locations_for_sampling: list[str] = []
 
         for idx, row in df.iterrows():
@@ -327,9 +334,15 @@ class UploadService:
                 audio_locations_for_sampling.append(file_location)
             if external_id:
                 if external_id in seen_ids:
+                    duplicate_id_count += 1
                     row_errors.append(("id", "Duplicate ID in uploaded file", external_id))
                 else:
                     seen_ids.add(external_id)
+
+            if mapping.final_transcript_column:
+                final_transcript_value = str(normalize_cell(row_obj.get(mapping.final_transcript_column, ""))).strip()
+                if final_transcript_value:
+                    rows_with_final_transcript += 1
 
             transcript_values = []
             for transcript_map in mapping.transcript_columns:
@@ -352,9 +365,17 @@ class UploadService:
                 raw_duration = str(normalize_cell(row_obj.get(duration_column, ""))).strip()
                 if raw_duration:
                     try:
-                        Decimal(raw_duration)
+                        parsed_duration = Decimal(raw_duration)
+                        if file_location:
+                            duration_samples.append((file_location, parsed_duration))
                     except InvalidOperation:
                         row_errors.append(("duration_seconds", "Duration must be numeric", raw_duration))
+
+            language_column = mapping.core_metadata_columns.get("language")
+            if language_column:
+                raw_language = str(normalize_cell(row_obj.get(language_column, ""))).strip()
+                if raw_language:
+                    language_values.append(raw_language)
 
             if row_errors:
                 for field_name, message, raw in row_errors:
@@ -374,7 +395,11 @@ class UploadService:
             mapping=mapping,
             non_empty_transcript_by_source=non_empty_transcript_by_source,
             rows_with_any_transcript=rows_with_any_transcript,
+            duplicate_id_count=duplicate_id_count,
+            rows_with_final_transcript=rows_with_final_transcript,
+            language_values=language_values,
             audio_locations=audio_locations_for_sampling,
+            duration_samples=duration_samples,
         )
         import_allowed = not any(gate.status == "fail" for gate in gates)
 
@@ -394,7 +419,11 @@ class UploadService:
         mapping: ColumnMappingRequest,
         non_empty_transcript_by_source: dict[str, int],
         rows_with_any_transcript: int,
+        duplicate_id_count: int,
+        rows_with_final_transcript: int,
+        language_values: list[str],
         audio_locations: list[str],
+        duration_samples: list[tuple[str, Decimal]],
     ) -> list[QuickValidationGate]:
         gates: list[QuickValidationGate] = []
 
@@ -421,6 +450,7 @@ class UploadService:
             )
         )
 
+        gates.append(self._evaluate_duplicate_id_gate(row_count, duplicate_id_count))
         transcript_ratio = (rows_with_any_transcript / row_count) if row_count else 0.0
         transcript_ratio_percentage = round(transcript_ratio * 100, 1)
         ratio_status: GateStatus = (
@@ -442,8 +472,164 @@ class UploadService:
             )
         )
 
+        gates.append(self._evaluate_final_transcript_gate(row_count, mapping, rows_with_final_transcript))
+        gates.append(self._evaluate_language_format_gate(language_values))
+        gates.append(self._evaluate_audio_extension_gate(audio_locations))
         gates.append(self._evaluate_audio_location_gate(audio_locations))
+        gates.append(self._evaluate_duration_match_gate(duration_samples))
         return gates
+
+    def _evaluate_duplicate_id_gate(self, row_count: int, duplicate_id_count: int) -> QuickValidationGate:
+        return QuickValidationGate(
+            gate_key="duplicate_ids",
+            status="warning" if duplicate_id_count else "pass",
+            message=(
+                f"{duplicate_id_count} duplicate ID row(s) will be rejected before import."
+                if duplicate_id_count
+                else "No duplicate IDs were found in the uploaded file."
+            ),
+            checked_count=row_count,
+            failed_count=duplicate_id_count,
+        )
+
+    def _evaluate_final_transcript_gate(
+        self,
+        row_count: int,
+        mapping: ColumnMappingRequest,
+        rows_with_final_transcript: int,
+    ) -> QuickValidationGate:
+        if not mapping.final_transcript_column:
+            return QuickValidationGate(
+                gate_key="final_transcript_coverage",
+                status="warning",
+                message="No final transcript column is mapped; tasks will start with blank corrected transcripts.",
+                checked_count=row_count,
+                failed_count=row_count,
+            )
+        coverage = rows_with_final_transcript / row_count if row_count else 0.0
+        return QuickValidationGate(
+            gate_key="final_transcript_coverage",
+            status="warning" if coverage < 0.5 else "pass",
+            message=f"{rows_with_final_transcript}/{row_count} rows include a seeded final transcript ({round(coverage * 100, 1)}%).",
+            checked_count=row_count,
+            failed_count=row_count - rows_with_final_transcript,
+        )
+
+    def _evaluate_language_format_gate(self, language_values: list[str]) -> QuickValidationGate:
+        if not language_values:
+            return QuickValidationGate(
+                gate_key="language_format",
+                status="warning",
+                message="No language values were available to validate.",
+                checked_count=0,
+                failed_count=0,
+            )
+        invalid = [
+            value
+            for value in language_values
+            if not re.match(r"^[a-z]{2}(-[A-Z]{2})?$", value)
+        ]
+        return QuickValidationGate(
+            gate_key="language_format",
+            status="warning" if invalid else "pass",
+            message=(
+                f"{len(invalid)} language value(s) do not match formats like en or en-US."
+                if invalid
+                else "Language values match expected tags like en or en-US."
+            ),
+            checked_count=len(language_values),
+            failed_count=len(invalid),
+        )
+
+    def _evaluate_audio_extension_gate(self, audio_locations: list[str]) -> QuickValidationGate:
+        sampled_locations = list(dict.fromkeys(audio_locations))[:AUDIO_VALIDATION_SAMPLE_SIZE]
+        unsupported = [
+            location
+            for location in sampled_locations
+            if self._audio_extension(location) and self._audio_extension(location) not in SUPPORTED_AUDIO_EXTENSIONS
+        ]
+        unknown = [
+            location
+            for location in sampled_locations
+            if not self._audio_extension(location)
+        ]
+        checked_count = len(sampled_locations)
+        failed_count = len(unsupported)
+        failure_ratio = failed_count / checked_count if checked_count else 0.0
+        status: GateStatus = "fail" if failure_ratio >= AUDIO_VALIDATION_FAIL_RATIO else "warning" if failed_count or unknown else "pass"
+        return QuickValidationGate(
+            gate_key="audio_extension_support",
+            status=status,
+            message=(
+                f"{failed_count} sampled audio file(s) use unsupported extensions. {len(unknown)} have no detectable extension."
+                if status != "pass"
+                else "Sampled audio file extensions are supported."
+            ),
+            checked_count=checked_count,
+            failed_count=failed_count,
+        )
+
+    def _evaluate_duration_match_gate(self, duration_samples: list[tuple[str, Decimal]]) -> QuickValidationGate:
+        if not duration_samples:
+            return QuickValidationGate(
+                gate_key="duration_matches_audio",
+                status="warning",
+                message="No mapped duration values with readable local WAV audio were available to compare.",
+                checked_count=0,
+                failed_count=0,
+            )
+
+        checked_count = 0
+        failed_count = 0
+        skipped_count = 0
+        for location, expected_duration in duration_samples[:AUDIO_VALIDATION_SAMPLE_SIZE]:
+            actual_duration = self._probe_local_wav_duration(location)
+            if actual_duration is None:
+                skipped_count += 1
+                continue
+            checked_count += 1
+            expected = float(expected_duration)
+            tolerance = max(1.0, expected * 0.1)
+            if abs(actual_duration - expected) > tolerance:
+                failed_count += 1
+
+        if checked_count == 0:
+            return QuickValidationGate(
+                gate_key="duration_matches_audio",
+                status="warning",
+                message=f"Skipped duration comparison for {skipped_count} sampled row(s); only readable local WAV files are checked.",
+                checked_count=0,
+                failed_count=0,
+            )
+        return QuickValidationGate(
+            gate_key="duration_matches_audio",
+            status="warning" if failed_count else "pass",
+            message=(
+                f"{failed_count}/{checked_count} checked duration value(s) differ from audio duration beyond tolerance."
+                if failed_count
+                else f"{checked_count} checked duration value(s) match local WAV audio duration."
+            ),
+            checked_count=checked_count,
+            failed_count=failed_count,
+        )
+
+    def _audio_extension(self, file_location: str) -> str:
+        resolved = self.audio_resolver.resolve(file_location)
+        source = resolved.key if resolved.scheme == "s3" else resolved.local_path
+        return Path(source or "").suffix.lower()
+
+    def _probe_local_wav_duration(self, file_location: str) -> float | None:
+        resolved = self.audio_resolver.resolve(file_location)
+        if resolved.scheme != "local" or not resolved.local_path:
+            return None
+        path = Path(resolved.local_path).expanduser()
+        if path.suffix.lower() != ".wav" or not path.is_file():
+            return None
+        try:
+            with wave.open(str(path), "rb") as reader:
+                return reader.getnframes() / float(reader.getframerate())
+        except (wave.Error, ZeroDivisionError):
+            return None
 
     def _evaluate_audio_location_gate(self, audio_locations: list[str]) -> QuickValidationGate:
         sampled_locations = list(dict.fromkeys(audio_locations))[:AUDIO_VALIDATION_SAMPLE_SIZE]

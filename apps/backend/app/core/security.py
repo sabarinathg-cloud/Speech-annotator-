@@ -50,17 +50,31 @@ def get_password_hash(password: str) -> str:
     return f"${PBKDF2_SCHEME}${PBKDF2_ROUNDS}${_ab64_encode(salt)}${checksum}"
 
 
-def create_access_token(subject: str, role: str, expires_delta: timedelta | None = None) -> str:
+def create_access_token(
+    subject: str,
+    role: str,
+    expires_delta: timedelta | None = None,
+    session_id: str | None = None,
+) -> str:
     expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=settings.token_expire_minutes))
     to_encode = {"sub": subject, "role": role, "type": "access", "exp": expire}
+    if session_id:
+        to_encode["sid"] = session_id
     return jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.algorithm)
 
 
-def create_refresh_token(subject: str, role: str, expires_delta: timedelta | None = None) -> str:
+def create_refresh_token(
+    subject: str,
+    role: str,
+    expires_delta: timedelta | None = None,
+    session_id: str | None = None,
+) -> str:
     expire = datetime.now(UTC) + (
         expires_delta or timedelta(minutes=settings.refresh_token_expire_minutes)
     )
     to_encode = {"sub": subject, "role": role, "type": "refresh", "exp": expire}
+    if session_id:
+        to_encode["sid"] = session_id
     return jwt.encode(to_encode, settings.jwt_refresh_secret_key, algorithm=settings.algorithm)
 
 

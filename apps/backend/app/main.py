@@ -1,16 +1,27 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
-from app.routers import auth, exports, health, jobs, media, metrics, pii_labels, tasks, uploads, users
+from app.routers import auth, exports, health, jobs, media, metrics, pii_labels, security, tasks, uploads, users
 from app.services.errors import ServiceError
+from app.services.pii_detection_service import start_pii_model_preload
 
 settings = get_settings()
 configure_logging()
 
-app = FastAPI(title=settings.app_name, debug=settings.debug)
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    if settings.pii_model_preload_enabled:
+        start_pii_model_preload()
+    yield
+
+
+app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,3 +49,4 @@ app.include_router(media.router, prefix=settings.api_v1_prefix)
 app.include_router(users.router, prefix=settings.api_v1_prefix)
 app.include_router(pii_labels.router, prefix=settings.api_v1_prefix)
 app.include_router(metrics.router, prefix=settings.api_v1_prefix)
+app.include_router(security.router, prefix=settings.api_v1_prefix)

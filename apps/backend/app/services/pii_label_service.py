@@ -23,6 +23,15 @@ DEFAULT_PII_LABELS: list[dict[str, object]] = [
     {"key": "MEDICAL_ID", "display_name": "Medical ID", "color": "#0e7490", "sort_order": 120},
     {"key": "LOCATION", "display_name": "Location", "color": "#7c3aed", "sort_order": 130},
     {"key": "ORGANIZATION", "display_name": "Organization", "color": "#475569", "sort_order": 140},
+    {"key": "DATE", "display_name": "Date", "color": "#b45309", "sort_order": 150},
+    {"key": "AADHAAR_NUMBER", "display_name": "Aadhaar Number", "color": "#0d9488", "sort_order": 160},
+    {"key": "INSURANCE_ID", "display_name": "Insurance ID", "color": "#0369a1", "sort_order": 170},
+    {"key": "ID_NUMBER", "display_name": "ID Number", "color": "#4338ca", "sort_order": 180},
+    {"key": "USERNAME", "display_name": "Username", "color": "#7e22ce", "sort_order": 190},
+    {"key": "PASSWORD", "display_name": "Password", "color": "#be123c", "sort_order": 200},
+    {"key": "ZIPCODE", "display_name": "ZIP Code", "color": "#2563eb", "sort_order": 210},
+    {"key": "INSTITUTION", "display_name": "Institution", "color": "#475569", "sort_order": 220},
+    {"key": "AGE", "display_name": "Age", "color": "#15803d", "sort_order": 230},
     {"key": "OTHER", "display_name": "Other", "color": "#64748b", "sort_order": 1000},
 ]
 
