@@ -43,8 +43,12 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000,http://127.0.0.1:8080}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JOBS_INLINE: ${JOBS_INLINE:-false}
+      HF_HOME: ${HF_HOME:-/app/.cache/huggingface}
+      PII_MODEL_PRELOAD_ENABLED: ${PII_MODEL_PRELOAD_ENABLED:-true}
     volumes:
       - backend_uploads:/app/data/uploads
+      - ./sample_data/audio:/app/data/uploads/sample-audio:ro
+      - huggingface_cache:/app/.cache/huggingface
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,8 +70,11 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://outcomes_user:outcomes_password@postgres:5432/outcomes_annotator}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JOBS_INLINE: "false"
+      HF_HOME: ${HF_HOME:-/app/.cache/huggingface}
     volumes:
       - backend_uploads:/app/data/uploads
+      - ./sample_data/audio:/app/data/uploads/sample-audio:ro
+      - huggingface_cache:/app/.cache/huggingface
     depends_on:
       postgres:
         condition: service_healthy
@@ -78,6 +85,8 @@ services:
     build:
       context: .
       dockerfile: apps/frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
     restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
@@ -101,3 +110,4 @@ volumes:
   postgres_data:
   redis_data:
   backend_uploads:
+  huggingface_cache:

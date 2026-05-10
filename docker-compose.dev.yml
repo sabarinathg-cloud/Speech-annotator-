@@ -4,11 +4,13 @@ services:
     volumes:
       - ./apps/backend:/app
       - backend_uploads:/app/data/uploads
+      - ./sample_data/audio:/app/data/uploads/sample-audio:ro
 
   worker:
     volumes:
       - ./apps/backend:/app
       - backend_uploads:/app/data/uploads
+      - ./sample_data/audio:/app/data/uploads/sample-audio:ro
 
   frontend:
     build:
