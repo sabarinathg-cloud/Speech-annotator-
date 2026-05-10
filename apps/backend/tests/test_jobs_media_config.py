@@ -152,6 +152,35 @@ def test_audio_stream_rejects_invalid_ranges_and_tokens(client, auth_headers, sa
     assert invalid_token.status_code == 401
 
 
+def test_audio_stream_rejects_mobile_devices(client, auth_headers, sample_excel_bytes):
+    upload_response = client.post(
+        "/api/v1/uploads",
+        headers=auth_headers["admin"],
+        files={
+            "file": (
+                "tasks.xlsx",
+                sample_excel_bytes,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    upload_job_id = upload_response.json()["upload_job_id"]
+    client.post(f"/api/v1/uploads/{upload_job_id}/validate", headers=auth_headers["admin"], json=_mapping())
+    client.post(f"/api/v1/uploads/{upload_job_id}/import", headers=auth_headers["admin"], json=_mapping())
+    task_id = client.get("/api/v1/tasks", headers=auth_headers["admin"]).json()["items"][0]["id"]
+    signed = client.get(f"/api/v1/tasks/{task_id}/audio-url", headers=auth_headers["admin"]).json()
+
+    response = client.get(
+        signed["url"],
+        headers={
+            "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/123.0 Mobile Safari/537.36"
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["message"] == "This application can only be used from a laptop or desktop browser."
+
+
 def test_cleanup_removes_abandoned_uploads_and_expired_job_outputs(db_session, tmp_path, seed_users):
     now = datetime.now(UTC)
     upload_path = tmp_path / "abandoned.xlsx"

@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+from app.models.task import AnnotationTask
 from app.services.audio_alignment_service import AudioAlignmentService, transcript_hash
 
 
@@ -19,7 +20,7 @@ def _mapping():
     }
 
 
-def _create_task(client, auth_headers, sample_excel_bytes):
+def _create_task(client, auth_headers, sample_excel_bytes, *, assign_to_annotator=True):
     upload_response = client.post(
         "/api/v1/uploads",
         headers=auth_headers["admin"],
@@ -34,8 +35,18 @@ def _create_task(client, auth_headers, sample_excel_bytes):
     upload_job_id = upload_response.json()["upload_job_id"]
     client.post(f"/api/v1/uploads/{upload_job_id}/validate", headers=auth_headers["admin"], json=_mapping())
     client.post(f"/api/v1/uploads/{upload_job_id}/import", headers=auth_headers["admin"], json=_mapping())
-    tasks_response = client.get("/api/v1/tasks", headers=auth_headers["annotator"])
+    tasks_response = client.get("/api/v1/tasks", headers=auth_headers["admin"])
     task = tasks_response.json()["items"][0]
+    if assign_to_annotator:
+        users_response = client.get("/api/v1/users", headers=auth_headers["admin"])
+        annotator = next(user for user in users_response.json()["items"] if user["email"] == "annotator@test.com")
+        assign_response = client.patch(
+            f"/api/v1/tasks/{task['id']}/assignee",
+            headers=auth_headers["admin"],
+            json={"version": task["version"], "assignee_id": annotator["id"]},
+        )
+        assert assign_response.status_code == 200
+        task = assign_response.json()["task"]
     return task["id"]
 
 
@@ -215,7 +226,7 @@ def test_optimistic_lock_conflict(client, auth_headers, sample_excel_bytes):
     assert "server_task" in detail
 
 
-def test_status_transition_permission(client, auth_headers, sample_excel_bytes):
+def test_status_transition_permission(client, auth_headers, sample_excel_bytes, seed_users):
     task_id = _create_task(client, auth_headers, sample_excel_bytes)
     detail_response = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["annotator"])
     version = detail_response.json()["version"]
@@ -244,6 +255,14 @@ def test_status_transition_permission(client, auth_headers, sample_excel_bytes):
     assert needs_review.status_code == 200
     version = needs_review.json()["task"]["version"]
 
+    assign_reviewer = client.patch(
+        f"/api/v1/tasks/{task_id}/assignee",
+        headers=auth_headers["admin"],
+        json={"version": version, "assignee_id": seed_users["reviewer"].id},
+    )
+    assert assign_reviewer.status_code == 200
+    version = assign_reviewer.json()["task"]["version"]
+
     reviewed = client.patch(
         f"/api/v1/tasks/{task_id}/status",
         headers=auth_headers["reviewer"],
@@ -258,6 +277,65 @@ def test_status_transition_permission(client, auth_headers, sample_excel_bytes):
         json={"version": version, "status": "In Progress"},
     )
     assert denied.status_code == 403
+
+
+def test_admin_can_set_due_date_and_reviewer_can_reject(client, auth_headers, sample_excel_bytes, seed_users):
+    task_id = _create_task(client, auth_headers, sample_excel_bytes)
+    detail = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["admin"]).json()
+
+    due_date_response = client.patch(
+        f"/api/v1/tasks/{task_id}",
+        headers=auth_headers["admin"],
+        json={"version": detail["version"], "due_date": "2026-05-15"},
+    )
+    assert due_date_response.status_code == 200, due_date_response.json()
+    due_date_task = due_date_response.json()["task"]
+    assert due_date_task["due_date"] == "2026-05-15"
+
+    task_list = client.get("/api/v1/tasks", headers=auth_headers["admin"]).json()["items"]
+    assert task_list[0]["due_date"] == "2026-05-15"
+    version = due_date_task["version"]
+
+    completed = client.patch(
+        f"/api/v1/tasks/{task_id}/status",
+        headers=auth_headers["annotator"],
+        json={"version": version, "status": "In Progress"},
+    )
+    version = completed.json()["task"]["version"]
+    completed = client.patch(
+        f"/api/v1/tasks/{task_id}/status",
+        headers=auth_headers["annotator"],
+        json={"version": version, "status": "Completed"},
+    )
+    version = completed.json()["task"]["version"]
+    needs_review = client.patch(
+        f"/api/v1/tasks/{task_id}/status",
+        headers=auth_headers["annotator"],
+        json={"version": version, "status": "Needs Review"},
+    )
+    version = needs_review.json()["task"]["version"]
+    assigned = client.patch(
+        f"/api/v1/tasks/{task_id}/assignee",
+        headers=auth_headers["admin"],
+        json={"version": version, "assignee_id": seed_users["reviewer"].id},
+    )
+    version = assigned.json()["task"]["version"]
+
+    rejected = client.patch(
+        f"/api/v1/tasks/{task_id}/status",
+        headers=auth_headers["reviewer"],
+        json={"version": version, "status": "Rejected", "comment": "Transcript punctuation needs another pass"},
+    )
+
+    assert rejected.status_code == 200
+    assert rejected.json()["task"]["status"] == "Rejected"
+    activity = client.get(f"/api/v1/tasks/{task_id}/activity", headers=auth_headers["reviewer"]).json()["items"]
+    assert any(
+        item["type"] == "status"
+        and item["new_status"] == "Rejected"
+        and item["comment"] == "Transcript punctuation needs another pass"
+        for item in activity
+    )
 
 
 def test_pii_annotation_update(client, auth_headers, sample_excel_bytes):
@@ -299,7 +377,7 @@ def test_pii_annotation_update(client, auth_headers, sample_excel_bytes):
     assert updated_task["last_tagger_email"] == "annotator@test.com"
 
 
-def test_alignment_and_masked_audio_endpoints(client, auth_headers, sample_excel_bytes, monkeypatch, tmp_path):
+def test_alignment_and_masked_audio_endpoints(client, auth_headers, sample_excel_bytes, monkeypatch, tmp_path, db_session):
     task_id = _create_task(client, auth_headers, sample_excel_bytes)
     detail = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["annotator"]).json()
     transcript_response = client.patch(
@@ -357,21 +435,35 @@ def test_alignment_and_masked_audio_endpoints(client, auth_headers, sample_excel
         task.alignment_updated_at = datetime.now(UTC)
         return words
 
-    def fake_mask(self, task, force=False):
+    mask_modes: list[str] = []
+    custom_mask_intervals: list[list[dict]] = []
+
+    def fake_mask(self, task, force=False, mask_mode="silence", custom_intervals=None):
+        mask_modes.append(mask_mode)
+        custom_mask_intervals.append(custom_intervals or [])
         fake_path = tmp_path / "masked.wav"
         fake_path.write_bytes(b"RIFFmasked")
         task.alignment_words = fake_align(self, task, force=False)
-        task.masked_audio_location = str(fake_path)
-        task.masked_audio_pii_hash = "pii-hash"
-        task.masked_audio_updated_at = datetime.now(UTC)
-        return str(fake_path), [
+        reference_intervals = [
             {
+                "id": "pii-1",
+                "source_annotation_ids": ["pii-1"],
                 "start_seconds": 0.18,
                 "end_seconds": 0.54,
                 "labels": ["NAME"],
                 "text": "John",
             }
         ]
+        actual_intervals = custom_intervals or reference_intervals
+        accepted_reference_intervals = actual_intervals if custom_intervals else reference_intervals
+        task.masked_audio_location = str(fake_path)
+        task.masked_audio_pii_hash = "pii-hash"
+        task.masked_audio_updated_at = datetime.now(UTC)
+        task.masked_audio_intervals = actual_intervals
+        task.masked_audio_reference_intervals = accepted_reference_intervals
+        task.masked_audio_alignment_intervals = reference_intervals
+        task.masked_audio_mode = mask_mode
+        return str(fake_path), actual_intervals
 
     monkeypatch.setattr(AudioAlignmentService, "align_task_audio", fake_align)
     monkeypatch.setattr(AudioAlignmentService, "build_pii_masked_audio", fake_mask)
@@ -385,14 +477,65 @@ def test_alignment_and_masked_audio_endpoints(client, auth_headers, sample_excel
     assert masked.status_code == 200
     payload = masked.json()
     assert payload["masked_audio_url"].startswith("/api/v1/media/audio/")
+    assert payload["mask_mode"] == "silence"
     assert payload["masked_intervals"] == [
         {
+            "id": "pii-1",
+            "source_annotation_ids": ["pii-1"],
             "start_seconds": 0.18,
             "end_seconds": 0.54,
             "labels": ["NAME"],
             "text": "John",
         }
     ]
+
+    masked_beep = client.post(f"/api/v1/tasks/{task_id}/mask-pii-audio?mask_mode=beep", headers=auth_headers["annotator"])
+    assert masked_beep.status_code == 200
+    assert masked_beep.json()["mask_mode"] == "beep"
+    adjusted = client.post(
+        f"/api/v1/tasks/{task_id}/mask-pii-audio?mask_mode=beep",
+        headers=auth_headers["annotator"],
+        json={
+            "mask_intervals": [
+                {"start_seconds": 0.2, "end_seconds": 0.7, "labels": ["NAME"], "text": "John"},
+            ]
+        },
+    )
+    assert adjusted.status_code == 200
+    assert mask_modes == ["silence", "beep", "beep"]
+    assert custom_mask_intervals[-1] == [
+        {"start_seconds": 0.2, "end_seconds": 0.7, "labels": ["NAME"], "text": "John"},
+    ]
+    refreshed = db_session.get(AnnotationTask, task_id)
+    assert refreshed.masked_audio_mode == "beep"
+    assert refreshed.masked_audio_intervals == [
+        {"start_seconds": 0.2, "end_seconds": 0.7, "labels": ["NAME"], "text": "John"},
+    ]
+    assert refreshed.masked_audio_reference_intervals == [
+        {"start_seconds": 0.2, "end_seconds": 0.7, "labels": ["NAME"], "text": "John"},
+    ]
+    assert refreshed.masked_audio_alignment_intervals == [
+        {
+            "id": "pii-1",
+            "source_annotation_ids": ["pii-1"],
+            "start_seconds": 0.18,
+            "end_seconds": 0.54,
+            "labels": ["NAME"],
+            "text": "John",
+        }
+    ]
+
+    cleared = client.patch(
+        f"/api/v1/tasks/{task_id}/pii",
+        headers=auth_headers["annotator"],
+        json={"version": pii_response.json()["task"]["version"], "pii_annotations": []},
+    )
+    assert cleared.status_code == 200
+    db_session.refresh(refreshed)
+    assert refreshed.masked_audio_intervals == []
+    assert refreshed.masked_audio_reference_intervals == []
+    assert refreshed.masked_audio_alignment_intervals == []
+    assert refreshed.masked_audio_mode is None
 
 
 def test_admin_can_assign_task_to_user(client, auth_headers, sample_excel_bytes, seed_users):
@@ -419,7 +562,7 @@ def test_admin_can_assign_task_to_user(client, auth_headers, sample_excel_bytes,
 
 
 def test_unassigned_filter_claim_next_bulk_assignment_and_activity(client, auth_headers, sample_excel_bytes, seed_users):
-    task_id = _create_task(client, auth_headers, sample_excel_bytes)
+    task_id = _create_task(client, auth_headers, sample_excel_bytes, assign_to_annotator=False)
 
     unassigned = client.get("/api/v1/tasks?assignee_id=unassigned", headers=auth_headers["admin"])
     assert unassigned.status_code == 200
@@ -451,7 +594,7 @@ def test_unassigned_filter_claim_next_bulk_assignment_and_activity(client, auth_
     assert bulk.json()["updated"][0]["task"]["assignee_email"] == "reviewer@test.com"
     assert bulk.json()["errors"] == []
 
-    activity = client.get(f"/api/v1/tasks/{task_id}/activity", headers=auth_headers["annotator"])
+    activity = client.get(f"/api/v1/tasks/{task_id}/activity", headers=auth_headers["reviewer"])
     assert activity.status_code == 200
     activity_types = {item["type"] for item in activity.json()["items"]}
     assert {"audit", "status"}.issubset(activity_types)
@@ -474,7 +617,7 @@ def test_start_endpoint_claims_and_marks_task_in_progress(client, auth_headers, 
 
 
 def test_next_claim_and_bulk_assignment_partial_conflicts(client, auth_headers, sample_excel_bytes, seed_users):
-    task_id = _create_task(client, auth_headers, sample_excel_bytes)
+    task_id = _create_task(client, auth_headers, sample_excel_bytes, assign_to_annotator=False)
 
     next_claim = client.post("/api/v1/tasks/next/claim", headers=auth_headers["reviewer"])
     assert next_claim.status_code == 200
@@ -506,3 +649,56 @@ def test_next_claim_and_bulk_assignment_partial_conflicts(client, auth_headers, 
     assert bulk.status_code == 200
     assert bulk.json()["updated"] == []
     assert {error["status_code"] for error in bulk.json()["errors"]} == {404, 409}
+
+
+def test_admin_can_bulk_update_due_dates_and_move_statuses(client, auth_headers, sample_excel_bytes):
+    first_task_id = _create_task(client, auth_headers, sample_excel_bytes, assign_to_annotator=False)
+    second_task_id = _create_task(client, auth_headers, sample_excel_bytes, assign_to_annotator=False)
+    tasks = {
+        task["id"]: task
+        for task in client.get("/api/v1/tasks", headers=auth_headers["admin"]).json()["items"]
+        if task["id"] in {first_task_id, second_task_id}
+    }
+
+    due_date_response = client.post(
+        "/api/v1/tasks/bulk-due-date",
+        headers=auth_headers["admin"],
+        json={
+            "updates": [
+                {"task_id": first_task_id, "version": tasks[first_task_id]["version"], "due_date": "2026-05-20"},
+                {"task_id": second_task_id, "version": tasks[second_task_id]["version"], "due_date": "2026-05-20"},
+            ]
+        },
+    )
+    assert due_date_response.status_code == 200, due_date_response.json()
+    due_date_payload = due_date_response.json()
+    assert len(due_date_payload["updated"]) == 2
+    assert due_date_payload["errors"] == []
+    assert {item["task"]["due_date"] for item in due_date_payload["updated"]} == {"2026-05-20"}
+
+    versions = {item["task"]["id"]: item["task"]["version"] for item in due_date_payload["updated"]}
+    status_response = client.post(
+        "/api/v1/tasks/bulk-status",
+        headers=auth_headers["admin"],
+        json={
+            "status": "In Progress",
+            "comment": "Bulk move for today",
+            "updates": [
+                {"task_id": first_task_id, "version": versions[first_task_id]},
+                {"task_id": second_task_id, "version": versions[second_task_id]},
+            ],
+        },
+    )
+    assert status_response.status_code == 200, status_response.json()
+    status_payload = status_response.json()
+    assert len(status_payload["updated"]) == 2
+    assert status_payload["errors"] == []
+    assert {item["task"]["status"] for item in status_payload["updated"]} == {"In Progress"}
+
+    activity = client.get(f"/api/v1/tasks/{first_task_id}/activity", headers=auth_headers["admin"]).json()["items"]
+    assert any(
+        item["type"] == "status"
+        and item["new_status"] == "In Progress"
+        and item["comment"] == "Bulk move for today"
+        for item in activity
+    )

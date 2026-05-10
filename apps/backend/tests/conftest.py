@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -45,10 +46,12 @@ def client(db_session: Session, tmp_path: Path) -> Generator[TestClient, None, N
     settings = get_settings()
     original_upload_dir = settings.upload_dir
     original_jobs_inline = settings.jobs_inline
+    original_pii_preload_enabled = settings.pii_model_preload_enabled
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     settings.upload_dir = str(upload_dir)
     settings.jobs_inline = True
+    settings.pii_model_preload_enabled = False
 
     def override_db():
         yield db_session
@@ -59,6 +62,7 @@ def client(db_session: Session, tmp_path: Path) -> Generator[TestClient, None, N
     app.dependency_overrides.clear()
     settings.upload_dir = original_upload_dir
     settings.jobs_inline = original_jobs_inline
+    settings.pii_model_preload_enabled = original_pii_preload_enabled
 
 
 @pytest.fixture(scope="function")
@@ -69,6 +73,8 @@ def seed_users(db_session: Session) -> dict[str, User]:
         password_hash=get_password_hash("Admin@123"),
         role=RoleEnum.ADMIN,
         is_active=True,
+        confidentiality_acknowledged_at=datetime.now(UTC),
+        confidentiality_acknowledged_version="2026-05-sensitive-data-v1",
     )
     annotator = User(
         email="annotator@test.com",
@@ -76,6 +82,8 @@ def seed_users(db_session: Session) -> dict[str, User]:
         password_hash=get_password_hash("Annotator@123"),
         role=RoleEnum.ANNOTATOR,
         is_active=True,
+        confidentiality_acknowledged_at=datetime.now(UTC),
+        confidentiality_acknowledged_version="2026-05-sensitive-data-v1",
     )
     reviewer = User(
         email="reviewer@test.com",
@@ -83,6 +91,8 @@ def seed_users(db_session: Session) -> dict[str, User]:
         password_hash=get_password_hash("Reviewer@123"),
         role=RoleEnum.REVIEWER,
         is_active=True,
+        confidentiality_acknowledged_at=datetime.now(UTC),
+        confidentiality_acknowledged_version="2026-05-sensitive-data-v1",
     )
     db_session.add_all([admin, annotator, reviewer])
     db_session.commit()
@@ -92,7 +102,12 @@ def seed_users(db_session: Session) -> dict[str, User]:
 def _login(client: TestClient, email: str, password: str) -> str:
     response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert response.status_code == 200
-    return response.json()["access_token"]
+    acknowledgement = client.post(
+        "/api/v1/auth/confidentiality-acknowledgement",
+        headers={"Authorization": f"Bearer {response.json()['access_token']}"},
+    )
+    assert acknowledgement.status_code == 200
+    return acknowledgement.json()["access_token"]
 
 
 @pytest.fixture(scope="function")

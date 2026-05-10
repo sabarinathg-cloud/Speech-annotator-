@@ -53,13 +53,17 @@ def test_upload_validate_and_import(client, auth_headers, sample_excel_bytes):
     assert import_response.status_code == 200
     assert import_response.json()["imported_tasks"] == 1
 
-    list_response = client.get("/api/v1/tasks", headers=auth_headers["annotator"])
+    list_response = client.get("/api/v1/tasks", headers=auth_headers["admin"])
     assert list_response.status_code == 200
     items = list_response.json()["items"]
     assert len(items) == 1
 
+    annotator_list_response = client.get("/api/v1/tasks", headers=auth_headers["annotator"])
+    assert annotator_list_response.status_code == 200
+    assert annotator_list_response.json()["items"] == []
+
     task_id = items[0]["id"]
-    detail_response = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["annotator"])
+    detail_response = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["admin"])
     assert detail_response.status_code == 200
     assert detail_response.json()["final_transcript"] == ""
 
@@ -122,11 +126,11 @@ def test_import_uses_selected_final_transcript_column(client, auth_headers, tmp_
     assert import_response.status_code == 200
     assert import_response.json()["imported_tasks"] == 1
 
-    tasks_response = client.get("/api/v1/tasks", headers=auth_headers["annotator"])
+    tasks_response = client.get("/api/v1/tasks", headers=auth_headers["admin"])
     assert tasks_response.status_code == 200
     task_id = tasks_response.json()["items"][0]["id"]
 
-    detail_response = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["annotator"])
+    detail_response = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["admin"])
     assert detail_response.status_code == 200
     assert detail_response.json()["final_transcript"] == "preselected corrected transcript"
 
@@ -244,3 +248,80 @@ def test_import_is_blocked_when_quick_gates_fail(client, auth_headers, tmp_path)
     assert import_response.status_code == 422
     assert import_response.json()["detail"]["message"] == "Import blocked by validation gates"
     assert len(import_response.json()["detail"]["failed_gates"]) >= 1
+
+
+def test_validate_reports_richer_import_quality_gates(client, auth_headers, tmp_path):
+    import io
+    import wave
+
+    import pandas as pd
+
+    wav_path = tmp_path / "one-second.wav"
+    with wave.open(str(wav_path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(8000)
+        writer.writeframes(b"\x00\x00" * 8000)
+    unsupported_path = tmp_path / "not-audio.txt"
+    unsupported_path.write_text("not audio")
+
+    dataframe = pd.DataFrame(
+        [
+            {
+                "id": "DUP-001",
+                "file_location": f"local://{wav_path}",
+                "model_1_transcript": "hello",
+                "model_2_transcript": "hello",
+                "seed_final_transcript": "hello",
+                "speaker_gender": "female",
+                "language": "english",
+                "notes": "duration mismatch",
+                "duration_seconds": "10",
+            },
+            {
+                "id": "DUP-001",
+                "file_location": f"local://{unsupported_path}",
+                "model_1_transcript": "hello again",
+                "model_2_transcript": "hello again",
+                "seed_final_transcript": "",
+                "speaker_gender": "male",
+                "language": "en-US",
+                "notes": "unsupported extension",
+                "duration_seconds": "1",
+            },
+        ]
+    )
+    excel_bytes = io.BytesIO()
+    dataframe.to_excel(excel_bytes, index=False)
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        headers=auth_headers["admin"],
+        files={
+            "file": (
+                "rich_gates.xlsx",
+                excel_bytes.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert upload_response.status_code == 200
+    upload_job_id = upload_response.json()["upload_job_id"]
+
+    mapping = _mapping()
+    mapping["final_transcript_column"] = "seed_final_transcript"
+    mapping["core_metadata_columns"]["duration_seconds"] = "duration_seconds"
+
+    validate_response = client.post(
+        f"/api/v1/uploads/{upload_job_id}/validate",
+        headers=auth_headers["admin"],
+        json=mapping,
+    )
+    assert validate_response.status_code == 200
+    gates = {gate["gate_key"]: gate for gate in validate_response.json()["gates"]}
+
+    assert gates["duplicate_ids"]["status"] == "warning"
+    assert gates["final_transcript_coverage"]["status"] == "pass"
+    assert gates["language_format"]["status"] == "warning"
+    assert gates["audio_extension_support"]["status"] == "fail"
+    assert gates["duration_matches_audio"]["status"] == "warning"
