@@ -1,26 +1,36 @@
 import type {
   AdminUser,
   AdminMetricsResponse,
+  AudioMaskInterval,
+  AudioMaskMode,
+  ClientSecurityAction,
   ColumnMappingRequest,
+  DetectPIIResponse,
   JobStatus,
   PIIAnnotation,
   PIILabel,
   PIILabelCreateRequest,
   PIILabelUpdateRequest,
   Role,
+  SecurityAuditEventListResponse,
+  SecurityAuditEvent,
   TaskAudioAlignmentResponse,
   TaskDetail,
   TaskListResponse,
   TaskMaskedAudioResponse,
   TaskStatus,
   TokenResponse,
+  User,
   UserStatusFilter,
   UploadValidationResult
 } from "@outcomes/shared-types";
 
+import { resolveApiBaseUrl } from "@/lib/api-config";
 import { clearSession, readSession, writeSession } from "@/lib/session";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+function apiUrl(path: string): string {
+  return `${resolveApiBaseUrl()}${path}`;
+}
 
 export class APIError extends Error {
   status: number;
@@ -61,7 +71,7 @@ async function performRequest(
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
-  const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  const response = await fetch(apiUrl(path), { ...init, headers });
   const text = await response.text();
   let payload: unknown = null;
   if (text) {
@@ -75,6 +85,46 @@ async function performRequest(
     return { response, payload };
   }
   return { response, payload };
+}
+
+async function requestBlob(
+  path: string,
+  token: string,
+  allowRefresh = true
+): Promise<{ blob: Blob; filename: string | null }> {
+  const response = await fetch(apiUrl(path), {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!response.ok) {
+    if (response.status === 401 && allowRefresh) {
+      const refreshed = await refreshStoredSession();
+      if (refreshed) {
+        return requestBlob(path, refreshed.access_token, false);
+      }
+    }
+    let payload: unknown = null;
+    const text = await response.text();
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = text;
+      }
+    }
+    throw new APIError(extractErrorMessage(payload, response.statusText), response.status, payload);
+  }
+  return {
+    blob: await response.blob(),
+    filename: filenameFromContentDisposition(response.headers.get("Content-Disposition")),
+  };
+}
+
+function filenameFromContentDisposition(value: string | null): string | null {
+  if (!value) return null;
+  const filenameMatch = value.match(/filename="?([^";]+)"?/i);
+  return filenameMatch?.[1] ?? null;
 }
 
 async function refreshStoredSession(): Promise<TokenResponse | null> {
@@ -127,6 +177,19 @@ export async function refreshSession(refreshToken: string): Promise<TokenRespons
     "/auth/refresh",
     { method: "POST", body: JSON.stringify({ refresh_token: refreshToken }) },
     undefined,
+    false
+  );
+}
+
+export async function fetchCurrentUser(token: string): Promise<User> {
+  return request<User>("/auth/me", { method: "GET" }, token);
+}
+
+export async function acknowledgeConfidentiality(token: string): Promise<TokenResponse> {
+  return request<TokenResponse>(
+    "/auth/confidentiality-acknowledgement",
+    { method: "POST" },
+    token,
     false
   );
 }
@@ -194,10 +257,21 @@ export async function generateTaskAlignment(
 export async function maskTaskPIIAudio(
   token: string,
   taskId: string,
-  force = false
+  force = false,
+  maskMode: AudioMaskMode = "silence",
+  maskIntervals?: AudioMaskInterval[]
 ): Promise<TaskMaskedAudioResponse> {
-  const suffix = force ? "?force=true" : "";
-  return request<TaskMaskedAudioResponse>(`/tasks/${taskId}/mask-pii-audio${suffix}`, { method: "POST" }, token);
+  const params = new URLSearchParams({ mask_mode: maskMode });
+  if (force) params.set("force", "true");
+  const suffix = `?${params.toString()}`;
+  return request<TaskMaskedAudioResponse>(
+    `/tasks/${taskId}/mask-pii-audio${suffix}`,
+    {
+      method: "POST",
+      body: maskIntervals ? JSON.stringify({ mask_intervals: maskIntervals }) : undefined,
+    },
+    token
+  );
 }
 
 export async function fetchAudioURL(
@@ -237,6 +311,7 @@ export async function patchTaskCombined(
     language?: string | null;
     channel?: string | null;
     duration_seconds?: number | null;
+    due_date?: string | null;
     custom_metadata?: Record<string, unknown> | null;
     pii_annotations?: PIIAnnotation[] | null;
   }
@@ -304,6 +379,29 @@ export async function patchPII(
   );
 }
 
+export async function detectTaskPII(
+  token: string,
+  transcript: string,
+  includeMl = false,
+  timeoutMs = includeMl ? 180_000 : 45_000
+): Promise<DetectPIIResponse> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await request<DetectPIIResponse>(
+      "/tasks/detect-pii",
+      {
+        method: "POST",
+        body: JSON.stringify({ transcript, include_ml: includeMl }),
+        signal: controller.signal,
+      },
+      token
+    );
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 export async function patchTaskAssignee(
   token: string,
   taskId: string,
@@ -311,6 +409,18 @@ export async function patchTaskAssignee(
 ): Promise<{ task: TaskDetail }> {
   return request<{ task: TaskDetail }>(
     `/tasks/${taskId}/assignee`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function patchTaskDueDate(
+  token: string,
+  taskId: string,
+  payload: { version: number; due_date: string | null }
+): Promise<{ task: TaskDetail }> {
+  return request<{ task: TaskDetail }>(
+    `/tasks/${taskId}`,
     { method: "PATCH", body: JSON.stringify(payload) },
     token
   );
@@ -325,6 +435,46 @@ export async function bulkAssignTasks(
     { method: "POST", body: JSON.stringify({ assignments }) },
     token
   );
+}
+
+export async function bulkUpdateTaskDueDates(
+  token: string,
+  updates: Array<{ task_id: string; version: number; due_date: string | null }>
+): Promise<{ updated: Array<{ task: TaskDetail }>; errors: Array<{ task_id: string; status_code: number; message: string }> }> {
+  return request(
+    "/tasks/bulk-due-date",
+    { method: "POST", body: JSON.stringify({ updates }) },
+    token
+  );
+}
+
+export async function bulkUpdateTaskStatuses(
+  token: string,
+  payload: {
+    status: TaskStatus;
+    updates: Array<{ task_id: string; version: number }>;
+    comment?: string | null;
+  }
+): Promise<{ updated: Array<{ task: TaskDetail }>; errors: Array<{ task_id: string; status_code: number; message: string }> }> {
+  return request(
+    "/tasks/bulk-status",
+    { method: "POST", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function downloadTaskExport(
+  token: string,
+  params: { format: "csv" | "xlsx"; taskIds?: string[] }
+): Promise<{ blob: Blob; filename: string }> {
+  const query = new URLSearchParams();
+  query.set("format", params.format);
+  params.taskIds?.forEach((taskId) => query.append("task_ids", taskId));
+  const response = await requestBlob(`/exports/tasks?${query.toString()}`, token);
+  return {
+    blob: response.blob,
+    filename: response.filename ?? `outcomes_ai_annotations_export.${params.format}`,
+  };
 }
 
 export async function fetchUsers(
@@ -383,6 +533,44 @@ export async function fetchAdminMetrics(
   if (params.dateTo) query.set("date_to", params.dateTo);
   const suffix = query.toString();
   return request<AdminMetricsResponse>(`/metrics/admin${suffix ? `?${suffix}` : ""}`, { method: "GET" }, token);
+}
+
+export async function fetchSecurityAuditEvents(
+  token: string,
+  params: {
+    action?: string | null;
+    riskLevel?: string | null;
+    actorUserId?: string | null;
+    taskId?: string | null;
+    page?: number;
+    pageSize?: number;
+  } = {}
+): Promise<SecurityAuditEventListResponse> {
+  const query = new URLSearchParams();
+  if (params.action) query.set("action", params.action);
+  if (params.riskLevel) query.set("risk_level", params.riskLevel);
+  if (params.actorUserId) query.set("actor_user_id", params.actorUserId);
+  if (params.taskId) query.set("task_id", params.taskId);
+  if (params.page) query.set("page", String(params.page));
+  if (params.pageSize) query.set("page_size", String(params.pageSize));
+  const suffix = query.toString();
+  return request<SecurityAuditEventListResponse>(
+    `/security/audit-events${suffix ? `?${suffix}` : ""}`,
+    { method: "GET" },
+    token
+  );
+}
+
+export async function logClientSecurityEvent(
+  token: string,
+  payload: { action: ClientSecurityAction; metadata?: Record<string, unknown> }
+): Promise<SecurityAuditEvent> {
+  return request<SecurityAuditEvent>(
+    "/security/client-events",
+    { method: "POST", body: JSON.stringify({ action: payload.action, metadata: payload.metadata ?? {} }) },
+    token,
+    false
+  );
 }
 
 export async function createUser(
@@ -487,7 +675,7 @@ export async function fetchJob(token: string, jobId: string): Promise<JobStatus>
 }
 
 export function jobDownloadUrl(jobId: string): string {
-  return `${API_BASE}/jobs/${jobId}/download`;
+  return apiUrl(`/jobs/${jobId}/download`);
 }
 
 export async function downloadJobOutput(token: string, jobId: string): Promise<Blob> {

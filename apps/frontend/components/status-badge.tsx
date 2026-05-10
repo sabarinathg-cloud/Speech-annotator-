@@ -7,7 +7,8 @@ const statusClass: Record<TaskStatus, string> = {
   Completed: "border-[#ffd4c8] bg-[#ffece6] text-[#8a422b]",
   "Needs Review": "border-[#dfc7ff] bg-[#f3ebff] text-[#5b3292]",
   Reviewed: "border-[#d2d9ff] bg-[#eef1ff] text-[#3e4f98]",
-  Approved: "border-[#bfe7cf] bg-[#eafaf0] text-[#236140]"
+  Approved: "border-[#bfe7cf] bg-[#eafaf0] text-[#236140]",
+  Rejected: "border-[#f0c8c8] bg-[#fff3f3] text-[#a13a3a]"
 };
 
 export function StatusBadge({ status }: { status: TaskStatus }) {

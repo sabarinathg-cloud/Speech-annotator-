@@ -2,7 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   APIError,
+  acknowledgeConfidentiality,
+  bulkUpdateTaskDueDates,
+  bulkUpdateTaskStatuses,
+  detectTaskPII,
+  downloadTaskExport,
   fetchAdminMetrics,
+  fetchCurrentUser,
+  fetchSecurityAuditEvents,
+  logClientSecurityEvent,
+  maskTaskPIIAudio,
   fetchTasks,
   fetchUsers,
   login,
@@ -71,6 +80,48 @@ describe("API client error handling", () => {
     fetchMock.mockRestore();
   });
 
+  it("sends bulk task action payloads and selected export IDs", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ updated: [], errors: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ updated: [], errors: [] }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response("task_id\n", {
+          status: 200,
+          headers: { "Content-Disposition": 'attachment; filename="selected.csv"' },
+        })
+      );
+
+    await bulkUpdateTaskDueDates("admin-token", [
+      { task_id: "task-1", version: 4, due_date: "2026-05-20" },
+    ]);
+    expect(new URL(String(fetchMock.mock.calls[0]?.[0])).pathname).toBe("/api/v1/tasks/bulk-due-date");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      updates: [{ task_id: "task-1", version: 4, due_date: "2026-05-20" }],
+    });
+
+    await bulkUpdateTaskStatuses("admin-token", {
+      status: "In Progress",
+      comment: "Batch move",
+      updates: [{ task_id: "task-1", version: 5 }],
+    });
+    expect(new URL(String(fetchMock.mock.calls[1]?.[0])).pathname).toBe("/api/v1/tasks/bulk-status");
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      status: "In Progress",
+      comment: "Batch move",
+      updates: [{ task_id: "task-1", version: 5 }],
+    });
+
+    await expect(
+      downloadTaskExport("admin-token", { format: "csv", taskIds: ["task-1", "task-2"] })
+    ).resolves.toMatchObject({ filename: "selected.csv" });
+    const exportUrl = new URL(String(fetchMock.mock.calls[2]?.[0]));
+    expect(exportUrl.pathname).toBe("/api/v1/exports/tasks");
+    expect(exportUrl.searchParams.getAll("task_ids")).toEqual(["task-1", "task-2"]);
+
+    fetchMock.mockRestore();
+  });
+
   it("clears the session when refresh fails", async () => {
     writeSession("old-access", "bad-refresh", {
       id: "user-1",
@@ -100,9 +151,36 @@ describe("API client error handling", () => {
           overview: {},
           status_counts: {},
           model_metrics: [],
+          model_benchmarks: {
+            best_model_source_key: null,
+            best_model_source_label: null,
+            best_model_average_wer: null,
+            ranking: [],
+            by_language: [],
+            by_duration_bucket: [],
+          },
           pii_metrics: {},
+          masking_metrics: {
+            masked_tasks: 0,
+            scored_masked_tasks: 0,
+            scored_intervals: 0,
+            average_onset_error_ms: null,
+            average_offset_error_ms: null,
+            leaked_audio_duration_ms: 0,
+            over_masked_duration_ms: 0,
+            unscored_masked_tasks: 0,
+            alignment_adjusted_tasks: 0,
+            alignment_adjusted_intervals: 0,
+            average_alignment_onset_adjustment_ms: null,
+            average_alignment_offset_adjustment_ms: null,
+            alignment_trimmed_duration_ms: 0,
+            alignment_expanded_duration_ms: 0,
+          },
           tagger_metrics: [],
+          user_metrics: [],
           worst_tasks: [],
+          worst_masking_tasks: [],
+          masking_interval_drilldowns: [],
         }),
         { status: 200 }
       )
@@ -185,5 +263,276 @@ describe("API client error handling", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toContain("/api/v1/tasks/task-1/start");
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
     fetchMock.mockRestore();
+  });
+
+  it("acknowledges the confidentiality notice through the auth endpoint", async () => {
+    const acknowledgedAt = new Date().toISOString();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          access_token: "access-token",
+          refresh_token: "refresh-token",
+          token_type: "bearer",
+          user: {
+            id: "user-1",
+            email: "annotator@test.com",
+            full_name: "Annotator",
+            role: "ANNOTATOR",
+            confidentiality_acknowledged_at: acknowledgedAt,
+            confidentiality_acknowledged_version: "2026-05-sensitive-data-v1",
+          },
+        }),
+        { status: 200 }
+      )
+    );
+
+    await expect(acknowledgeConfidentiality("access-token")).resolves.toMatchObject({
+      user: {
+        confidentiality_acknowledged_at: acknowledgedAt,
+        confidentiality_acknowledged_version: "2026-05-sensitive-data-v1",
+      },
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toContain("/api/v1/auth/confidentiality-acknowledgement");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect((fetchMock.mock.calls[0]?.[1]?.headers as Headers).get("Authorization")).toBe(
+      "Bearer access-token"
+    );
+    fetchMock.mockRestore();
+  });
+
+  it("fetches the current session user through the auth endpoint", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "user-1",
+          email: "annotator@test.com",
+          full_name: "Annotator",
+          role: "ANNOTATOR",
+          confidentiality_acknowledged_at: new Date().toISOString(),
+          confidentiality_acknowledged_version: "2026-05-sensitive-data-v1",
+        }),
+        { status: 200 }
+      )
+    );
+
+    await expect(fetchCurrentUser("access-token")).resolves.toMatchObject({
+      email: "annotator@test.com",
+      role: "ANNOTATOR",
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toContain("/api/v1/auth/me");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("GET");
+    expect((fetchMock.mock.calls[0]?.[1]?.headers as Headers).get("Authorization")).toBe("Bearer access-token");
+    fetchMock.mockRestore();
+  });
+
+  it("fetches admin security audit events with filters", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "event-1",
+              action: "EXPORT_TASKS",
+              risk_level: "high",
+              actor_email: "admin@test.com",
+              actor_role: "ADMIN",
+              resource_type: "export",
+              resource_id: null,
+              task_id: null,
+              ip_address: "127.0.0.1",
+              user_agent: "vitest",
+              metadata: { format: "csv" },
+              created_at: new Date().toISOString(),
+            },
+          ],
+          page: 1,
+          page_size: 25,
+          total: 1,
+        }),
+        { status: 200 }
+      )
+    );
+
+    await fetchSecurityAuditEvents("admin-token", {
+      action: "EXPORT_TASKS",
+      riskLevel: "high",
+      page: 2,
+      pageSize: 10,
+    });
+
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe("/api/v1/security/audit-events");
+    expect(url.searchParams.get("action")).toBe("EXPORT_TASKS");
+    expect(url.searchParams.get("risk_level")).toBe("high");
+    expect(url.searchParams.get("page")).toBe("2");
+    expect(url.searchParams.get("page_size")).toBe("10");
+    fetchMock.mockRestore();
+  });
+
+  it("logs client-side security events", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "event-1",
+          action: "ATTEMPT_PRINT",
+          risk_level: "high",
+          actor_email: "annotator@test.com",
+          actor_role: "ANNOTATOR",
+          resource_type: "client_security",
+          resource_id: "user-1",
+          task_id: null,
+          ip_address: "127.0.0.1",
+          user_agent: "vitest",
+          metadata: { route: "/tasks/task-1" },
+          created_at: new Date().toISOString(),
+        }),
+        { status: 200 }
+      )
+    );
+
+    await expect(
+      logClientSecurityEvent("access-token", {
+        action: "ATTEMPT_PRINT",
+        metadata: { route: "/tasks/task-1" },
+      })
+    ).resolves.toMatchObject({ action: "ATTEMPT_PRINT" });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toContain("/api/v1/security/client-events");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect((fetchMock.mock.calls[0]?.[1]?.headers as Headers).get("Authorization")).toBe("Bearer access-token");
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(
+      JSON.stringify({ action: "ATTEMPT_PRINT", metadata: { route: "/tasks/task-1" } })
+    );
+    fetchMock.mockRestore();
+  });
+
+  it("sends the selected PII audio mask mode", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          task_id: "task-1",
+          masked_audio_url: "/api/v1/media/audio/token",
+          mask_mode: "beep",
+          expires_in_seconds: 300,
+          masked_intervals: [],
+          accepted_intervals: [],
+          alignment_intervals: [],
+          words: [],
+          generated_at: new Date().toISOString(),
+        }),
+        { status: 200 }
+      )
+    );
+
+    await maskTaskPIIAudio("annotator-token", "task-1", false, "beep");
+
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe("/api/v1/tasks/task-1/mask-pii-audio");
+    expect(url.searchParams.get("mask_mode")).toBe("beep");
+    expect(url.searchParams.get("force")).toBeNull();
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    fetchMock.mockRestore();
+  });
+
+  it("sends adjusted PII mask intervals when regenerating masked audio", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          task_id: "task-1",
+          masked_audio_url: "/api/v1/media/audio/token",
+          mask_mode: "silence",
+          expires_in_seconds: 300,
+          masked_intervals: [{ start_seconds: 0.1, end_seconds: 0.6, labels: ["PHONE"], text: "1234567890" }],
+          accepted_intervals: [{ start_seconds: 0.1, end_seconds: 0.6, labels: ["PHONE"], text: "1234567890" }],
+          alignment_intervals: [{ start_seconds: 0.08, end_seconds: 0.62, labels: ["PHONE"], text: "1234567890" }],
+          words: [],
+          generated_at: new Date().toISOString(),
+        }),
+        { status: 200 }
+      )
+    );
+
+    await maskTaskPIIAudio("annotator-token", "task-1", false, "silence", [
+      { start_seconds: 0.1, end_seconds: 0.6, labels: ["PHONE"], text: "1234567890" },
+    ]);
+
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(
+      JSON.stringify({
+        mask_intervals: [{ start_seconds: 0.1, end_seconds: 0.6, labels: ["PHONE"], text: "1234567890" }],
+      })
+    );
+    fetchMock.mockRestore();
+  });
+
+  it("requests backend hybrid PII detection for the final transcript", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          pii_annotations: [
+            {
+              id: "auto-account",
+              label: "ACCOUNT_NUMBER",
+              start: 8,
+              end: 12,
+              value: "4829",
+              source: "regex",
+              confidence: 0.9,
+            },
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+
+    await expect(detectTaskPII("annotator-token", "Account 4829", true)).resolves.toMatchObject({
+      pii_annotations: [{ label: "ACCOUNT_NUMBER", value: "4829" }],
+    });
+
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe("/api/v1/tasks/detect-pii");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ transcript: "Account 4829", include_ml: true }));
+    fetchMock.mockRestore();
+  });
+
+  it("keeps all-model PII detection alive long enough for cold ML warmup", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementationOnce((_url, init) => {
+      return new Promise<Response>((resolve, reject) => {
+        const signal = init?.signal as AbortSignal | undefined;
+        signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        window.setTimeout(() => {
+          resolve(
+            new Response(
+              JSON.stringify({
+                pii_annotations: [
+                  {
+                    id: "ml-person",
+                    label: "PERSON",
+                    start: 0,
+                    end: 5,
+                    value: "Maria",
+                    source: "gliner",
+                    confidence: 0.91,
+                  },
+                ],
+              }),
+              { status: 200 }
+            )
+          );
+        }, 150_000);
+      });
+    });
+
+    const detection = detectTaskPII("annotator-token", "Maria lives near Madrid", true);
+    await vi.advanceTimersByTimeAsync(150_000);
+
+    await expect(detection).resolves.toMatchObject({
+      pii_annotations: [{ label: "PERSON", value: "Maria" }],
+    });
+    fetchMock.mockRestore();
+    vi.useRealTimers();
   });
 });

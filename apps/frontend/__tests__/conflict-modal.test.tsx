@@ -44,6 +44,10 @@ describe("ConflictModal", () => {
           alignment_updated_at: null,
           masked_audio_available: false,
           masked_audio_updated_at: null,
+          masked_audio_intervals: [],
+          masked_audio_reference_intervals: [],
+          masked_audio_alignment_intervals: [],
+          masked_audio_mode: null,
           prev_task_id: null,
           next_task_id: null
         }}

@@ -173,4 +173,104 @@ describe("AdminUploadPage async export", () => {
       expect(resetUserPassword).toHaveBeenCalledWith("test-token", "reviewer-1", "NewPass@123")
     );
   });
+
+  it("shows failed gates as the validation status when rows pass but import is blocked", async () => {
+    uploadExcel.mockResolvedValue({ upload_job_id: "upload-1" });
+    previewUpload.mockResolvedValue({
+      columns: ["id", "file_location", "model_1_transcript"],
+      sample_rows: [
+        {
+          id: "TEST-0001",
+          file_location: "local:///app/data/uploads/sample-audio/call_0001.wav",
+          model_1_transcript: "hello world",
+        },
+      ],
+    });
+    validateUpload.mockResolvedValue({
+      upload_job_id: "upload-1",
+      total_rows: 1,
+      valid_rows: 1,
+      invalid_rows: 0,
+      errors: [],
+      import_allowed: false,
+      gates: [
+        {
+          gate_key: "audio_location_sample",
+          status: "fail",
+          message: "Sampled 1 audio locations; 1 of 1 checked locations were unreachable.",
+          checked_count: 1,
+          failed_count: 1,
+        },
+      ],
+    });
+
+    const { container } = render(<AdminUploadPage />);
+    await waitFor(() => expect(container.querySelector('input[type="file"]')).not.toBeNull());
+
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, {
+      target: {
+        files: [new File(["test"], "test.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })],
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload & Preview" }));
+
+    await screen.findByText("Step 2: Column Mapping");
+    fireEvent.click(screen.getByRole("button", { name: "Validate" }));
+
+    expect(await screen.findByText("Gates Failed")).toBeInTheDocument();
+    expect(screen.getByText("1 of 1 rows are ready to import")).toBeInTheDocument();
+    expect(screen.queryByText("Validation Passed")).not.toBeInTheDocument();
+    expect(screen.getByText("Import Blocked")).toBeInTheDocument();
+  });
+
+  it("offers a sample template and summarizes import completion", async () => {
+    uploadExcel.mockResolvedValue({ upload_job_id: "upload-1" });
+    previewUpload.mockResolvedValue({
+      columns: ["id", "file_location", "model_1_transcript", "language"],
+      sample_rows: [{ id: "TEST-0001", file_location: "local:///audio.wav", model_1_transcript: "hello", language: "en" }],
+    });
+    validateUpload.mockResolvedValue({
+      upload_job_id: "upload-1",
+      total_rows: 1,
+      valid_rows: 1,
+      invalid_rows: 0,
+      errors: [],
+      import_allowed: true,
+      gates: [],
+    });
+    enqueueImportJob.mockResolvedValue({ job_id: "import-job-1", status: "QUEUED" });
+    fetchJob.mockResolvedValueOnce({
+      id: "import-job-1",
+      job_id: "import-job-1",
+      job_type: "import",
+      status: "COMPLETED",
+      payload: {},
+      result: { imported_tasks: 24, skipped_rows: 2, status: "IMPORTED" },
+      error_message: null,
+      output_available: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+    });
+
+    const { container } = render(<AdminUploadPage />);
+    expect(screen.getByRole("button", { name: "Download sample template" })).toBeInTheDocument();
+
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, {
+      target: {
+        files: [new File(["test"], "test.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })],
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload & Preview" }));
+    await screen.findByText("Step 2: Column Mapping");
+    fireEvent.click(screen.getByRole("button", { name: "Validate" }));
+    await screen.findByText("Validation Passed");
+    fireEvent.click(screen.getByRole("button", { name: "Import Valid Rows" }));
+
+    expect(await screen.findByText("24 tasks imported")).toBeInTheDocument();
+    expect(screen.getByText("2 rows skipped")).toBeInTheDocument();
+  });
 });

@@ -201,3 +201,22 @@ body {
 .animate-slide-up {
   animation: slideUp 520ms ease-out both;
 }
+
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+
+  body::before {
+    content: "Printing is disabled for this confidential workspace.";
+    visibility: visible !important;
+    display: block;
+    margin: 72px auto;
+    max-width: 520px;
+    border: 1px solid #111827;
+    padding: 24px;
+    color: #111827;
+    font: 700 18px/1.4 system-ui, sans-serif;
+    text-align: center;
+  }
+}

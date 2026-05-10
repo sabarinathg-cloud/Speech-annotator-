@@ -3,14 +3,22 @@
 import type { User } from "@outcomes/shared-types";
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
-import { login as loginRequest } from "@/lib/api";
+import {
+  acknowledgeConfidentiality as acknowledgeConfidentialityRequest,
+  fetchCurrentUser,
+  login as loginRequest,
+} from "@/lib/api";
 import { SESSION_CHANGED_EVENT, clearSession, readSession, writeSession } from "@/lib/session";
+
+export const SESSION_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+export const SESSION_DEVICE_CHECK_INTERVAL_MS = 10 * 1000;
 
 interface AuthContextValue {
   user: User | null;
   accessToken: string | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  acknowledgeConfidentiality: () => Promise<void>;
   logout: () => void;
 }
 
@@ -37,6 +45,74 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!accessToken) return;
+    let timeoutId: number | null = null;
+    const logoutForIdle = () => {
+      clearSession();
+      setUser(null);
+      setAccessToken(null);
+    };
+    const resetIdleTimer = () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+      timeoutId = window.setTimeout(logoutForIdle, SESSION_IDLE_TIMEOUT_MS);
+    };
+    const activityEvents = ["click", "keydown", "mousemove", "scroll", "touchstart", "visibilitychange"];
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, resetIdleTimer, { passive: true }));
+    resetIdleTimer();
+    return () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetIdleTimer));
+    };
+  }, [accessToken]);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    let cancelled = false;
+    let checkInFlight = false;
+
+    const endReplacedSession = () => {
+      clearSession();
+      setUser(null);
+      setAccessToken(null);
+    };
+
+    const verifyActiveDevice = async () => {
+      if (checkInFlight) return;
+      checkInFlight = true;
+      try {
+        await fetchCurrentUser(accessToken);
+      } catch (error) {
+        if (!cancelled && typeof error === "object" && error !== null && "status" in error && error.status === 401) {
+          endReplacedSession();
+        }
+      } finally {
+        checkInFlight = false;
+      }
+    };
+
+    const verifyWhenVisible = () => {
+      if (document.visibilityState === "visible") {
+        void verifyActiveDevice();
+      }
+    };
+
+    const intervalId = window.setInterval(() => void verifyActiveDevice(), SESSION_DEVICE_CHECK_INTERVAL_MS);
+    window.addEventListener("focus", verifyActiveDevice);
+    document.addEventListener("visibilitychange", verifyWhenVisible);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", verifyActiveDevice);
+      document.removeEventListener("visibilitychange", verifyWhenVisible);
+    };
+  }, [accessToken]);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -44,6 +120,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isLoading,
       login: async (email: string, password: string) => {
         const data = await loginRequest(email, password);
+        writeSession(data.access_token, data.refresh_token, data.user);
+        setUser(data.user);
+        setAccessToken(data.access_token);
+      },
+      acknowledgeConfidentiality: async () => {
+        if (!accessToken) return;
+        const data = await acknowledgeConfidentialityRequest(accessToken);
         writeSession(data.access_token, data.refresh_token, data.user);
         setUser(data.user);
         setAccessToken(data.access_token);

@@ -16,6 +16,17 @@ export const fallbackPIILabels: PIILabelOption[] = [
   { key: "PERSON", display_name: "Person", color: "#ca8a04" },
   { key: "NAME", display_name: "Name", color: "#a16207" },
   { key: "ADDRESS", display_name: "Address", color: "#9333ea" },
+  { key: "DATE", display_name: "Date", color: "#b45309" },
+  { key: "AADHAAR_NUMBER", display_name: "Aadhaar Number", color: "#0d9488" },
+  { key: "ACCOUNT_NUMBER", display_name: "Account Number", color: "#0f766e" },
+  { key: "INSURANCE_ID", display_name: "Insurance ID", color: "#0369a1" },
+  { key: "ID_NUMBER", display_name: "ID Number", color: "#4338ca" },
+  { key: "LOCATION", display_name: "Location", color: "#7c3aed" },
+  { key: "INSTITUTION", display_name: "Institution", color: "#475569" },
+  { key: "USERNAME", display_name: "Username", color: "#7e22ce" },
+  { key: "PASSWORD", display_name: "Password", color: "#be123c" },
+  { key: "ZIPCODE", display_name: "ZIP Code", color: "#2563eb" },
+  { key: "AGE", display_name: "Age", color: "#15803d" },
   { key: "OTHER", display_name: "Other", color: "#64748b" },
 ];
 
