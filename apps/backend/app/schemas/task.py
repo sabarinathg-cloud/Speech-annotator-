@@ -1,10 +1,12 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from app.models.enums import TaskStatusEnum
+
+AudioMaskMode = Literal["silence", "beep"]
 
 
 class TranscriptVariantResponse(BaseModel):
@@ -31,6 +33,7 @@ class TaskListItemResponse(BaseModel):
     last_tagger_email: str | None
     updated_at: datetime
     last_saved_at: datetime | None
+    due_date: date | None
     language: str | None
     speaker_role: str | None
     version: int
@@ -80,6 +83,8 @@ class AudioAlignmentWord(BaseModel):
 
 
 class AudioMaskInterval(BaseModel):
+    id: str | None = None
+    source_annotation_ids: list[str] | None = None
     start_seconds: float = Field(ge=0)
     end_seconds: float = Field(ge=0)
     labels: list[str] = Field(default_factory=list)
@@ -119,12 +124,17 @@ class TaskDetailResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     last_saved_at: datetime | None
+    due_date: date | None
     transcript_variants: list[TranscriptVariantResponse]
     alignment_words: list[AudioAlignmentWord] = Field(default_factory=list)
     alignment_model: str | None = None
     alignment_updated_at: datetime | None = None
     masked_audio_available: bool = False
     masked_audio_updated_at: datetime | None = None
+    masked_audio_intervals: list[AudioMaskInterval] = Field(default_factory=list)
+    masked_audio_reference_intervals: list[AudioMaskInterval] = Field(default_factory=list)
+    masked_audio_alignment_intervals: list[AudioMaskInterval] = Field(default_factory=list)
+    masked_audio_mode: AudioMaskMode | None = None
     prev_task_id: str | None = None
     next_task_id: str | None = None
 
@@ -155,6 +165,7 @@ class UpdateMetadataRequest(BaseModel):
     language: str | None = None
     channel: str | None = None
     duration_seconds: Decimal | None = None
+    due_date: date | None = None
     custom_metadata: dict[str, Any] | None = None
 
 
@@ -179,6 +190,15 @@ class UpdateAssigneeRequest(BaseModel):
     assignee_id: str | None = None
 
 
+class DetectPIIRequest(BaseModel):
+    transcript: str
+    include_ml: bool = False
+
+
+class DetectPIIResponse(BaseModel):
+    pii_annotations: list[PIIAnnotation]
+
+
 class CombinedTaskUpdateRequest(BaseModel):
     version: int = Field(ge=1)
     final_transcript: str | None = None
@@ -190,6 +210,7 @@ class CombinedTaskUpdateRequest(BaseModel):
     language: str | None = None
     channel: str | None = None
     duration_seconds: Decimal | None = None
+    due_date: date | None = None
     custom_metadata: dict[str, Any] | None = None
     pii_annotations: list[PIIAnnotation] | None = None
 
@@ -217,6 +238,42 @@ class BulkAssigneeUpdated(BaseModel):
 class BulkAssigneeResponse(BaseModel):
     updated: list[BulkAssigneeUpdated]
     errors: list[BulkAssigneeError]
+
+
+class BulkDueDateItem(BaseModel):
+    task_id: str
+    version: int = Field(ge=1)
+    due_date: date | None = None
+
+
+class BulkDueDateRequest(BaseModel):
+    updates: list[BulkDueDateItem] = Field(min_length=1, max_length=200)
+
+
+class BulkStatusItem(BaseModel):
+    task_id: str
+    version: int = Field(ge=1)
+
+
+class BulkStatusRequest(BaseModel):
+    status: TaskStatusEnum
+    updates: list[BulkStatusItem] = Field(min_length=1, max_length=200)
+    comment: str | None = None
+
+
+class BulkTaskError(BaseModel):
+    task_id: str
+    status_code: int
+    message: str
+
+
+class BulkTaskUpdated(BaseModel):
+    task: TaskDetailResponse
+
+
+class BulkTaskResponse(BaseModel):
+    updated: list[BulkTaskUpdated]
+    errors: list[BulkTaskError]
 
 
 class TaskActivityItem(BaseModel):
@@ -259,7 +316,14 @@ class TaskAudioAlignmentResponse(BaseModel):
 class TaskMaskedAudioResponse(BaseModel):
     task_id: str
     masked_audio_url: str
+    mask_mode: AudioMaskMode = "silence"
     expires_in_seconds: int
     masked_intervals: list[AudioMaskInterval]
+    accepted_intervals: list[AudioMaskInterval] = Field(default_factory=list)
+    alignment_intervals: list[AudioMaskInterval] = Field(default_factory=list)
     words: list[AudioAlignmentWord]
     generated_at: datetime
+
+
+class TaskMaskAudioRequest(BaseModel):
+    mask_intervals: list[AudioMaskInterval] | None = None

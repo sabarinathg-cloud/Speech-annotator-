@@ -37,6 +37,32 @@ class ModelTranscriptMetric(BaseModel):
     average_cer: float | None
 
 
+class ModelBenchmarkMetric(BaseModel):
+    rank: int
+    source_key: str
+    source_label: str
+    group_key: str
+    group_label: str
+    tasks_scored: int
+    word_errors: int
+    reference_words: int
+    character_errors: int
+    reference_characters: int
+    average_wer: float | None
+    average_cer: float | None
+    word_accuracy: float | None
+    character_accuracy: float | None
+
+
+class ModelBenchmarkSummary(BaseModel):
+    best_model_source_key: str | None
+    best_model_source_label: str | None
+    best_model_average_wer: float | None
+    ranking: list[ModelBenchmarkMetric]
+    by_language: list[ModelBenchmarkMetric]
+    by_duration_bucket: list[ModelBenchmarkMetric]
+
+
 class PIIMetrics(BaseModel):
     total_annotations: int
     average_annotations_per_task: float
@@ -44,6 +70,66 @@ class PIIMetrics(BaseModel):
     overlap_warnings: int
     by_label: dict[str, int]
     by_source: dict[str, int]
+
+
+class MaskingMetrics(BaseModel):
+    masked_tasks: int
+    scored_masked_tasks: int
+    scored_intervals: int
+    average_onset_error_ms: int | None
+    average_offset_error_ms: int | None
+    leaked_audio_duration_ms: int
+    over_masked_duration_ms: int
+    unscored_masked_tasks: int
+    alignment_adjusted_tasks: int
+    alignment_adjusted_intervals: int
+    average_alignment_onset_adjustment_ms: int | None
+    average_alignment_offset_adjustment_ms: int | None
+    alignment_trimmed_duration_ms: int
+    alignment_expanded_duration_ms: int
+
+
+class MaskingTaskMetric(BaseModel):
+    task_id: str
+    external_id: str
+    status: TaskStatusEnum
+    language: str | None
+    upload_job_id: str
+    assignee_name: str | None
+    last_tagger_name: str | None
+    onset_error_ms: int | None
+    offset_error_ms: int | None
+    leaked_audio_duration_ms: int
+    over_masked_duration_ms: int
+    risk_duration_ms: int
+    scored_intervals: int
+    alignment_adjustment_ms: int
+    alignment_trimmed_duration_ms: int
+    alignment_expanded_duration_ms: int
+
+
+class MaskingIntervalMetric(BaseModel):
+    task_id: str
+    external_id: str
+    status: TaskStatusEnum
+    language: str | None
+    upload_job_id: str
+    interval_id: str | None
+    label: str
+    text: str
+    accepted_start_seconds: float
+    accepted_end_seconds: float
+    actual_start_seconds: float
+    actual_end_seconds: float
+    alignment_start_seconds: float | None
+    alignment_end_seconds: float | None
+    leaked_audio_duration_ms: int
+    over_masked_duration_ms: int
+    alignment_onset_delta_ms: int | None
+    alignment_offset_delta_ms: int | None
+    alignment_trimmed_duration_ms: int
+    alignment_expanded_duration_ms: int
+    risk_duration_ms: int
 
 
 class TaggerMetric(BaseModel):
@@ -55,6 +141,31 @@ class TaggerMetric(BaseModel):
     reviewed_tasks: int
     approved_tasks: int
     pii_annotations: int
+
+
+class UserProductivityMetric(BaseModel):
+    user_id: str
+    user_name: str
+    user_email: str
+    role: str
+    is_active: bool
+    assigned_tasks: int
+    open_assigned_tasks: int
+    tasks_touched: int
+    completed_tasks: int
+    reviewed_tasks: int
+    approved_tasks: int
+    pii_annotations: int
+    average_completion_minutes: float | None
+    completed_turnaround_count: int
+    task_audit_events: int
+    security_events: int
+    high_risk_security_events: int
+    last_login_at: datetime | None
+    last_activity_at: datetime | None
+    active_session_started_at: datetime | None
+    active_session_minutes: int | None
+    idle_minutes: int | None
 
 
 class TaskSourceErrorMetric(BaseModel):
@@ -87,6 +198,11 @@ class AdminMetricsResponse(BaseModel):
     overview: MetricsOverview
     status_counts: dict[str, int]
     model_metrics: list[ModelTranscriptMetric]
+    model_benchmarks: ModelBenchmarkSummary
     pii_metrics: PIIMetrics
+    masking_metrics: MaskingMetrics
     tagger_metrics: list[TaggerMetric]
+    user_metrics: list[UserProductivityMetric]
     worst_tasks: list[WorstTaskMetric]
+    worst_masking_tasks: list[MaskingTaskMetric]
+    masking_interval_drilldowns: list[MaskingIntervalMetric]

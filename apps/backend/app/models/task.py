@@ -1,9 +1,10 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -54,6 +55,7 @@ class AnnotationTask(Base, TimestampMixin):
     language: Mapped[str | None] = mapped_column(String(100), nullable=True)
     channel: Mapped[str | None] = mapped_column(String(100), nullable=True)
     duration_seconds: Mapped[Decimal | None] = mapped_column(Numeric(10, 3), nullable=True)
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
 
     custom_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     original_row: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -65,6 +67,10 @@ class AnnotationTask(Base, TimestampMixin):
     masked_audio_location: Mapped[str | None] = mapped_column(Text, nullable=True)
     masked_audio_pii_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     masked_audio_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    masked_audio_intervals: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    masked_audio_reference_intervals: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    masked_audio_alignment_intervals: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    masked_audio_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     assignee_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True

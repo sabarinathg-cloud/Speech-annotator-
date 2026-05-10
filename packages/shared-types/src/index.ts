@@ -9,14 +9,27 @@ export type TaskStatus =
   | "Completed"
   | "Needs Review"
   | "Reviewed"
-  | "Approved";
+  | "Approved"
+  | "Rejected";
 
 export interface User {
   id: string;
   email: string;
   full_name: string;
   role: Role;
+  confidentiality_acknowledged_at?: string | null;
+  confidentiality_acknowledged_version?: string | null;
+  confidentiality_acknowledged_for_session?: boolean;
 }
+
+export type ClientSecurityAction =
+  | "ATTEMPT_CONTEXT_MENU"
+  | "ATTEMPT_COPY"
+  | "ATTEMPT_DEVTOOLS"
+  | "ATTEMPT_PRINT"
+  | "ATTEMPT_SCREEN_CAPTURE"
+  | "ATTEMPT_SAVE_PAGE"
+  | "ATTEMPT_VIEW_SOURCE";
 
 export interface TokenResponse {
   access_token: string;
@@ -42,6 +55,10 @@ export interface PIIAnnotation {
   confidence: number | null;
 }
 
+export interface DetectPIIResponse {
+  pii_annotations: PIIAnnotation[];
+}
+
 export interface AudioAlignmentWord {
   index: number;
   text: string;
@@ -54,11 +71,15 @@ export interface AudioAlignmentWord {
 }
 
 export interface AudioMaskInterval {
+  id?: string | null;
+  source_annotation_ids?: string[] | null;
   start_seconds: number;
   end_seconds: number;
   labels: string[];
   text: string;
 }
+
+export type AudioMaskMode = "silence" | "beep";
 
 export interface PIILabel {
   id: string;
@@ -114,12 +135,17 @@ export interface TaskDetail {
   created_at: string;
   updated_at: string;
   last_saved_at: string | null;
+  due_date: string | null;
   transcript_variants: TranscriptVariant[];
   alignment_words: AudioAlignmentWord[];
   alignment_model: string | null;
   alignment_updated_at: string | null;
   masked_audio_available: boolean;
   masked_audio_updated_at: string | null;
+  masked_audio_intervals: AudioMaskInterval[];
+  masked_audio_reference_intervals: AudioMaskInterval[];
+  masked_audio_alignment_intervals: AudioMaskInterval[];
+  masked_audio_mode: AudioMaskMode | null;
   prev_task_id: string | null;
   next_task_id: string | null;
 }
@@ -137,6 +163,7 @@ export interface TaskListItem {
   last_tagger_email: string | null;
   updated_at: string;
   last_saved_at: string | null;
+  due_date: string | null;
   language: string | null;
   speaker_role: string | null;
   version: number;
@@ -165,6 +192,29 @@ export interface AdminUser {
   assignment_load: AssignmentLoad;
   created_at: string;
   updated_at: string;
+}
+
+export interface SecurityAuditEvent {
+  id: string;
+  actor_user_id: string | null;
+  actor_email: string | null;
+  actor_role: string | null;
+  action: string;
+  risk_level: "low" | "medium" | "high" | string;
+  resource_type: string;
+  resource_id: string | null;
+  task_id: string | null;
+  ip_address: string | null;
+  user_agent: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface SecurityAuditEventListResponse {
+  items: SecurityAuditEvent[];
+  page: number;
+  page_size: number;
+  total: number;
 }
 
 export interface ColumnMappingRequest {
@@ -236,8 +286,11 @@ export interface TaskAudioAlignmentResponse {
 export interface TaskMaskedAudioResponse {
   task_id: string;
   masked_audio_url: string;
+  mask_mode: AudioMaskMode;
   expires_in_seconds: number;
   masked_intervals: AudioMaskInterval[];
+  accepted_intervals: AudioMaskInterval[];
+  alignment_intervals: AudioMaskInterval[];
   words: AudioAlignmentWord[];
   generated_at: string;
 }
@@ -274,6 +327,32 @@ export interface ModelTranscriptMetric {
   average_cer: number | null;
 }
 
+export interface ModelBenchmarkMetric {
+  rank: number;
+  source_key: string;
+  source_label: string;
+  group_key: string;
+  group_label: string;
+  tasks_scored: number;
+  word_errors: number;
+  reference_words: number;
+  character_errors: number;
+  reference_characters: number;
+  average_wer: number | null;
+  average_cer: number | null;
+  word_accuracy: number | null;
+  character_accuracy: number | null;
+}
+
+export interface ModelBenchmarkSummary {
+  best_model_source_key: string | null;
+  best_model_source_label: string | null;
+  best_model_average_wer: number | null;
+  ranking: ModelBenchmarkMetric[];
+  by_language: ModelBenchmarkMetric[];
+  by_duration_bucket: ModelBenchmarkMetric[];
+}
+
 export interface PIIMetrics {
   total_annotations: number;
   average_annotations_per_task: number;
@@ -281,6 +360,66 @@ export interface PIIMetrics {
   overlap_warnings: number;
   by_label: Record<string, number>;
   by_source: Record<string, number>;
+}
+
+export interface MaskingMetrics {
+  masked_tasks: number;
+  scored_masked_tasks: number;
+  scored_intervals: number;
+  average_onset_error_ms: number | null;
+  average_offset_error_ms: number | null;
+  leaked_audio_duration_ms: number;
+  over_masked_duration_ms: number;
+  unscored_masked_tasks: number;
+  alignment_adjusted_tasks: number;
+  alignment_adjusted_intervals: number;
+  average_alignment_onset_adjustment_ms: number | null;
+  average_alignment_offset_adjustment_ms: number | null;
+  alignment_trimmed_duration_ms: number;
+  alignment_expanded_duration_ms: number;
+}
+
+export interface MaskingTaskMetric {
+  task_id: string;
+  external_id: string;
+  status: TaskStatus;
+  language: string | null;
+  upload_job_id: string;
+  assignee_name: string | null;
+  last_tagger_name: string | null;
+  onset_error_ms: number | null;
+  offset_error_ms: number | null;
+  leaked_audio_duration_ms: number;
+  over_masked_duration_ms: number;
+  risk_duration_ms: number;
+  scored_intervals: number;
+  alignment_adjustment_ms: number;
+  alignment_trimmed_duration_ms: number;
+  alignment_expanded_duration_ms: number;
+}
+
+export interface MaskingIntervalMetric {
+  task_id: string;
+  external_id: string;
+  status: TaskStatus;
+  language: string | null;
+  upload_job_id: string;
+  interval_id: string | null;
+  label: string;
+  text: string;
+  accepted_start_seconds: number;
+  accepted_end_seconds: number;
+  actual_start_seconds: number;
+  actual_end_seconds: number;
+  alignment_start_seconds: number | null;
+  alignment_end_seconds: number | null;
+  leaked_audio_duration_ms: number;
+  over_masked_duration_ms: number;
+  alignment_onset_delta_ms: number | null;
+  alignment_offset_delta_ms: number | null;
+  alignment_trimmed_duration_ms: number;
+  alignment_expanded_duration_ms: number;
+  risk_duration_ms: number;
 }
 
 export interface TaggerMetric {
@@ -292,6 +431,31 @@ export interface TaggerMetric {
   reviewed_tasks: number;
   approved_tasks: number;
   pii_annotations: number;
+}
+
+export interface UserProductivityMetric {
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  role: Role;
+  is_active: boolean;
+  assigned_tasks: number;
+  open_assigned_tasks: number;
+  tasks_touched: number;
+  completed_tasks: number;
+  reviewed_tasks: number;
+  approved_tasks: number;
+  pii_annotations: number;
+  average_completion_minutes: number | null;
+  completed_turnaround_count: number;
+  task_audit_events: number;
+  security_events: number;
+  high_risk_security_events: number;
+  last_login_at: string | null;
+  last_activity_at: string | null;
+  active_session_started_at: string | null;
+  active_session_minutes: number | null;
+  idle_minutes: number | null;
 }
 
 export interface TaskSourceErrorMetric {
@@ -324,7 +488,12 @@ export interface AdminMetricsResponse {
   overview: MetricsOverview;
   status_counts: Record<string, number>;
   model_metrics: ModelTranscriptMetric[];
+  model_benchmarks: ModelBenchmarkSummary;
   pii_metrics: PIIMetrics;
+  masking_metrics: MaskingMetrics;
   tagger_metrics: TaggerMetric[];
+  user_metrics: UserProductivityMetric[];
   worst_tasks: WorstTaskMetric[];
+  worst_masking_tasks: MaskingTaskMetric[];
+  masking_interval_drilldowns: MaskingIntervalMetric[];
 }

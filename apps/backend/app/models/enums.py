@@ -22,3 +22,4 @@ class TaskStatusEnum(str, enum.Enum):
     NEEDS_REVIEW = "Needs Review"
     REVIEWED = "Reviewed"
     APPROVED = "Approved"
+    REJECTED = "Rejected"

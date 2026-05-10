@@ -19,5 +19,18 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confidentiality_acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confidentiality_acknowledged_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    confidentiality_acknowledged_session_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    active_session_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    active_session_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     assigned_tasks = relationship("AnnotationTask", back_populates="assignee", foreign_keys="AnnotationTask.assignee_id")
+
+    @property
+    def confidentiality_acknowledged_for_session(self) -> bool:
+        return bool(
+            self.active_session_id
+            and self.confidentiality_acknowledged_session_id
+            and self.confidentiality_acknowledged_session_id == self.active_session_id
+        )

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, EmailStr
 
 from app.models.enums import RoleEnum
@@ -19,6 +21,9 @@ class UserResponse(BaseModel):
     email: EmailStr
     full_name: str
     role: RoleEnum
+    confidentiality_acknowledged_at: datetime | None = None
+    confidentiality_acknowledged_version: str | None = None
+    confidentiality_acknowledged_for_session: bool = False
 
 
 class TokenResponse(BaseModel):
