@@ -5,6 +5,8 @@ services:
       - ./apps/backend:/app
       - backend_uploads:/app/data/uploads
       - ./sample_data/audio:/app/data/uploads/sample-audio:ro
+    ports:
+      - "8000:8000"
 
   worker:
     volumes:
@@ -19,10 +21,14 @@ services:
       target: deps
     working_dir: /workspace/apps/frontend
     command: ["npm", "run", "dev", "--", "--hostname", "0.0.0.0"]
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
     volumes:
       - ./apps/frontend:/workspace/apps/frontend
       - ./packages/shared-types:/workspace/packages/shared-types
       - frontend_node_modules:/workspace/apps/frontend/node_modules
+    ports:
+      - "3000:3000"
 
 volumes:
   frontend_node_modules:

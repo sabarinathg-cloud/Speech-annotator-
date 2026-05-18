@@ -44,9 +44,10 @@ tests/
 ## Quick Start
 
 ```bash
-cp .env.example .env
 docker compose up --build
 ```
+
+Open <http://localhost:8080>. The Docker stack starts PostgreSQL, Redis, the API, worker, frontend, and Nginx with local defaults, so a copied `.env` file is not required for local sharing.
 
 Forced alignment uses Wav2Vec2 through Torch/Torchaudio. The Docker backend and worker images install the CPU alignment dependencies by default. For a smaller local image when audio masking is not needed:
 
@@ -57,17 +58,10 @@ docker compose up
 
 Open:
 
-- Frontend: <http://localhost:3000>
-- API docs: <http://localhost:8000/docs>
-- Nginx proxy: <http://localhost:8080>
+- App: <http://localhost:8080>
+- API docs: <http://localhost:8080/docs>
 
-Seed development users:
-
-```bash
-docker compose exec backend python scripts/seed.py
-```
-
-Default seeded accounts:
+Development users are created automatically on Docker startup:
 
 ```text
 admin@outcomes.ai      Admin@123      ADMIN
@@ -145,9 +139,8 @@ npm run build
 E2E smoke tests:
 
 ```bash
-cp .env.example .env
-docker compose up -d --build postgres redis backend frontend
-npm run test:e2e
+docker compose up -d --build
+E2E_BASE_URL=http://localhost:8080 npm run test:e2e
 docker compose down -v
 ```
 

@@ -13,8 +13,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    ports:
-      - "5432:5432"
 
   redis:
     image: redis:7-alpine
@@ -27,8 +25,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    ports:
-      - "6379:6379"
 
   backend:
     build:
@@ -36,15 +32,20 @@ services:
       args:
         INSTALL_ALIGNMENT_DEPS: ${INSTALL_ALIGNMENT_DEPS:-true}
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DEBUG: ${DEBUG:-false}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://outcomes_user:outcomes_password@postgres:5432/outcomes_annotator}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-local-access-secret}
+      JWT_REFRESH_SECRET_KEY: ${JWT_REFRESH_SECRET_KEY:-dev-local-refresh-secret}
+      AUDIO_SIGNING_SECRET: ${AUDIO_SIGNING_SECRET:-dev-local-audio-secret}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000,http://127.0.0.1:8080}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JOBS_INLINE: ${JOBS_INLINE:-false}
+      UPLOAD_DIR: ${UPLOAD_DIR:-/app/data/uploads}
       HF_HOME: ${HF_HOME:-/app/.cache/huggingface}
-      PII_MODEL_PRELOAD_ENABLED: ${PII_MODEL_PRELOAD_ENABLED:-true}
+      PII_MODEL_PRELOAD_ENABLED: ${PII_MODEL_PRELOAD_ENABLED:-false}
+      AUTO_SEED_DEV_USERS: ${AUTO_SEED_DEV_USERS:-true}
     volumes:
       - backend_uploads:/app/data/uploads
       - ./sample_data/audio:/app/data/uploads/sample-audio:ro
@@ -54,8 +55,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    ports:
-      - "8000:8000"
 
   worker:
     build:
@@ -64,12 +63,15 @@ services:
         INSTALL_ALIGNMENT_DEPS: ${INSTALL_ALIGNMENT_DEPS:-true}
     restart: unless-stopped
     command: ["python", "/app/scripts/worker.py"]
-    env_file:
-      - .env
     environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://outcomes_user:outcomes_password@postgres:5432/outcomes_annotator}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-local-access-secret}
+      JWT_REFRESH_SECRET_KEY: ${JWT_REFRESH_SECRET_KEY:-dev-local-refresh-secret}
+      AUDIO_SIGNING_SECRET: ${AUDIO_SIGNING_SECRET:-dev-local-audio-secret}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JOBS_INLINE: "false"
+      UPLOAD_DIR: ${UPLOAD_DIR:-/app/data/uploads}
       HF_HOME: ${HF_HOME:-/app/.cache/huggingface}
     volumes:
       - backend_uploads:/app/data/uploads
@@ -86,14 +88,12 @@ services:
       context: .
       dockerfile: apps/frontend/Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080/api/v1}
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080/api/v1}
     depends_on:
       - backend
-    ports:
-      - "3000:3000"
 
   nginx:
     image: nginx:1.27-alpine

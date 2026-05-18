@@ -15,6 +15,16 @@ async function signIn(page: Page) {
     await page.waitForURL(/\/tasks/, { timeout: 30_000 });
   }
   await expect(page.getByRole("link", { name: "Tasks" })).toBeVisible({ timeout: 30_000 });
+  const acknowledgement = page.getByRole("dialog", { name: "Confidentiality acknowledgement" });
+  if (await acknowledgement.isVisible().catch(() => false)) {
+    await acknowledgement
+      .getByRole("checkbox", {
+        name: "I understand and will handle all annotation data only inside the approved workflow.",
+      })
+      .check();
+    await acknowledgement.getByRole("button", { name: "Accept and continue" }).click();
+    await expect(acknowledgement).toBeHidden();
+  }
 }
 
 async function submitCredentials(page: Page) {
@@ -33,7 +43,7 @@ test.describe("outcomes.ai speech annotator core flows", () => {
   test("admin can open metrics page", async ({ page }) => {
     await signIn(page);
     await page.getByRole("link", { name: "Metrics" }).click();
-    await expect(page.getByRole("heading", { name: "Metrics", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Quality and Productivity Dashboard" })).toBeVisible();
     await expect(page.getByText("Model Accuracy")).toBeVisible();
     await expect(page.getByText("PII Label Management")).toBeVisible();
   });
