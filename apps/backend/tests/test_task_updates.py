@@ -3,6 +3,11 @@ from datetime import UTC, datetime
 from app.models.task import AnnotationTask
 from app.services.audio_alignment_service import AudioAlignmentService, transcript_hash
 
+INVALID_TRANSCRIPT_MESSAGE = (
+    "Invalid characters in transcript: only letters, numbers, spaces, line breaks and "
+    ". , ? ! - @ are allowed."
+)
+
 
 def _mapping():
     return {
@@ -102,6 +107,21 @@ def test_combined_task_save_updates_multiple_sections_once(client, auth_headers,
     assert task["notes"] == "Combined save note"
     assert task["status"] == "In Progress"
     assert task["last_tagger_email"] == "annotator@test.com"
+
+
+def test_combined_task_save_rejects_invalid_transcript_characters(client, auth_headers, sample_excel_bytes):
+    task_id = _create_task(client, auth_headers, sample_excel_bytes)
+    detail_response = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["annotator"])
+    version = detail_response.json()["version"]
+
+    save_response = client.patch(
+        f"/api/v1/tasks/{task_id}",
+        headers=auth_headers["annotator"],
+        json={"version": version, "final_transcript": "Combined corrected transcript (draft)"},
+    )
+
+    assert save_response.status_code == 422
+    assert save_response.json()["detail"]["message"] == INVALID_TRANSCRIPT_MESSAGE
 
 
 def test_combined_task_save_returns_conflict_for_stale_version(client, auth_headers, sample_excel_bytes):

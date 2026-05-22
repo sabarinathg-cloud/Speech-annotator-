@@ -6,6 +6,8 @@ import TaskWorkspacePage from "@/app/(dashboard)/tasks/[taskId]/page";
 import { ANNOTATOR_GUIDED_TOUR_STORAGE_KEY } from "@/components/annotator-guided-tour";
 
 const draftKey = "outcomes-ai:speech-annotator:draft:annotator-1:task-1";
+const invalidTranscriptMessage =
+  "Invalid characters in transcript: only letters, numbers, spaces, line breaks and . , ? ! - @ are allowed.";
 
 function createDeferred<T>(promiseValue: T) {
   let resolve!: (value: T) => void;
@@ -223,6 +225,20 @@ describe("TaskWorkspacePage", () => {
     expect(await screen.findByText("In Progress")).toBeInTheDocument();
     expect(screen.getByText("Assignee: Annotator")).toBeInTheDocument();
     expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+  });
+
+  it("blocks invalid transcript characters before saving", async () => {
+    render(<TaskWorkspacePage />);
+    await screen.findByText("Task OUT-001");
+
+    fireEvent.change(screen.getByLabelText("Final Transcript"), {
+      target: { value: "Hello (test)" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save Transcript" }));
+
+    expect(await screen.findAllByText(invalidTranscriptMessage)).toHaveLength(2);
+    expect(screen.getByLabelText("Autosave section status")).toHaveTextContent("Invalid characters in transcript");
+    expect(patchTaskCombined).not.toHaveBeenCalled();
   });
 
   it("opens an annotator guided tour and walks through PII review to completion guidance", async () => {
