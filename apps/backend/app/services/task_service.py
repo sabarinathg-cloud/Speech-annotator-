@@ -37,6 +37,7 @@ from app.schemas.task import (
 )
 from app.services.audio_alignment_service import AudioAlignmentService, transcript_hash
 from app.services.errors import ServiceError
+from app.services.text_validation import find_invalid_annotation_text
 
 ALLOWED_STATUS_TRANSITIONS: dict[TaskStatusEnum, set[TaskStatusEnum]] = {
     TaskStatusEnum.NOT_STARTED: {TaskStatusEnum.IN_PROGRESS},
@@ -54,6 +55,20 @@ ALLOWED_STATUS_TRANSITIONS: dict[TaskStatusEnum, set[TaskStatusEnum]] = {
 }
 
 AUTO_START_COMMENT = "Automatically moved to In Progress when work started"
+
+
+def _raise_for_invalid_text(value: str | None, field_label: str) -> None:
+    message = find_invalid_annotation_text(value, field_label)
+    if message:
+        raise ServiceError(message, status_code=422)
+
+
+def _raise_for_invalid_custom_metadata(custom_metadata: dict[str, Any] | None) -> None:
+    if not custom_metadata:
+        return
+    for key, value in custom_metadata.items():
+        if isinstance(value, str):
+            _raise_for_invalid_text(value, f"custom metadata {key}")
 
 
 class TaskService:
@@ -122,6 +137,22 @@ class TaskService:
             raise ServiceError("No task fields provided for update", status_code=422)
         if "due_date" in update_fields and actor.role != RoleEnum.ADMIN:
             raise ServiceError("Only admins can update due dates", status_code=403)
+        if "final_transcript" in update_fields:
+            _raise_for_invalid_text(payload.final_transcript, "transcript")
+        if "notes" in update_fields:
+            _raise_for_invalid_text(payload.notes, "notes")
+        if "speaker_gender" in update_fields:
+            _raise_for_invalid_text(payload.speaker_gender, "speaker gender")
+        if "speaker_role" in update_fields:
+            _raise_for_invalid_text(payload.speaker_role, "speaker role")
+        if "language" in update_fields:
+            _raise_for_invalid_text(payload.language, "language")
+        if "channel" in update_fields:
+            _raise_for_invalid_text(payload.channel, "channel")
+        if "custom_metadata" in update_fields:
+            _raise_for_invalid_custom_metadata(payload.custom_metadata)
+        if "comment" in provided_fields:
+            _raise_for_invalid_text(payload.comment, "comment")
         self._ensure_version(task, payload.version, sorted(update_fields), actor=actor)
 
         previous_values: dict[str, Any] = {}
@@ -218,6 +249,7 @@ class TaskService:
         actor: User,
     ) -> TaskPatchResponse:
         task = self._get_task_or_404(task_id, actor=actor)
+        _raise_for_invalid_text(final_transcript, "transcript")
         self._ensure_version(task, version, ["final_transcript"], actor=actor)
         previous = {"final_transcript": task.final_transcript}
         new_values = {"final_transcript": final_transcript}
@@ -275,6 +307,16 @@ class TaskService:
         included_fields = [key for key in payload_fields if key in provided]
         if not included_fields:
             raise ServiceError("No metadata fields provided for update", status_code=422)
+        if "speaker_gender" in provided:
+            _raise_for_invalid_text(speaker_gender, "speaker gender")
+        if "speaker_role" in provided:
+            _raise_for_invalid_text(speaker_role, "speaker role")
+        if "language" in provided:
+            _raise_for_invalid_text(language, "language")
+        if "channel" in provided:
+            _raise_for_invalid_text(channel, "channel")
+        if "custom_metadata" in provided:
+            _raise_for_invalid_custom_metadata(custom_metadata)
         self._ensure_version(task, version, included_fields, actor=actor)
 
         for field_name, new_value in payload_fields.items():
@@ -318,6 +360,7 @@ class TaskService:
         actor: User,
     ) -> TaskPatchResponse:
         task = self._get_task_or_404(task_id, actor=actor)
+        _raise_for_invalid_text(notes, "notes")
         self._ensure_version(task, version, ["notes"], actor=actor)
         previous = {"notes": task.notes}
         new_values = {"notes": notes}
@@ -352,6 +395,7 @@ class TaskService:
         comment: str | None = None,
     ) -> TaskPatchResponse:
         task = self._get_task_or_404(task_id, actor=actor)
+        _raise_for_invalid_text(comment, "comment")
         self._ensure_version(task, version, ["status"], actor=actor)
         old_status = task.status
 

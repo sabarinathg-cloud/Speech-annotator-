@@ -20,6 +20,7 @@ import { SaveIndicator } from "@/components/save-indicator";
 import { StatusBadge } from "@/components/status-badge";
 import { TranscriptComparison } from "@/components/transcript-comparison";
 import { resolveBackendOrigin } from "@/lib/api-config";
+import { validateAnnotationText } from "@/lib/text-validation";
 import {
   APIError,
   detectTaskPII,
@@ -1192,10 +1193,52 @@ export default function TaskWorkspacePage() {
     setError(`Save failed. Retrying in ${Math.round(delay / 1000)}s.`);
   }
 
+  function collectTextValidationErrors(): Array<{ section: SaveSectionKey | "status"; message: string }> {
+    const checks: Array<{ section: SaveSectionKey | "status"; label: string; value: string | null | undefined }> = [
+      { section: "transcript", label: "transcript", value: finalTranscript },
+      { section: "notes", label: "notes", value: notes },
+      { section: "metadata", label: "speaker gender", value: metadata.speaker_gender },
+      { section: "metadata", label: "speaker role", value: metadata.speaker_role },
+      { section: "metadata", label: "language", value: metadata.language },
+      { section: "metadata", label: "channel", value: metadata.channel },
+      ...Object.entries(customMetadata).map(([key, value]) => ({
+        section: "metadata" as const,
+        label: `custom metadata ${key}`,
+        value,
+      })),
+    ];
+
+    return checks.flatMap((check) => {
+      const message = validateAnnotationText(check.value, check.label);
+      return message ? [{ section: check.section, message }] : [];
+    });
+  }
+
+  function stopForTextValidation(errors: Array<{ section: SaveSectionKey | "status"; message: string }>) {
+    const message = errors[0]?.message ?? "Invalid characters found.";
+    setSaveState("error");
+    setError(message);
+    setSectionErrors(
+      errors.reduce<Record<string, string>>((next, item) => {
+        if (!next[item.section]) {
+          next[item.section] = item.message;
+        }
+        return next;
+      }, {})
+    );
+    clearRetryTimer();
+    retryAttemptRef.current = 0;
+    return false;
+  }
+
   async function saveAll(versionOverride?: number): Promise<boolean> {
     if (!accessToken || !taskId || savingRef.current) return false;
     const token: string = accessToken;
     const resolvedTaskId: string = taskId;
+    const validationErrors = collectTextValidationErrors();
+    if (validationErrors.length > 0) {
+      return stopForTextValidation(validationErrors);
+    }
     if (!hasUnsavedChanges && !versionOverride) return true;
 
     savingRef.current = true;
@@ -1853,6 +1896,11 @@ export default function TaskWorkspacePage() {
       setError("Add a rejection reason before rejecting the task.");
       return;
     }
+    const commentValidationMessage = validateAnnotationText(comment, "review comment");
+    if (commentValidationMessage) {
+      stopForTextValidation([{ section: "status", message: commentValidationMessage }]);
+      return;
+    }
 
     const saved = await saveAll();
     if (!saved) return;
@@ -2063,6 +2111,7 @@ export default function TaskWorkspacePage() {
                 const verified = verifiedSections[key];
                 const runningAutomation = key === "pii" && autoMaskingBusy;
                 const disabled = autoMaskingBusy || (key === "masking" && maskingApprovalBlocked);
+                const titleLabel = key === "transcript" ? "Compare Transcripts" : label;
                 const buttonLabel = runningAutomation
                   ? "Aligning and masking..."
                   : verified
@@ -2078,7 +2127,7 @@ export default function TaskWorkspacePage() {
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold">{label}</span>
+                      <span className="font-semibold">{titleLabel}</span>
                       <span>{runningAutomation ? "Saving" : verified ? "Saved" : "Pending"}</span>
                     </div>
                     <button
