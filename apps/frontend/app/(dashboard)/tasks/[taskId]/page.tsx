@@ -27,12 +27,10 @@ import {
   fetchAudioURL,
   fetchPIILabels,
   fetchTask,
-  fetchTaskActivity,
   generateTaskAlignment,
   maskTaskPIIAudio,
   patchTaskCombined,
   startTask,
-  type TaskActivityItem
 } from "@/lib/api";
 import { detectPIIAnnotations, sanitizePIIAnnotations } from "@/lib/pii";
 import {
@@ -46,15 +44,13 @@ const audioMaskModeOptions: Array<{ value: AudioMaskMode; label: string }> = [
   { value: "beep", label: "Beep" },
 ];
 
-type InspectorPanelKey = "compare" | "metadata" | "pii" | "notes" | "activity" | "details";
+type InspectorPanelKey = "compare" | "metadata" | "pii" | "notes";
 
 const inspectorTabs: Array<{ key: InspectorPanelKey; label: string }> = [
   { key: "compare", label: "Compare" },
   { key: "metadata", label: "Metadata" },
   { key: "pii", label: "PII" },
   { key: "notes", label: "Notes" },
-  { key: "activity", label: "Activity" },
-  { key: "details", label: "Details" },
 ];
 
 const annotatorTourSteps: AnnotatorGuidedTourStep[] = [
@@ -188,7 +184,6 @@ const annotatorTourSteps: AnnotatorGuidedTourStep[] = [
     body: "The Metadata tab holds fields such as speaker gender, speaker role, language, channel, duration, and custom import columns. Correct only what is wrong or missing.",
     checklist: [
       "Save Metadata after edits.",
-      "Use Details later to confirm due date and task source.",
     ],
   },
   {
@@ -276,20 +271,6 @@ const annotatorTourSteps: AnnotatorGuidedTourStep[] = [
       "Mention timestamps when something is ambiguous.",
       "Avoid notes for routine edits that are already visible.",
     ],
-  },
-  {
-    id: "activity",
-    targetId: "inspector-activity",
-    inspectorPanel: "activity",
-    title: "Check activity if needed",
-    body: "Activity shows saves, status changes, and comments. Use it when a task has previous work, review feedback, or unexpected changes.",
-  },
-  {
-    id: "details",
-    targetId: "inspector-details",
-    inspectorPanel: "details",
-    title: "Confirm details and due date",
-    body: "Details summarizes the task ID, audio source, ASR sources, PII count, due date, assignee, last tagger, and duration. Check it before final completion when work priority matters.",
   },
   {
     id: "save-sections",
@@ -536,7 +517,6 @@ export default function TaskWorkspacePage() {
   const [sectionErrors, setSectionErrors] = useState<Record<string, string>>({});
   const [verifiedSections, setVerifiedSections] =
     useState<Record<VerificationSectionKey, boolean>>(emptyVerificationState);
-  const [activity, setActivity] = useState<TaskActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [piiLabelOptions, setPiiLabelOptions] = useState<PIILabelOption[]>(fallbackPIILabels);
   const [piiDetectionBusy, setPiiDetectionBusy] = useState(false);
@@ -754,28 +734,24 @@ export default function TaskWorkspacePage() {
     async function loadTask() {
       setLoading(true);
       try {
-        const [fetchedTask, signedAudio, activityResponse] = await Promise.all([
+        const [fetchedTask, signedAudio] = await Promise.all([
           fetchTask(token, resolvedTaskId),
           fetchAudioURL(token, resolvedTaskId),
-          fetchTaskActivity(token, resolvedTaskId),
         ]);
         const labelsResponse = await fetchPIILabels(token).catch(() => ({ items: [] }));
         if (cancelled) return;
         let activeTask = fetchedTask;
-        let activeActivity = activityResponse.items;
         let startError: string | null = null;
         if (fetchedTask.status === "Not Started" && (user?.role === "ANNOTATOR" || user?.role === "REVIEWER")) {
           try {
             const startedTaskResponse = await startTask(token, resolvedTaskId);
             activeTask = startedTaskResponse.task;
-            activeActivity = (await fetchTaskActivity(token, resolvedTaskId)).items;
           } catch (err) {
             startError = err instanceof APIError ? err.message : "Failed to start task";
           }
           if (cancelled) return;
         }
         applyTaskState(activeTask);
-        setActivity(activeActivity);
         setPiiLabelOptions(toPIILabelOptions(labelsResponse.items));
         retryAttemptRef.current = 0;
         clearRetryTimer();
@@ -1294,8 +1270,6 @@ export default function TaskWorkspacePage() {
       retryAttemptRef.current = 0;
       clearLocalDraft();
       setDraftState({ mode: "none", savedAt: null });
-      const activityResponse = await fetchTaskActivity(token, resolvedTaskId);
-      setActivity(activityResponse.items);
       return true;
     } catch (err) {
       if (err instanceof APIError && err.status === 409) {
@@ -1867,8 +1841,6 @@ export default function TaskWorkspacePage() {
           applyTaskState(response.task, { preserveVerification: true });
         }
         setSaveState("saved");
-        const activityResponse = await fetchTaskActivity(accessToken, taskId);
-        setActivity(activityResponse.items);
       } catch (err) {
         const message = err instanceof APIError ? err.message : "Failed to complete task";
         setSaveState("error");
@@ -1909,8 +1881,6 @@ export default function TaskWorkspacePage() {
       });
       applyTaskState(response.task);
       setReviewComment("");
-      const activityResponse = await fetchTaskActivity(accessToken, taskId);
-      setActivity(activityResponse.items);
     } catch (err) {
       setError(err instanceof APIError ? err.message : "Review decision failed");
     } finally {
@@ -1938,29 +1908,6 @@ export default function TaskWorkspacePage() {
     clearLocalDraft();
     setDraftState({ mode: "none", savedAt: null });
   }
-
-  const detailRows = task
-    ? [
-        { label: "Task ID", value: task.external_id },
-        { label: "Audio Source", value: task.file_location },
-        { label: "ASR Sources", value: `${task.transcript_variants.length} model${task.transcript_variants.length === 1 ? "" : "s"}` },
-        { label: "PII Entities", value: String(piiAnnotations.length) },
-        { label: "Due Date", value: task.due_date ?? "No due date" },
-        {
-          label: "Assigned To",
-          value: task.assignee_name
-            ? `${task.assignee_name}${task.assignee_email ? ` (${task.assignee_email})` : ""}`
-            : "Unassigned",
-        },
-        {
-          label: "Last Tagged By",
-          value: task.last_tagger_name
-            ? `${task.last_tagger_name}${task.last_tagger_email ? ` (${task.last_tagger_email})` : ""}`
-            : "Not tagged yet",
-        },
-        { label: "Duration", value: formatDurationLabel(metadata.duration_seconds) },
-      ]
-    : [];
 
   if (loading) {
     return (
@@ -2483,7 +2430,7 @@ export default function TaskWorkspacePage() {
 
         <aside data-tour-id="inspector-panel" className="oa-card p-3 sm:p-4">
           <div data-tour-id="inspector-tabs" className="rounded-xl border border-[#e5e7eb] bg-[#f8fafc] p-1">
-            <div className="grid grid-cols-6 gap-1">
+            <div className="grid grid-cols-4 gap-1">
               {inspectorTabs.map((tab) => (
                 <button
                   key={tab.key}
@@ -2582,49 +2529,6 @@ export default function TaskWorkspacePage() {
               </div>
             ) : null}
 
-            {activeInspectorPanel === "activity" ? (
-              <div data-tour-id="inspector-activity">
-                <h3 className="oa-title mb-2 text-sm font-semibold">Activity</h3>
-                <div className="space-y-2">
-                  {activity.length > 0 ? (
-                    activity.map((item) => (
-                      <div key={`${item.type}-${item.id}`} className="rounded-lg border border-[#e5e7eb] bg-white px-3 py-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[#4b5563]">
-                            {item.type === "status" ? "Status" : item.action.replaceAll("_", " ")}
-                          </span>
-                          <span className="text-[11px] text-[#6b7280]">{new Date(item.changed_at).toLocaleString()}</span>
-                        </div>
-                        <p className="mt-1 text-xs text-[#6b7280]">
-                          {item.type === "status"
-                            ? `${item.old_status ?? "Imported"} -> ${item.new_status ?? "-"}`
-                            : Object.keys(item.changed_fields ?? {}).join(", ") || "Task updated"}
-                        </p>
-                        {item.comment ? <p className="mt-1 text-xs text-[#4b5563]">{item.comment}</p> : null}
-                      </div>
-                    ))
-                  ) : (
-                    <p className="rounded-lg border border-[#e5e7eb] bg-white px-3 py-2 text-sm text-[#6b7280]">
-                      No activity recorded yet.
-                    </p>
-                  )}
-                </div>
-              </div>
-            ) : null}
-
-            {activeInspectorPanel === "details" ? (
-              <div data-tour-id="inspector-details">
-                <h3 className="oa-title mb-2 text-sm font-semibold">Task Details</h3>
-                <dl className="space-y-2">
-                  {detailRows.map((row) => (
-                    <div key={row.label} className="rounded-lg border border-[#e5e7eb] bg-white px-3 py-2">
-                      <dt className="text-[11px] uppercase tracking-[0.12em] text-[#6b7280]">{row.label}</dt>
-                      <dd className="mt-0.5 break-all text-sm font-medium text-[#111827]">{row.value || "—"}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </div>
-            ) : null}
           </div>
         </aside>
       </div>

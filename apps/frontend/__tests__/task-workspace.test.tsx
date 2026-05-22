@@ -227,6 +227,18 @@ describe("TaskWorkspacePage", () => {
     expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
   });
 
+  it("shows only the active annotation inspector tabs", async () => {
+    render(<TaskWorkspacePage />);
+    await screen.findByText("Task OUT-001");
+
+    expect(screen.getByRole("button", { name: "Compare", exact: true })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Metadata", exact: true })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "PII", exact: true })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Notes", exact: true })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Activity", exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Details", exact: true })).not.toBeInTheDocument();
+  });
+
   it("blocks invalid transcript characters before saving", async () => {
     render(<TaskWorkspacePage />);
     await screen.findByText("Task OUT-001");
@@ -285,7 +297,7 @@ describe("TaskWorkspacePage", () => {
     );
     expect(within(dialog).getByRole("button", { name: "Quick tour" })).toBeInTheDocument();
     expect(within(dialog).getByText("Workflow checklist")).toBeInTheDocument();
-    expect(within(dialog).getByText("Step 1 of 22")).toBeInTheDocument();
+    expect(within(dialog).getByText("Step 1 of 20")).toBeInTheDocument();
     expect(within(dialog).getByText("Start with the assignment")).toBeInTheDocument();
 
     for (let index = 0; index < 13; index += 1) {
