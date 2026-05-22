@@ -1194,19 +1194,13 @@ export default function TaskWorkspacePage() {
   }
 
   function collectTextValidationErrors(): Array<{ section: SaveSectionKey | "status"; message: string }> {
-    const checks: Array<{ section: SaveSectionKey | "status"; label: string; value: string | null | undefined }> = [
-      { section: "transcript", label: "transcript", value: finalTranscript },
-      { section: "notes", label: "notes", value: notes },
-      { section: "metadata", label: "speaker gender", value: metadata.speaker_gender },
-      { section: "metadata", label: "speaker role", value: metadata.speaker_role },
-      { section: "metadata", label: "language", value: metadata.language },
-      { section: "metadata", label: "channel", value: metadata.channel },
-      ...Object.entries(customMetadata).map(([key, value]) => ({
-        section: "metadata" as const,
-        label: `custom metadata ${key}`,
-        value,
-      })),
-    ];
+    const checks: Array<{ section: SaveSectionKey | "status"; label: string; value: string | null | undefined }> = [];
+    if (transcriptDirty) {
+      checks.push({ section: "transcript", label: "transcript", value: finalTranscript });
+    }
+    if (notesDirty) {
+      checks.push({ section: "notes", label: "notes", value: notes });
+    }
 
     return checks.flatMap((check) => {
       const message = validateAnnotationText(check.value, check.label);

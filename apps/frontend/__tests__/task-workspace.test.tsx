@@ -241,6 +241,31 @@ describe("TaskWorkspacePage", () => {
     expect(patchTaskCombined).not.toHaveBeenCalled();
   });
 
+  it("allows unrestricted metadata values when saving metadata", async () => {
+    fetchTask.mockResolvedValueOnce({
+      ...mockTask,
+      status: "In Progress",
+      final_transcript: "Imported transcript with / and (source)",
+    });
+    render(<TaskWorkspacePage />);
+    await screen.findByText("Task OUT-001");
+
+    fireEvent.click(screen.getByRole("button", { name: "Metadata" }));
+    fireEvent.change(await screen.findByLabelText("Channel"), {
+      target: { value: "agent/customer (left) #1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save Metadata" }));
+
+    await waitFor(() =>
+      expect(patchTaskCombined).toHaveBeenCalledWith(
+        "test-token",
+        "task-1",
+        expect.objectContaining({ channel: "agent/customer (left) #1" })
+      )
+    );
+    expect(screen.queryByText(/Invalid characters in channel/i)).not.toBeInTheDocument();
+  });
+
   it("opens an annotator guided tour and walks through PII review to completion guidance", async () => {
     fetchTask.mockResolvedValueOnce({
       ...mockTask,
