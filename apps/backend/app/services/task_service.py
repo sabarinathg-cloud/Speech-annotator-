@@ -63,14 +63,6 @@ def _raise_for_invalid_text(value: str | None, field_label: str) -> None:
         raise ServiceError(message, status_code=422)
 
 
-def _raise_for_invalid_custom_metadata(custom_metadata: dict[str, Any] | None) -> None:
-    if not custom_metadata:
-        return
-    for key, value in custom_metadata.items():
-        if isinstance(value, str):
-            _raise_for_invalid_text(value, f"custom metadata {key}")
-
-
 class TaskService:
     def __init__(self, db: Session):
         self.db = db
@@ -141,16 +133,6 @@ class TaskService:
             _raise_for_invalid_text(payload.final_transcript, "transcript")
         if "notes" in update_fields:
             _raise_for_invalid_text(payload.notes, "notes")
-        if "speaker_gender" in update_fields:
-            _raise_for_invalid_text(payload.speaker_gender, "speaker gender")
-        if "speaker_role" in update_fields:
-            _raise_for_invalid_text(payload.speaker_role, "speaker role")
-        if "language" in update_fields:
-            _raise_for_invalid_text(payload.language, "language")
-        if "channel" in update_fields:
-            _raise_for_invalid_text(payload.channel, "channel")
-        if "custom_metadata" in update_fields:
-            _raise_for_invalid_custom_metadata(payload.custom_metadata)
         if "comment" in provided_fields:
             _raise_for_invalid_text(payload.comment, "comment")
         self._ensure_version(task, payload.version, sorted(update_fields), actor=actor)
@@ -307,16 +289,6 @@ class TaskService:
         included_fields = [key for key in payload_fields if key in provided]
         if not included_fields:
             raise ServiceError("No metadata fields provided for update", status_code=422)
-        if "speaker_gender" in provided:
-            _raise_for_invalid_text(speaker_gender, "speaker gender")
-        if "speaker_role" in provided:
-            _raise_for_invalid_text(speaker_role, "speaker role")
-        if "language" in provided:
-            _raise_for_invalid_text(language, "language")
-        if "channel" in provided:
-            _raise_for_invalid_text(channel, "channel")
-        if "custom_metadata" in provided:
-            _raise_for_invalid_custom_metadata(custom_metadata)
         self._ensure_version(task, version, included_fields, actor=actor)
 
         for field_name, new_value in payload_fields.items():

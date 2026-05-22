@@ -75,13 +75,15 @@ def test_transcript_and_metadata_updates(client, auth_headers, sample_excel_byte
         json={
             "version": version,
             "speaker_gender": "non-binary",
-            "custom_metadata": {"custom_tag": "UPDATED", "quality": "clean"},
+            "channel": "agent/customer (left) #1",
+            "custom_metadata": {"custom_tag": "UPDATED", "quality": "clean / review (ok)"},
         },
     )
     assert metadata_response.status_code == 200
     payload = metadata_response.json()["task"]
     assert payload["speaker_gender"] == "non-binary"
-    assert payload["custom_metadata"]["quality"] == "clean"
+    assert payload["channel"] == "agent/customer (left) #1"
+    assert payload["custom_metadata"]["quality"] == "clean / review (ok)"
 
 
 def test_combined_task_save_updates_multiple_sections_once(client, auth_headers, sample_excel_bytes):
@@ -97,6 +99,7 @@ def test_combined_task_save_updates_multiple_sections_once(client, auth_headers,
             "final_transcript": "Combined corrected transcript",
             "notes": "Combined save note",
             "speaker_gender": "female",
+            "channel": "phone/ivr (mono)",
             "status": "In Progress",
         },
     )
@@ -105,6 +108,7 @@ def test_combined_task_save_updates_multiple_sections_once(client, auth_headers,
     assert task["version"] == version + 1
     assert task["final_transcript"] == "Combined corrected transcript"
     assert task["notes"] == "Combined save note"
+    assert task["channel"] == "phone/ivr (mono)"
     assert task["status"] == "In Progress"
     assert task["last_tagger_email"] == "annotator@test.com"
 
