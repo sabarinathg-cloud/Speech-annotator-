@@ -158,7 +158,7 @@ export default function TasksPage() {
     () =>
       users
         .filter((account) => {
-          if (!account.is_active || account.role === "ADMIN") return false;
+          if (!account.is_active || account.role === "ADMIN" || account.role === "CANDIDATE") return false;
           return assignmentRoleFilter === "all" || account.role === assignmentRoleFilter;
         })
         .sort(

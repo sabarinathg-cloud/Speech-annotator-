@@ -146,8 +146,10 @@ def bulk_update_statuses(
 @router.post("/detect-pii", response_model=DetectPIIResponse)
 def detect_pii(
     payload: DetectPIIRequest,
-    _: User = Depends(require_confidentiality_ack),
+    current_user: User = Depends(require_confidentiality_ack),
 ):
+    if current_user.role == RoleEnum.CANDIDATE:
+        raise HTTPException(status_code=403, detail={"message": "Candidates cannot access annotation task APIs"})
     return DetectPIIResponse(
         pii_annotations=detect_pii_ensemble(payload.transcript, include_ml=payload.include_ml)
     )

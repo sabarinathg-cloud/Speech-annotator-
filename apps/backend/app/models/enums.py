@@ -5,6 +5,7 @@ class RoleEnum(str, enum.Enum):
     ADMIN = "ADMIN"
     ANNOTATOR = "ANNOTATOR"
     REVIEWER = "REVIEWER"
+    CANDIDATE = "CANDIDATE"
 
 
 class UploadJobStatusEnum(str, enum.Enum):
@@ -23,3 +24,29 @@ class TaskStatusEnum(str, enum.Enum):
     REVIEWED = "Reviewed"
     APPROVED = "Approved"
     REJECTED = "Rejected"
+
+
+class HiringAssessmentStatusEnum(str, enum.Enum):
+    DRAFT = "DRAFT"
+    ACTIVE = "ACTIVE"
+    CLOSED = "CLOSED"
+
+
+class HiringAssignmentStatusEnum(str, enum.Enum):
+    ASSIGNED = "ASSIGNED"
+    IN_PROGRESS = "IN_PROGRESS"
+    SUBMITTED = "SUBMITTED"
+    EVALUATED = "EVALUATED"
+
+
+class HiringSubmissionValidationStatusEnum(str, enum.Enum):
+    PENDING = "PENDING"
+    VALIDATED = "VALIDATED"
+    REJECTED = "REJECTED"
+
+
+class HiringDecisionEnum(str, enum.Enum):
+    PENDING = "PENDING"
+    PASS = "PASS"
+    FAIL = "FAIL"
+    HOLD = "HOLD"

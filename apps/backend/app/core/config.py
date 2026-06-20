@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     export_file_cleanup_hours: int = Field(default=168, alias="EXPORT_FILE_CLEANUP_HOURS")
     pii_ml_detection_enabled: bool = Field(default=False, alias="PII_ML_DETECTION_ENABLED")
     pii_model_preload_enabled: bool = Field(default=False, alias="PII_MODEL_PRELOAD_ENABLED")
+    hiring_audio_import_roots: str = Field(default="", alias="HIRING_AUDIO_IMPORT_ROOTS")
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -95,6 +96,10 @@ class Settings(BaseSettings):
         path = Path(self.upload_dir)
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @property
+    def hiring_audio_import_root_list(self) -> list[Path]:
+        return [Path(value).expanduser() for value in self.hiring_audio_import_roots.split(",") if value.strip()]
 
     @property
     def cors_origin_list(self) -> list[str]:

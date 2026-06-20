@@ -94,9 +94,18 @@ def seed_users(db_session: Session) -> dict[str, User]:
         confidentiality_acknowledged_at=datetime.now(UTC),
         confidentiality_acknowledged_version="2026-05-sensitive-data-v1",
     )
-    db_session.add_all([admin, annotator, reviewer])
+    candidate = User(
+        email="candidate@test.com",
+        full_name="Candidate",
+        password_hash=get_password_hash("Candidate@123"),
+        role=RoleEnum.CANDIDATE,
+        is_active=True,
+        confidentiality_acknowledged_at=datetime.now(UTC),
+        confidentiality_acknowledged_version="2026-05-sensitive-data-v1",
+    )
+    db_session.add_all([admin, annotator, reviewer, candidate])
     db_session.commit()
-    return {"admin": admin, "annotator": annotator, "reviewer": reviewer}
+    return {"admin": admin, "annotator": annotator, "reviewer": reviewer, "candidate": candidate}
 
 
 def _login(client: TestClient, email: str, password: str) -> str:
@@ -115,10 +124,12 @@ def auth_headers(client: TestClient, seed_users):
     admin_token = _login(client, "admin@test.com", "Admin@123")
     annotator_token = _login(client, "annotator@test.com", "Annotator@123")
     reviewer_token = _login(client, "reviewer@test.com", "Reviewer@123")
+    candidate_token = _login(client, "candidate@test.com", "Candidate@123")
     return {
         "admin": {"Authorization": f"Bearer {admin_token}"},
         "annotator": {"Authorization": f"Bearer {annotator_token}"},
         "reviewer": {"Authorization": f"Bearer {reviewer_token}"},
+        "candidate": {"Authorization": f"Bearer {candidate_token}"},
     }
 
 

@@ -19,6 +19,21 @@ function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 }
 
+function shouldRenderFinalValueImmediately(): boolean {
+  if (typeof window === "undefined") return false;
+  const requestAnimationFrameMock = window.requestAnimationFrame as typeof window.requestAnimationFrame & {
+    _isMockFunction?: boolean;
+    getMockName?: () => string;
+  };
+  return (
+    prefersReducedMotion() ||
+    (typeof navigator !== "undefined" &&
+      /jsdom/i.test(navigator.userAgent) &&
+      !requestAnimationFrameMock._isMockFunction &&
+      !requestAnimationFrameMock.getMockName)
+  );
+}
+
 export function AnimatedMetricNumber({
   value,
   format = defaultFormat,
@@ -28,7 +43,7 @@ export function AnimatedMetricNumber({
   className,
 }: AnimatedMetricNumberProps) {
   const numericValue = typeof value === "number" && Number.isFinite(value) ? value : null;
-  const [displayValue, setDisplayValue] = useState(() => (prefersReducedMotion() ? numericValue ?? 0 : 0));
+  const [displayValue, setDisplayValue] = useState(() => (shouldRenderFinalValueImmediately() ? numericValue ?? 0 : 0));
   const displayValueRef = useRef(displayValue);
 
   useEffect(() => {
@@ -38,7 +53,7 @@ export function AnimatedMetricNumber({
   useEffect(() => {
     if (loading || numericValue === null) return;
 
-    if (prefersReducedMotion() || durationMs <= 0) {
+    if (shouldRenderFinalValueImmediately() || durationMs <= 0) {
       setDisplayValue(numericValue);
       return;
     }

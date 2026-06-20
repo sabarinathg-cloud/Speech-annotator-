@@ -84,6 +84,8 @@ class TaskService:
         page_size: int,
         current_user: User,
     ) -> TaskListResponse:
+        if current_user.role == RoleEnum.CANDIDATE:
+            raise ServiceError("Candidates cannot access annotation tasks", status_code=403)
         effective_assignee_id = assignee_id
         if current_user.role != RoleEnum.ADMIN:
             effective_assignee_id = current_user.id
@@ -112,6 +114,8 @@ class TaskService:
         return self._to_task_detail(task, viewer=actor)
 
     def get_next_task(self, *, actor: User) -> str | None:
+        if actor.role == RoleEnum.CANDIDATE:
+            raise ServiceError("Candidates cannot access annotation tasks", status_code=403)
         assignee_id = actor.id if actor.role != RoleEnum.ADMIN else None
         return self.task_repo.get_next_unfinished_task(assignee_id=assignee_id)
 
@@ -739,6 +743,8 @@ class TaskService:
         task = self.task_repo.get_task(task_id)
         if not task:
             raise ServiceError("Task not found", status_code=404)
+        if actor and actor.role == RoleEnum.CANDIDATE:
+            raise ServiceError("Candidates cannot access annotation tasks", status_code=403)
         if actor and actor.role != RoleEnum.ADMIN and task.assignee_id != actor.id:
             raise ServiceError("Task is not assigned to you", status_code=403)
         return task

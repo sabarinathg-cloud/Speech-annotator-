@@ -6,6 +6,21 @@ import type {
   ClientSecurityAction,
   ColumnMappingRequest,
   DetectPIIResponse,
+  HiringAdminAssignmentReview,
+  HiringAssessmentDetail,
+  HiringAssessmentListResponse,
+  HiringAssignmentInviteResponse,
+  HiringAssignmentListResponse,
+  HiringAssignmentSummary,
+  HiringAuditEventListResponse,
+  HiringCandidateAssignmentDetail,
+  HiringDecision,
+  HiringImportResponse,
+  HiringMetadataField,
+  HiringPIIEntry,
+  HiringRankingResponse,
+  HiringRubricField,
+  HiringSubmissionValidationStatus,
   JobStatus,
   PIIAnnotation,
   PIILabel,
@@ -573,6 +588,317 @@ export async function logClientSecurityEvent(
   );
 }
 
+export async function fetchHiringAssessments(token: string): Promise<HiringAssessmentListResponse> {
+  return request<HiringAssessmentListResponse>("/hiring/assessments", { method: "GET" }, token);
+}
+
+export async function createHiringAssessment(
+  token: string,
+  payload: {
+    title: string;
+    instructions?: string;
+    due_date?: string | null;
+    due_at?: string | null;
+    time_limit_minutes?: number | null;
+    blind_review_enabled?: boolean;
+    metadata_schema?: HiringMetadataField[];
+    pii_label_keys?: string[];
+    rubric_schema?: HiringRubricField[];
+  }
+): Promise<HiringAssessmentDetail> {
+  return request<HiringAssessmentDetail>(
+    "/hiring/assessments",
+    { method: "POST", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function updateHiringAssessment(
+  token: string,
+  assessmentId: string,
+  payload: {
+    title?: string;
+    instructions?: string;
+    status?: "DRAFT" | "ACTIVE" | "CLOSED";
+    due_date?: string | null;
+    due_at?: string | null;
+    time_limit_minutes?: number | null;
+    blind_review_enabled?: boolean;
+    metadata_schema?: HiringMetadataField[];
+    pii_label_keys?: string[];
+    rubric_schema?: HiringRubricField[];
+  }
+): Promise<HiringAssessmentDetail> {
+  return request<HiringAssessmentDetail>(
+    `/hiring/assessments/${assessmentId}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function fetchHiringAssessment(token: string, assessmentId: string): Promise<HiringAssessmentDetail> {
+  return request<HiringAssessmentDetail>(`/hiring/assessments/${assessmentId}`, { method: "GET" }, token);
+}
+
+export async function updateHiringItemReference(
+  token: string,
+  assessmentId: string,
+  itemId: string,
+  payload: {
+    reference_transcript?: string | null;
+    reference_pii_entries?: HiringPIIEntry[];
+    reference_metadata?: Record<string, unknown> | null;
+  }
+): Promise<HiringAssessmentDetail> {
+  return request<HiringAssessmentDetail>(
+    `/hiring/assessments/${assessmentId}/items/${itemId}/reference`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function uploadHiringAudio(
+  token: string,
+  assessmentId: string,
+  files: File[]
+): Promise<HiringImportResponse> {
+  const formData = new FormData();
+  files.forEach((file) => formData.append("files", file));
+  return request<HiringImportResponse>(
+    `/hiring/assessments/${assessmentId}/items/upload`,
+    { method: "POST", body: formData },
+    token
+  );
+}
+
+export async function importHiringFolder(
+  token: string,
+  assessmentId: string,
+  payload: { folder_path: string; recursive: boolean }
+): Promise<HiringImportResponse> {
+  return request<HiringImportResponse>(
+    `/hiring/assessments/${assessmentId}/items/folder`,
+    { method: "POST", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function importHiringAssignmentFolder(
+  token: string,
+  assignmentId: string,
+  payload: { folder_path: string; recursive: boolean }
+): Promise<HiringImportResponse> {
+  return request<HiringImportResponse>(
+    `/hiring/assignments/${assignmentId}/items/folder`,
+    { method: "POST", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function importHiringManifest(
+  token: string,
+  assessmentId: string,
+  file: File
+): Promise<HiringImportResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return request<HiringImportResponse>(
+    `/hiring/assessments/${assessmentId}/items/manifest`,
+    { method: "POST", body: formData },
+    token
+  );
+}
+
+export async function assignHiringCandidates(
+  token: string,
+  assessmentId: string,
+  candidateIds: string[]
+): Promise<HiringAssignmentListResponse> {
+  return request<HiringAssignmentListResponse>(
+    `/hiring/assessments/${assessmentId}/assignments`,
+    { method: "POST", body: JSON.stringify({ candidate_ids: candidateIds }) },
+    token
+  );
+}
+
+export async function fetchHiringAssessmentAssignments(
+  token: string,
+  assessmentId: string
+): Promise<HiringAssignmentListResponse> {
+  return request<HiringAssignmentListResponse>(
+    `/hiring/assessments/${assessmentId}/assignments`,
+    { method: "GET" },
+    token
+  );
+}
+
+export async function fetchHiringAssessmentRanking(
+  token: string,
+  assessmentId: string
+): Promise<HiringRankingResponse> {
+  return request<HiringRankingResponse>(
+    `/hiring/assessments/${assessmentId}/ranking`,
+    { method: "GET" },
+    token
+  );
+}
+
+export async function createHiringAssignmentInvite(
+  token: string,
+  assignmentId: string
+): Promise<HiringAssignmentInviteResponse> {
+  return request<HiringAssignmentInviteResponse>(
+    `/hiring/assignments/${assignmentId}/invite`,
+    { method: "POST" },
+    token
+  );
+}
+
+export async function fetchHiringAssignmentReview(
+  token: string,
+  assignmentId: string
+): Promise<HiringAdminAssignmentReview> {
+  return request<HiringAdminAssignmentReview>(
+    `/hiring/assignments/${assignmentId}/review`,
+    { method: "GET" },
+    token
+  );
+}
+
+export async function updateHiringAssignmentAccess(
+  token: string,
+  assignmentId: string,
+  payload: { access_revoked: boolean }
+): Promise<HiringAssignmentSummary> {
+  return request<HiringAssignmentSummary>(
+    `/hiring/assignments/${assignmentId}/access`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function fetchHiringAssignmentAuditEvents(
+  token: string,
+  assignmentId: string
+): Promise<HiringAuditEventListResponse> {
+  return request<HiringAuditEventListResponse>(
+    `/hiring/assignments/${assignmentId}/audit-events`,
+    { method: "GET" },
+    token
+  );
+}
+
+export async function updateHiringSubmissionValidation(
+  token: string,
+  submissionId: string,
+  payload: { validation_status: HiringSubmissionValidationStatus; validation_feedback?: string | null }
+): Promise<unknown> {
+  return request(
+    `/hiring/submissions/${submissionId}/validation`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function updateHiringScorecard(
+  token: string,
+  assignmentId: string,
+  payload: {
+    transcript_score?: number | null;
+    pii_score?: number | null;
+    metadata_score?: number | null;
+    total_score?: number | null;
+    rubric_scores?: Record<string, number | null>;
+    decision: HiringDecision;
+    evaluator_notes?: string | null;
+  }
+): Promise<HiringAdminAssignmentReview> {
+  return request<HiringAdminAssignmentReview>(
+    `/hiring/assignments/${assignmentId}/scorecard`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function fetchCandidateHiringAssignments(token: string): Promise<HiringAssignmentListResponse> {
+  return request<HiringAssignmentListResponse>("/hiring/candidate/assignments", { method: "GET" }, token);
+}
+
+export async function fetchCandidateHiringAssignment(
+  token: string,
+  assignmentId: string
+): Promise<HiringCandidateAssignmentDetail> {
+  return request<HiringCandidateAssignmentDetail>(
+    `/hiring/candidate/assignments/${assignmentId}`,
+    { method: "GET" },
+    token
+  );
+}
+
+export async function patchCandidateHiringSubmission(
+  token: string,
+  submissionId: string,
+  payload: {
+    version: number;
+    final_transcript?: string;
+    pii_annotations?: PIIAnnotation[];
+    pii_text?: string;
+    pii_entries?: HiringPIIEntry[];
+    metadata_values?: Record<string, unknown>;
+    notes?: string;
+    pii_reviewed?: boolean;
+  }
+): Promise<HiringCandidateAssignmentDetail> {
+  return request<HiringCandidateAssignmentDetail>(
+    `/hiring/candidate/submissions/${submissionId}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function submitCandidateHiringAssignment(
+  token: string,
+  assignmentId: string
+): Promise<HiringCandidateAssignmentDetail> {
+  return request<HiringCandidateAssignmentDetail>(
+    `/hiring/candidate/assignments/${assignmentId}/submit`,
+    { method: "POST" },
+    token
+  );
+}
+
+export async function detectCandidatePII(
+  token: string,
+  transcript: string,
+  includeMl = false
+): Promise<DetectPIIResponse> {
+  return request<DetectPIIResponse>(
+    "/hiring/candidate/detect-pii",
+    { method: "POST", body: JSON.stringify({ transcript, include_ml: includeMl }) },
+    token
+  );
+}
+
+export async function downloadCandidateHiringAudio(
+  token: string,
+  assignmentId: string,
+  itemId: string
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await requestBlob(
+    `/hiring/candidate/assignments/${assignmentId}/items/${itemId}/download`,
+    token
+  );
+  return { blob: response.blob, filename: response.filename ?? "hiring-audio.wav" };
+}
+
+export async function downloadCandidateHiringZip(
+  token: string,
+  assignmentId: string
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await requestBlob(`/hiring/candidate/assignments/${assignmentId}/download-zip`, token);
+  return { blob: response.blob, filename: response.filename ?? "hiring-audio.zip" };
+}
+
 export async function createUser(
   token: string,
   payload: {
@@ -597,6 +923,10 @@ export async function updateUser(
   }
 ): Promise<AdminUser> {
   return request<AdminUser>(`/users/${userId}`, { method: "PATCH", body: JSON.stringify(payload) }, token);
+}
+
+export async function deleteUser(token: string, userId: string): Promise<AdminUser> {
+  return request<AdminUser>(`/users/${userId}`, { method: "DELETE" }, token);
 }
 
 export async function resetUserPassword(token: string, userId: string, password: string): Promise<AdminUser> {

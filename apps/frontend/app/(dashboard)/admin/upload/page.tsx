@@ -35,7 +35,7 @@ const taskStatuses: Array<TaskStatus | "All"> = [
   "Approved",
   "Rejected",
 ];
-const roleOptions: Role[] = ["ANNOTATOR", "REVIEWER", "ADMIN"];
+const roleOptions: Role[] = ["ANNOTATOR", "REVIEWER", "CANDIDATE", "ADMIN"];
 
 function inferTranscriptMaps(columns: string[]): TranscriptMapDraft[] {
   return columns

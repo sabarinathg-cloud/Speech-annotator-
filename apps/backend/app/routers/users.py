@@ -82,6 +82,19 @@ def update_user(
         raise _http_error(exc) from exc
 
 
+@router.delete("/{user_id}", response_model=UserAdminResponse)
+def delete_user(
+    user_id: str,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    service = UserService(db)
+    try:
+        return service.deactivate_user(user_id=user_id, actor_user_id=current_user.id)
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
 @router.post("/{user_id}/reset-password", response_model=UserAdminResponse)
 def reset_user_password(
     user_id: str,

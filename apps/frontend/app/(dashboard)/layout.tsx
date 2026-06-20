@@ -17,8 +17,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const router = useRouter();
   const pathname = usePathname();
   const isAdminRoute = pathname.startsWith("/admin");
+  const isCandidateRoute = pathname.startsWith("/hiring");
   const shouldRedirectFromAdminRoute = Boolean(
     !isLoading && accessToken && user && user.role !== "ADMIN" && isAdminRoute
+  );
+  const shouldRedirectCandidateToHiring = Boolean(
+    !isLoading && accessToken && user?.role === "CANDIDATE" && !isCandidateRoute
+  );
+  const shouldRedirectNonCandidateFromHiring = Boolean(
+    !isLoading && accessToken && user && user.role !== "CANDIDATE" && isCandidateRoute
   );
 
   useEffect(() => {
@@ -33,6 +40,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   }, [router, shouldRedirectFromAdminRoute]);
 
+  useEffect(() => {
+    if (shouldRedirectCandidateToHiring) {
+      router.replace("/hiring");
+    }
+  }, [router, shouldRedirectCandidateToHiring]);
+
+  useEffect(() => {
+    if (shouldRedirectNonCandidateFromHiring) {
+      router.replace("/tasks");
+    }
+  }, [router, shouldRedirectNonCandidateFromHiring]);
+
   if (isLoading || !accessToken) {
     return (
       <main className="oa-page flex min-h-screen items-center justify-center px-4">
@@ -41,24 +60,28 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     );
   }
 
-  if (shouldRedirectFromAdminRoute) {
+  if (shouldRedirectFromAdminRoute || shouldRedirectCandidateToHiring || shouldRedirectNonCandidateFromHiring) {
     return (
       <main className="oa-page flex min-h-screen items-center justify-center px-4">
-        <div className="oa-card px-5 py-4 text-sm text-[#5f5b79]">Opening assigned work...</div>
+        <div className="oa-card px-5 py-4 text-sm text-[#5f5b79]">Opening workspace...</div>
       </main>
     );
   }
 
-  const links = [
-    { href: "/tasks", label: "Tasks" },
-    ...(user?.role === "ADMIN"
-      ? [
-          { href: "/admin/upload", label: "Admin Upload" },
-          { href: "/admin/metrics", label: "Metrics" },
-          { href: "/admin/security", label: "Security" },
-        ]
-      : [])
-  ];
+  const links =
+    user?.role === "CANDIDATE"
+      ? [{ href: "/hiring", label: "Hiring Test" }]
+      : [
+          { href: "/tasks", label: "Tasks" },
+          ...(user?.role === "ADMIN"
+            ? [
+                { href: "/admin/hiring", label: "Hiring" },
+                { href: "/admin/upload", label: "Admin Upload" },
+                { href: "/admin/metrics", label: "Metrics" },
+                { href: "/admin/security", label: "Security" },
+              ]
+            : [])
+        ];
   const requiresConfidentialityAck = Boolean(user && user.confidentiality_acknowledged_for_session !== true);
 
   return (
@@ -128,7 +151,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <h2 className="oa-title mt-1 text-xl font-semibold">Confidentiality acknowledgement</h2>
             <p className="mt-2 text-sm leading-6 text-[#5f5b79]">
               This workspace contains sensitive call data. Access is for assigned annotation work only.
-              Do not copy, download, share, photograph, or discuss customer data outside approved workflows.
+              Do not copy, share, photograph, or discuss customer data outside approved workflows.
+              Candidates may download only the hiring audio assigned to them.
             </p>
             <label className="mt-4 flex items-start gap-3 rounded-xl border border-[#e6dcf2] bg-[#fbf8ff] p-3 text-sm text-[#332d53]">
               <input
