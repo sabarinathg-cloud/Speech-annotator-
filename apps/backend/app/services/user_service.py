@@ -81,7 +81,27 @@ class UserService:
             user.password_hash = get_password_hash(password)
         if is_active is not None:
             user.is_active = is_active
+            if not is_active:
+                user.active_session_id = None
+                user.confidentiality_acknowledged_session_id = None
 
+        self.db.commit()
+        self.db.refresh(user)
+        return self._build_admin_response(user)
+
+    def deactivate_user(self, *, user_id: str, actor_user_id: str) -> UserAdminResponse:
+        user = self.user_repo.get_by_id(user_id)
+        if not user:
+            raise ServiceError("User not found", status_code=404)
+        self._guard_self_admin_update(
+            user_id=user_id,
+            actor_user_id=actor_user_id,
+            role=None,
+            is_active=False,
+        )
+        user.is_active = False
+        user.active_session_id = None
+        user.confidentiality_acknowledged_session_id = None
         self.db.commit()
         self.db.refresh(user)
         return self._build_admin_response(user)

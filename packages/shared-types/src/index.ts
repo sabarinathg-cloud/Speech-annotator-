@@ -1,4 +1,4 @@
-export type Role = "ADMIN" | "ANNOTATOR" | "REVIEWER";
+export type Role = "ADMIN" | "ANNOTATOR" | "REVIEWER" | "CANDIDATE";
 
 export type UserStatusFilter = "all" | "active" | "inactive";
 export type AssignmentLoad = "none" | "light" | "normal" | "heavy";
@@ -496,4 +496,226 @@ export interface AdminMetricsResponse {
   worst_tasks: WorstTaskMetric[];
   worst_masking_tasks: MaskingTaskMetric[];
   masking_interval_drilldowns: MaskingIntervalMetric[];
+}
+
+export type HiringAssessmentStatus = "DRAFT" | "ACTIVE" | "CLOSED";
+export type HiringAssignmentStatus = "ASSIGNED" | "IN_PROGRESS" | "SUBMITTED" | "EVALUATED";
+export type HiringSubmissionValidationStatus = "PENDING" | "VALIDATED" | "REJECTED";
+export type HiringDecision = "PENDING" | "PASS" | "FAIL" | "HOLD";
+export type HiringMetadataFieldType = "text" | "number" | "date" | "select";
+
+export interface HiringMetadataField {
+  key: string;
+  label: string;
+  type: HiringMetadataFieldType;
+  required: boolean;
+  options: string[];
+  sort_order: number;
+}
+
+export interface HiringRubricField {
+  key: string;
+  label: string;
+  max_score: number;
+  required: boolean;
+  sort_order: number;
+}
+
+export interface HiringPIIEntry {
+  type: string;
+  value: string;
+  timestamp: string | null;
+  notes: string | null;
+}
+
+export interface HiringAssessmentSummary {
+  id: string;
+  title: string;
+  instructions: string;
+  status: HiringAssessmentStatus;
+  due_date: string | null;
+  due_at: string | null;
+  time_limit_minutes: number | null;
+  blind_review_enabled: boolean;
+  metadata_schema: HiringMetadataField[];
+  pii_label_keys: string[];
+  rubric_schema: HiringRubricField[];
+  item_count: number;
+  assignment_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HiringAssessmentItem {
+  id: string;
+  external_id: string;
+  assignment_id: string | null;
+  original_filename: string;
+  original_source: string;
+  sort_order: number;
+  created_at: string;
+  reference_transcript: string | null;
+  reference_pii_annotations: PIIAnnotation[];
+  reference_pii_entries: HiringPIIEntry[];
+  reference_metadata: Record<string, unknown>;
+}
+
+export interface HiringAssessmentDetail extends HiringAssessmentSummary {
+  items: HiringAssessmentItem[];
+}
+
+export interface HiringAssessmentListResponse {
+  items: HiringAssessmentSummary[];
+}
+
+export interface HiringAssignmentSummary {
+  id: string;
+  assessment_id: string;
+  assessment_title: string;
+  candidate_id: string;
+  candidate_name: string;
+  candidate_email: string;
+  candidate_label: string;
+  candidate_identity_hidden: boolean;
+  status: HiringAssignmentStatus;
+  decision: HiringDecision;
+  access_revoked: boolean;
+  due_date: string | null;
+  due_at: string | null;
+  item_count: number;
+  submitted_count: number;
+  validated_count: number;
+  rejected_count: number;
+  assigned_at: string;
+  started_at: string | null;
+  submitted_at: string | null;
+  evaluated_at: string | null;
+  time_limit_expires_at: string | null;
+  submission_deadline_at: string | null;
+  seconds_remaining: number | null;
+  last_saved_at: string | null;
+  invite_url: string | null;
+  invite_expires_at: string | null;
+  total_score: number | null;
+}
+
+export interface HiringAssignmentListResponse {
+  items: HiringAssignmentSummary[];
+}
+
+export interface HiringReferenceMetrics {
+  word_error_rate: number | null;
+  edit_distance: number | null;
+  reference_word_count: number;
+  transcript_accuracy_percent: number | null;
+  suggested_transcript_score: number | null;
+  suggested_transcript_score_max: number | null;
+  transcript_missing_words: string[];
+  transcript_extra_words: string[];
+  transcript_substitutions: { expected: string; actual: string }[];
+  pii_expected_count: number;
+  pii_candidate_count: number;
+  pii_matched_count: number;
+  pii_missing: HiringPIIEntry[];
+  pii_extra: HiringPIIEntry[];
+  pii_type_mismatches: { expected: HiringPIIEntry; actual: HiringPIIEntry }[];
+}
+
+export interface HiringSubmission {
+  id: string;
+  item_id: string;
+  version: number;
+  final_transcript: string;
+  pii_annotations: PIIAnnotation[];
+  pii_text: string;
+  pii_entries: HiringPIIEntry[];
+  metadata_values: Record<string, unknown>;
+  notes: string;
+  pii_reviewed: boolean;
+  validation_status: HiringSubmissionValidationStatus;
+  validation_feedback: string | null;
+  last_saved_at: string | null;
+  submitted_at: string | null;
+  reference_metrics: HiringReferenceMetrics | null;
+}
+
+export interface HiringCandidateAssignmentDetail {
+  id: string;
+  assessment: HiringAssessmentSummary;
+  status: HiringAssignmentStatus;
+  decision: HiringDecision;
+  access_revoked: boolean;
+  started_at: string | null;
+  submitted_at: string | null;
+  time_limit_expires_at: string | null;
+  submission_deadline_at: string | null;
+  seconds_remaining: number | null;
+  items: HiringAssessmentItem[];
+  submissions: HiringSubmission[];
+}
+
+export interface HiringAdminAssignmentReview extends HiringCandidateAssignmentDetail {
+  candidate_id: string;
+  candidate_name: string;
+  candidate_email: string;
+  transcript_score: number | null;
+  pii_score: number | null;
+  metadata_score: number | null;
+  total_score: number | null;
+  rubric_scores: Record<string, number | null>;
+  evaluator_notes: string | null;
+}
+
+export interface HiringAssignmentInviteResponse {
+  assignment_id: string;
+  candidate_email: string;
+  candidate_name: string;
+  temporary_password: string;
+  invite_url: string;
+  invite_expires_at: string;
+}
+
+export interface HiringAuditEvent {
+  id: string;
+  actor_email: string | null;
+  actor_role: string | null;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface HiringAuditEventListResponse {
+  items: HiringAuditEvent[];
+}
+
+export interface HiringRankingItem {
+  rank: number;
+  assignment_id: string;
+  candidate_id: string;
+  candidate_name: string;
+  candidate_email: string;
+  candidate_label: string;
+  candidate_identity_hidden: boolean;
+  status: HiringAssignmentStatus;
+  decision: HiringDecision;
+  submitted_at: string | null;
+  evaluated_at: string | null;
+  total_score: number | null;
+  progress_percent: number;
+  validated_count: number;
+  rejected_count: number;
+  item_count: number;
+  time_spent_seconds: number | null;
+}
+
+export interface HiringRankingResponse {
+  items: HiringRankingItem[];
+}
+
+export interface HiringImportResponse {
+  imported_items: number;
+  skipped_items: number;
+  errors: string[];
 }

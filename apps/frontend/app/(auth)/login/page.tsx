@@ -6,26 +6,35 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
 
 export default function LoginPage() {
-  const { login, accessToken, isLoading } = useAuth();
+  const { login, accessToken, isLoading, user } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [nextPath, setNextPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const inviteEmail = params.get("email");
+    const next = params.get("next");
+    if (inviteEmail) setEmail(inviteEmail);
+    if (next?.startsWith("/")) setNextPath(next);
+  }, []);
 
   useEffect(() => {
     if (!isLoading && accessToken) {
-      router.replace("/tasks");
+      router.replace(user?.role === "CANDIDATE" ? nextPath ?? "/hiring" : "/tasks");
     }
-  }, [accessToken, isLoading, router]);
+  }, [accessToken, isLoading, nextPath, router, user?.role]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
-    setSubmitting(true);
+      setSubmitting(true);
     try {
-      await login(email.trim(), password);
-      router.replace("/tasks");
+      const loggedIn = await login(email.trim(), password);
+      router.replace(loggedIn.role === "CANDIDATE" ? nextPath ?? "/hiring" : "/tasks");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {

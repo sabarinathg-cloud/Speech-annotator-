@@ -17,7 +17,7 @@ interface AuthContextValue {
   user: User | null;
   accessToken: string | null;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<User>;
   acknowledgeConfidentiality: () => Promise<void>;
   logout: () => void;
 }
@@ -123,6 +123,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         writeSession(data.access_token, data.refresh_token, data.user);
         setUser(data.user);
         setAccessToken(data.access_token);
+        return data.user;
       },
       acknowledgeConfidentiality: async () => {
         if (!accessToken) return;
