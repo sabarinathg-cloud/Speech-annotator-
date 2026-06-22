@@ -65,6 +65,7 @@ from app.utils.excel import load_excel_as_dataframe, normalize_cell
 
 settings = get_settings()
 SUPPORTED_HIRING_AUDIO_EXTENSIONS = {".wav"}
+HIRING_FOLDER_IMPORT_COMMIT_BATCH_SIZE = 50
 
 
 def _now() -> datetime:
@@ -233,22 +234,18 @@ class HiringService:
 
     def import_folder(self, *, assessment_id: str, folder_path: str, recursive: bool) -> HiringImportResponse:
         assessment = self._get_assessment_or_404(assessment_id)
-        imported = self._import_folder_items(assessment=assessment, folder_path=folder_path, recursive=recursive)
-        self.db.commit()
-        return HiringImportResponse(imported_items=imported)
+        return self._import_folder_items(assessment=assessment, folder_path=folder_path, recursive=recursive)
 
     def import_assignment_folder(self, *, assignment_id: str, folder_path: str, recursive: bool) -> HiringImportResponse:
         assignment = self._get_assignment_or_404(assignment_id)
         if assignment.status in {HiringAssignmentStatusEnum.SUBMITTED, HiringAssignmentStatusEnum.EVALUATED}:
             raise ServiceError("Submitted hiring assignments cannot receive new audio", status_code=409)
-        imported = self._import_folder_items(
+        return self._import_folder_items(
             assessment=assignment.assessment,
             folder_path=folder_path,
             recursive=recursive,
             assignment=assignment,
         )
-        self.db.commit()
-        return HiringImportResponse(imported_items=imported)
 
     def _import_folder_items(
         self,
@@ -257,13 +254,19 @@ class HiringService:
         folder_path: str,
         recursive: bool,
         assignment: HiringAssignment | None = None,
-    ) -> int:
+    ) -> HiringImportResponse:
         folder = self._resolve_allowed_import_path(folder_path)
         if not folder.is_dir():
             raise ServiceError("Hiring audio folder not found", status_code=404)
 
-        iterator = folder.rglob("*") if recursive else folder.iterdir()
-        files = [path for path in iterator if path.is_file() and not path.name.startswith(".")]
+        try:
+            iterator = folder.rglob("*") if recursive else folder.iterdir()
+            files = [path for path in iterator if path.is_file() and not path.name.startswith(".")]
+        except OSError as exc:
+            raise ServiceError(
+                "Unable to read hiring audio folder. Check backend filesystem permissions.",
+                status_code=403,
+            ) from exc
         unsupported = [str(path) for path in files if path.suffix.lower() not in SUPPORTED_HIRING_AUDIO_EXTENSIONS]
         if unsupported:
             raise ServiceError(
@@ -276,18 +279,28 @@ class HiringService:
 
         imported = 0
         for path in sorted(files, key=lambda item: str(item)):
-            resolved = self._resolve_allowed_import_path(str(path))
-            with resolved.open("rb") as source_file:
-                item = self._create_item_from_fileobj(
-                    assessment=assessment,
-                    source=str(resolved),
-                    filename=resolved.name,
-                    fileobj=source_file,
-                    assignment=assignment,
-                )
-                self._attach_imported_item_to_assignments(assessment=assessment, item=item, assignment=assignment)
+            try:
+                resolved = self._resolve_allowed_import_path(str(path))
+                with resolved.open("rb") as source_file:
+                    item = self._create_item_from_fileobj(
+                        assessment=assessment,
+                        source=str(resolved),
+                        filename=resolved.name,
+                        fileobj=source_file,
+                        assignment=assignment,
+                    )
+                    self._attach_imported_item_to_assignments(assessment=assessment, item=item, assignment=assignment)
+            except OSError as exc:
+                self.db.rollback()
+                raise ServiceError(
+                    f"Unable to read WAV file {path.name}. Check backend filesystem permissions.",
+                    status_code=403,
+                ) from exc
             imported += 1
-        return imported
+            if imported % HIRING_FOLDER_IMPORT_COMMIT_BATCH_SIZE == 0:
+                self.db.commit()
+        self.db.commit()
+        return HiringImportResponse(imported_items=imported)
 
     def import_manifest(self, *, assessment_id: str, file: UploadFile) -> HiringImportResponse:
         assessment = self._get_assessment_or_404(assessment_id)
