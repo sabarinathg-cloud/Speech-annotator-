@@ -20,6 +20,9 @@ const {
 
 const now = "2026-06-22T12:00:00.000Z";
 
+type CandidateAssignmentFixture = ReturnType<typeof buildAssignment>;
+let assignmentFixture: CandidateAssignmentFixture;
+
 function buildAssignment(overrides: Record<string, unknown> = {}) {
   const submission = {
     id: "submission-1",
@@ -86,6 +89,30 @@ function buildAssignment(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function buildTwoItemAssignment() {
+  const assignment = buildAssignment();
+  assignment.assessment.item_count = 2;
+  assignment.items = [
+    assignment.items[0],
+    {
+      ...assignment.items[0],
+      id: "item-2",
+      external_id: "audio-2",
+      original_filename: "next-sample.wav",
+      sort_order: 1,
+    },
+  ];
+  assignment.submissions = [
+    assignment.submissions[0],
+    {
+      ...assignment.submissions[0],
+      id: "submission-2",
+      item_id: "item-2",
+    },
+  ];
+  return assignment;
+}
+
 vi.mock("next/navigation", () => ({
   useParams: () => ({ assignmentId: "assignment-1" }),
 }));
@@ -128,7 +155,8 @@ vi.mock("@/lib/api", () => ({
 describe("CandidateHiringAssignmentPage", () => {
   beforeEach(() => {
     vi.useRealTimers();
-    fetchCandidateHiringAssignment.mockResolvedValue(buildAssignment());
+    assignmentFixture = buildAssignment();
+    fetchCandidateHiringAssignment.mockImplementation(() => Promise.resolve(assignmentFixture));
     downloadCandidateHiringAudio.mockResolvedValue({
       blob: new Blob(["audio"], { type: "audio/wav" }),
       filename: "sample.wav",
@@ -139,14 +167,20 @@ describe("CandidateHiringAssignmentPage", () => {
     });
     submitCandidateHiringAssignment.mockResolvedValue(buildAssignment({ status: "SUBMITTED" }));
     patchCandidateHiringSubmission.mockImplementation((_token, _submissionId, payload) => {
-      const assignment = buildAssignment();
-      assignment.submissions[0] = {
-        ...assignment.submissions[0],
-        ...payload,
-        version: 2,
-        last_saved_at: now,
+      assignmentFixture = {
+        ...assignmentFixture,
+        submissions: assignmentFixture.submissions.map((submission) =>
+          submission.id === _submissionId
+            ? {
+                ...submission,
+                ...payload,
+                version: submission.version + 1,
+                last_saved_at: now,
+              }
+            : submission
+        ),
       };
-      return Promise.resolve(assignment);
+      return Promise.resolve(assignmentFixture);
     });
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
@@ -204,5 +238,30 @@ describe("CandidateHiringAssignmentPage", () => {
 
     expect(screen.getByText("PII review required")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Mark PII reviewed" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("moves to the next audio file after a manual save", async () => {
+    assignmentFixture = buildTwoItemAssignment();
+
+    render(<CandidateHiringAssignmentPage />);
+
+    expect((await screen.findAllByText("sample.wav")).length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByLabelText("Final Transcript"), {
+      target: { value: "first file transcript" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save & Next" }));
+      await Promise.resolve();
+    });
+
+    expect(patchCandidateHiringSubmission).toHaveBeenCalledWith(
+      "test-token",
+      "submission-1",
+      expect.objectContaining({
+        final_transcript: "first file transcript",
+      })
+    );
+    expect((await screen.findAllByText("next-sample.wav")).length).toBeGreaterThan(0);
   });
 });

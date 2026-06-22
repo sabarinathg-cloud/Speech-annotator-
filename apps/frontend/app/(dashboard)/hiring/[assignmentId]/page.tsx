@@ -184,6 +184,13 @@ export default function CandidateHiringAssignmentPage() {
     [detail?.items, searchNeedle]
   );
   const visibleQueueItems = filteredItems.slice(0, 300);
+  const nextItemAfterSelected = useMemo(() => {
+    if (!detail || !selectedItemId) return null;
+    const currentFilteredIndex = filteredItems.findIndex((item) => item.id === selectedItemId);
+    const queue = currentFilteredIndex >= 0 ? filteredItems : detail.items;
+    const currentIndex = currentFilteredIndex >= 0 ? currentFilteredIndex : queue.findIndex((item) => item.id === selectedItemId);
+    return currentIndex >= 0 ? queue[currentIndex + 1] ?? null : null;
+  }, [detail, filteredItems, selectedItemId]);
   function readinessForSubmission(submission: HiringSubmission) {
     return submissionReady(
       submission,
@@ -419,6 +426,14 @@ export default function CandidateHiringAssignmentPage() {
       if (!saved) return;
     }
     setSelectedItemId(itemId);
+  }
+
+  async function saveAndAdvance() {
+    const saved = await saveSubmission(true);
+    if (!saved) return;
+    if (nextItemAfterSelected) {
+      setSelectedItemId(nextItemAfterSelected.id);
+    }
   }
 
   useEffect(() => {
@@ -854,8 +869,8 @@ export default function CandidateHiringAssignmentPage() {
               <span className={`text-xs font-semibold ${saveState === "failed" ? "text-[#a13a3a]" : saveState === "saved" ? "text-[#236140]" : "text-[#5f5b79]"}`}>
                 {autoSaveText}
               </span>
-              <button type="button" onClick={() => void saveSubmission(true)} disabled={busy || editingDisabled || saveState === "saving"} className="oa-btn-primary px-5 py-2 text-sm font-semibold disabled:opacity-50">
-                Save now
+              <button type="button" onClick={() => void saveAndAdvance()} disabled={busy || editingDisabled || saveState === "saving"} className="oa-btn-primary px-5 py-2 text-sm font-semibold disabled:opacity-50">
+                {nextItemAfterSelected ? "Save & Next" : "Save now"}
               </button>
             </div>
           </div>
