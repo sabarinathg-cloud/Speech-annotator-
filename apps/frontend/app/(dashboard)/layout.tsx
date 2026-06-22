@@ -83,10 +83,28 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             : [])
         ];
   const requiresConfidentialityAck = Boolean(user && user.confidentiality_acknowledged_for_session !== true);
+  const strictSecurityGuardEnabled = Boolean(user && user.role !== "ADMIN" && user.role !== "CANDIDATE");
+  const confidentialityBody =
+    user?.role === "CANDIDATE"
+      ? "This hiring workspace contains sensitive assessment audio. You may download your assigned files, prepare your answers, and submit them here. Do not share the audio, transcripts, or assessment content outside the approved hiring workflow."
+      : user?.role === "ADMIN"
+        ? "This workspace contains sensitive call and hiring assessment data. Admin access is for approved setup, review, evaluation, user management, and audit workflows only."
+        : "This workspace contains sensitive call data. Access is for assigned annotation work only. Do not copy, share, photograph, or discuss customer data outside approved workflows.";
+  const confidentialityConfirmation =
+    user?.role === "CANDIDATE"
+      ? "I understand and will use the assigned hiring audio only for this assessment."
+      : user?.role === "ADMIN"
+        ? "I understand and will handle all workspace data only through approved admin workflows."
+        : "I understand and will handle all annotation data only inside the approved workflow.";
 
   return (
-    <div className="oa-page">
-      <SecurityActivityGuard accessToken={accessToken} />
+    <div className={clsx("oa-page", strictSecurityGuardEnabled && "strict-confidential-workspace")}>
+      <SecurityActivityGuard accessToken={accessToken} enabled={strictSecurityGuardEnabled} />
+      {strictSecurityGuardEnabled ? (
+        <div className="strict-print-warning" role="note">
+          Printing is disabled for this confidential workspace.
+        </div>
+      ) : null}
       <div
         aria-label="Confidential workspace watermark"
         className="pointer-events-none fixed inset-x-0 bottom-0 z-20 border-t border-[#d9d2ef] bg-white/86 px-4 py-1 text-center text-[11px] font-semibold uppercase tracking-[0.14em] text-[#4f476e] shadow-[0_-10px_28px_-24px_rgba(15,23,42,0.7)]"
@@ -149,11 +167,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           >
             <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#7a7395]">Sensitive Data</p>
             <h2 className="oa-title mt-1 text-xl font-semibold">Confidentiality acknowledgement</h2>
-            <p className="mt-2 text-sm leading-6 text-[#5f5b79]">
-              This workspace contains sensitive call data. Access is for assigned annotation work only.
-              Do not copy, share, photograph, or discuss customer data outside approved workflows.
-              Candidates may download only the hiring audio assigned to them.
-            </p>
+            <p className="mt-2 text-sm leading-6 text-[#5f5b79]">{confidentialityBody}</p>
             <label className="mt-4 flex items-start gap-3 rounded-xl border border-[#e6dcf2] bg-[#fbf8ff] p-3 text-sm text-[#332d53]">
               <input
                 type="checkbox"
@@ -161,7 +175,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 onChange={(event) => setAckChecked(event.target.checked)}
                 className="mt-1 h-4 w-4 rounded border-[#cfc3e5] text-[#241f43]"
               />
-              <span>I understand and will handle all annotation data only inside the approved workflow.</span>
+              <span>{confidentialityConfirmation}</span>
             </label>
             {ackError ? (
               <p className="mt-3 rounded-lg border border-[#f0c8c8] bg-[#fff3f3] px-3 py-2 text-sm text-[#a13a3a]">

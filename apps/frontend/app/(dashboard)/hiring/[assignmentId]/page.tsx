@@ -461,7 +461,7 @@ export default function CandidateHiringAssignmentPage() {
               {audioBusy ? (
                 <div className="rounded-xl border border-[#e5e7eb] bg-[#f8fafc] px-3 py-4 text-sm text-[#5f5b79]">Loading audio...</div>
               ) : (
-                <AudioWaveformPlayer audioUrl={audioUrl} />
+                <AudioWaveformPlayer audioUrl={audioUrl} allowDownloadControls />
               )}
             </div>
 

@@ -47,14 +47,31 @@ function securityActionForKey(event: KeyboardEvent): ClientSecurityAction | null
   return null;
 }
 
-export function SecurityActivityGuard({ accessToken }: { accessToken: string | null }) {
+interface SecurityActivityGuardProps {
+  accessToken: string | null;
+  enabled?: boolean;
+}
+
+export function SecurityActivityGuard({ accessToken, enabled = true }: SecurityActivityGuardProps) {
   const [warning, setWarning] = useState<string | null>(null);
   const [privacyShieldVisible, setPrivacyShieldVisible] = useState(false);
   const clearWarningTimeout = useRef<number | null>(null);
   const clearPrivacyShieldTimeout = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!accessToken) return;
+    if (!accessToken || !enabled) {
+      setWarning(null);
+      setPrivacyShieldVisible(false);
+      if (clearWarningTimeout.current !== null) {
+        window.clearTimeout(clearWarningTimeout.current);
+        clearWarningTimeout.current = null;
+      }
+      if (clearPrivacyShieldTimeout.current !== null) {
+        window.clearTimeout(clearPrivacyShieldTimeout.current);
+        clearPrivacyShieldTimeout.current = null;
+      }
+      return;
+    }
     const currentAccessToken = accessToken;
 
     function activatePrivacyShield(durationMs: number | null = 6000) {
@@ -154,7 +171,7 @@ export function SecurityActivityGuard({ accessToken }: { accessToken: string | n
         window.clearTimeout(clearPrivacyShieldTimeout.current);
       }
     };
-  }, [accessToken]);
+  }, [accessToken, enabled]);
 
   if (!warning && !privacyShieldVisible) return null;
 

@@ -202,15 +202,18 @@ body {
   animation: slideUp 520ms ease-out both;
 }
 
+.strict-print-warning {
+  display: none;
+}
+
 @media print {
-  body * {
+  .strict-confidential-workspace * {
     visibility: hidden !important;
   }
 
-  body::before {
-    content: "Printing is disabled for this confidential workspace.";
+  .strict-confidential-workspace .strict-print-warning {
     visibility: visible !important;
-    display: block;
+    display: block !important;
     margin: 72px auto;
     max-width: 520px;
     border: 1px solid #111827;

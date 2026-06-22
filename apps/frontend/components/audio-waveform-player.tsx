@@ -104,6 +104,7 @@ interface AudioWaveformPlayerProps {
   highlightIntervals?: AudioMaskInterval[];
   referenceIntervals?: AudioMaskInterval[];
   editableIntervals?: boolean;
+  allowDownloadControls?: boolean;
   onIntervalsChange?: (intervals: AudioMaskInterval[]) => void;
 }
 
@@ -112,6 +113,7 @@ export function AudioWaveformPlayer({
   highlightIntervals = [],
   referenceIntervals = [],
   editableIntervals = false,
+  allowDownloadControls = false,
   onIntervalsChange,
 }: AudioWaveformPlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -531,10 +533,10 @@ export function AudioWaveformPlayer({
         <audio
           ref={audioRef}
           controls
-          controlsList="nodownload"
+          controlsList={allowDownloadControls ? undefined : "nodownload"}
           preload="metadata"
           className="mt-3 w-full"
-          onContextMenu={(event) => event.preventDefault()}
+          onContextMenu={allowDownloadControls ? undefined : (event) => event.preventDefault()}
           onLoadedMetadata={(event) => {
             event.currentTarget.playbackRate = playbackRate;
             setDuration(event.currentTarget.duration || 0);

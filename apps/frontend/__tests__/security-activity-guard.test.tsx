@@ -144,4 +144,17 @@ describe("SecurityActivityGuard", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(logClientSecurityEventRequest).not.toHaveBeenCalled();
   });
+
+  it("does not block workspace actions when disabled", () => {
+    render(<SecurityActivityGuard accessToken="token" enabled={false} />);
+
+    expect(fireEvent.contextMenu(document)).toBe(true);
+    expect(fireEvent.copy(document)).toBe(true);
+    fireEvent.keyDown(document, { key: "PrintScreen" });
+    window.dispatchEvent(new Event("blur"));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Screen privacy shield")).not.toBeInTheDocument();
+    expect(logClientSecurityEventRequest).not.toHaveBeenCalled();
+  });
 });

@@ -46,6 +46,14 @@ describe("AudioWaveformPlayer", () => {
     expect(fireEvent.contextMenu(audio)).toBe(false);
   });
 
+  it("allows browser download controls when requested", () => {
+    const { container } = render(<AudioWaveformPlayer audioUrl="/audio/test.mp3" allowDownloadControls />);
+    const audio = container.querySelector("audio") as HTMLAudioElement;
+
+    expect(audio).not.toHaveAttribute("controlsList");
+    expect(fireEvent.contextMenu(audio)).toBe(true);
+  });
+
   it("zooms the waveform timeline in and out", () => {
     render(<AudioWaveformPlayer audioUrl="/audio/test.mp3" />);
     const seekArea = screen.getByRole("button", { name: "Waveform seek area" });
