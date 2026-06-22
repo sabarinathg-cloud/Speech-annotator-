@@ -1,11 +1,13 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.core.security import get_password_hash
 from app.core.config import get_settings
 from app.models.enums import RoleEnum
 from app.models.hiring import HiringAssessment, HiringAssessmentItem, HiringAssignment, HiringSubmission
 from app.models.user import User
+from app.services import hiring_service as hiring_service_module
 
 
 def _create_assessment(client, auth_headers):
@@ -134,6 +136,60 @@ def test_folder_import_handles_more_than_one_thousand_wavs(client, auth_headers,
         assert len(retry_response.json()["errors"]) == 25
     finally:
         settings.hiring_audio_import_roots = original_roots
+
+
+def test_folder_import_rejects_when_upload_disk_space_is_low(client, auth_headers, tmp_path, monkeypatch):
+    settings = get_settings()
+    original_roots = settings.hiring_audio_import_roots
+    original_min_free_bytes = settings.hiring_audio_import_min_free_bytes
+    settings.hiring_audio_import_roots = str(tmp_path)
+    settings.hiring_audio_import_min_free_bytes = 1024
+    monkeypatch.setattr(
+        hiring_service_module.shutil,
+        "disk_usage",
+        lambda _: SimpleNamespace(total=2048, used=2038, free=10),
+    )
+    try:
+        assessment = _create_assessment(client, auth_headers)
+        audio_folder = tmp_path / "audio"
+        audio_folder.mkdir()
+        _write_wav(audio_folder / "sample.wav")
+
+        import_response = client.post(
+            f"/api/v1/hiring/assessments/{assessment['id']}/items/folder",
+            headers=auth_headers["admin"],
+            json={"folder_path": str(audio_folder), "recursive": False},
+        )
+        assert import_response.status_code == 507
+        assert "Not enough disk space" in import_response.json()["detail"]["message"]
+    finally:
+        settings.hiring_audio_import_roots = original_roots
+        settings.hiring_audio_import_min_free_bytes = original_min_free_bytes
+
+
+def test_folder_import_rejects_when_file_count_limit_is_exceeded(client, auth_headers, tmp_path):
+    settings = get_settings()
+    original_roots = settings.hiring_audio_import_roots
+    original_max_files = settings.hiring_audio_import_max_files
+    settings.hiring_audio_import_roots = str(tmp_path)
+    settings.hiring_audio_import_max_files = 1
+    try:
+        assessment = _create_assessment(client, auth_headers)
+        audio_folder = tmp_path / "audio"
+        audio_folder.mkdir()
+        _write_wav(audio_folder / "one.wav")
+        _write_wav(audio_folder / "two.wav")
+
+        import_response = client.post(
+            f"/api/v1/hiring/assessments/{assessment['id']}/items/folder",
+            headers=auth_headers["admin"],
+            json={"folder_path": str(audio_folder), "recursive": False},
+        )
+        assert import_response.status_code == 422
+        assert "Import at most 1 files at a time" in import_response.json()["detail"]["message"]
+    finally:
+        settings.hiring_audio_import_roots = original_roots
+        settings.hiring_audio_import_max_files = original_max_files
 
 
 def test_admin_can_delete_hiring_assessment_and_managed_audio(client, auth_headers, seed_users, tmp_path, db_session):

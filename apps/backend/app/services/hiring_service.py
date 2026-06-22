@@ -321,6 +321,8 @@ class HiringService:
         imported = 0
         existing_sources = self._existing_folder_import_sources(assessment, assignment=assignment)
         next_sort_order = self._next_item_sort_order(assessment, assignment=assignment)
+        import_candidates: list[tuple[Path, Path, str]] = []
+        total_import_bytes = 0
         for path in sorted(files, key=lambda item: str(item)):
             try:
                 resolved = self._resolve_allowed_import_path(str(path))
@@ -329,6 +331,19 @@ class HiringService:
                     skipped += 1
                     self._append_import_message(errors, f"Skipped duplicate WAV: {path.name}")
                     continue
+                total_import_bytes += resolved.stat().st_size
+                import_candidates.append((path, resolved, resolved_source))
+            except OSError as exc:
+                raise ServiceError(
+                    f"Unable to read WAV file {path.name}. Check backend filesystem permissions.",
+                    status_code=403,
+                ) from exc
+        self._ensure_import_can_be_stored(
+            file_count=len(import_candidates),
+            total_bytes=total_import_bytes,
+        )
+        for path, resolved, resolved_source in import_candidates:
+            try:
                 with resolved.open("rb") as source_file:
                     item = self._create_item_from_fileobj(
                         assessment=assessment,
@@ -1147,6 +1162,36 @@ class HiringService:
         if len(errors) < HIRING_FOLDER_IMPORT_MAX_MESSAGES:
             errors.append(message)
 
+    def _ensure_import_can_be_stored(self, *, file_count: int, total_bytes: int) -> None:
+        max_files = max(1, settings.hiring_audio_import_max_files)
+        if file_count > max_files:
+            raise ServiceError(
+                f"Import contains {file_count} WAV files. Import at most {max_files} files at a time.",
+                status_code=422,
+                extra={"file_count": file_count, "max_files": max_files},
+            )
+        if file_count == 0 or total_bytes <= 0:
+            return
+        upload_path = settings.upload_path
+        try:
+            disk_usage = shutil.disk_usage(upload_path)
+        except OSError as exc:
+            raise ServiceError("Unable to check upload disk space", status_code=507) from exc
+        reserve_bytes = max(0, settings.hiring_audio_import_min_free_bytes)
+        required_bytes = total_bytes + reserve_bytes
+        if disk_usage.free < required_bytes:
+            raise ServiceError(
+                "Not enough disk space to import this audio folder. Free space, reduce the import size, or lower the configured reserve.",
+                status_code=507,
+                extra={
+                    "free_bytes": disk_usage.free,
+                    "required_bytes": required_bytes,
+                    "import_bytes": total_bytes,
+                    "reserve_bytes": reserve_bytes,
+                    "file_count": file_count,
+                },
+            )
+
     def _assignment_items(self, assignment: HiringAssignment) -> list[HiringAssessmentItem]:
         items_by_id: dict[str, HiringAssessmentItem] = {}
         for submission in assignment.submissions or []:
@@ -1231,13 +1276,14 @@ class HiringService:
         return path
 
     def _import_zip_file(self, assessment: HiringAssessment, upload: UploadFile) -> int:
-        content = upload.file.read()
         imported = 0
         try:
-            archive = zipfile.ZipFile(BytesIO(content))
-        except zipfile.BadZipFile as exc:
+            upload.file.seek(0)
+            archive = zipfile.ZipFile(upload.file)
+        except (OSError, zipfile.BadZipFile) as exc:
             raise ServiceError("Uploaded ZIP file is not readable", status_code=422) from exc
         with archive:
+            wav_members = []
             for member in archive.infolist():
                 if member.is_dir():
                     continue
@@ -1248,6 +1294,12 @@ class HiringService:
                     continue
                 if path.suffix.lower() not in SUPPORTED_HIRING_AUDIO_EXTENSIONS:
                     raise ServiceError("ZIP file can only contain WAV files", status_code=422)
+                wav_members.append((member, path))
+            self._ensure_import_can_be_stored(
+                file_count=len(wav_members),
+                total_bytes=sum(member.file_size for member, _ in wav_members),
+            )
+            for member, path in wav_members:
                 with archive.open(member) as source_file:
                     self._create_item_from_fileobj(
                         assessment=assessment,
@@ -1327,10 +1379,17 @@ class HiringService:
             raise ServiceError("Only WAV files can be imported into hiring assessments", status_code=422)
         item_id = str(uuid.uuid4())
         destination_dir = settings.upload_path / "hiring" / "audio" / assessment.id
-        destination_dir.mkdir(parents=True, exist_ok=True)
         destination = destination_dir / f"{item_id}{Path(safe_filename).suffix.lower()}"
-        with destination.open("wb") as output:
-            shutil.copyfileobj(fileobj, output)
+        try:
+            destination_dir.mkdir(parents=True, exist_ok=True)
+            with destination.open("wb") as output:
+                shutil.copyfileobj(fileobj, output)
+        except OSError as exc:
+            destination.unlink(missing_ok=True)
+            raise ServiceError(
+                "Unable to store imported hiring audio. Check disk space and backend write permissions.",
+                status_code=507,
+            ) from exc
         item = HiringAssessmentItem(
             id=item_id,
             assessment_id=assessment.id,

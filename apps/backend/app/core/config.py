@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     pii_ml_detection_enabled: bool = Field(default=False, alias="PII_ML_DETECTION_ENABLED")
     pii_model_preload_enabled: bool = Field(default=False, alias="PII_MODEL_PRELOAD_ENABLED")
     hiring_audio_import_roots: str = Field(default="", alias="HIRING_AUDIO_IMPORT_ROOTS")
+    hiring_audio_import_max_files: int = Field(default=5000, alias="HIRING_AUDIO_IMPORT_MAX_FILES")
+    hiring_audio_import_min_free_bytes: int = Field(
+        default=1_073_741_824,
+        alias="HIRING_AUDIO_IMPORT_MIN_FREE_BYTES",
+    )
 
     @field_validator("database_url", mode="before")
     @classmethod
