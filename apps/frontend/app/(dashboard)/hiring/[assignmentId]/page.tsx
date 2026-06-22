@@ -2,7 +2,7 @@
 
 import type { HiringAssessmentItem, HiringMetadataField, HiringPIIEntry, HiringSubmission } from "@outcomes/shared-types";
 import { useParams } from "next/navigation";
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { useAuth } from "@/components/auth-provider";
@@ -72,6 +72,19 @@ function cleanPIIEntries(entries: HiringPIIEntry[]) {
     .filter((entry) => entry.type && entry.value);
 }
 
+interface CandidateSubmissionDraft {
+  final_transcript: string;
+  pii_text: string;
+  pii_entries: HiringPIIEntry[];
+  notes: string;
+  metadata_values: Record<string, unknown>;
+  pii_reviewed: boolean;
+}
+
+function draftSignature(draft: CandidateSubmissionDraft) {
+  return JSON.stringify(draft);
+}
+
 function submissionReady(
   submission: HiringSubmission | null | undefined,
   fields: HiringMetadataField[],
@@ -110,6 +123,10 @@ export default function CandidateHiringAssignmentPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const deferredItemSearch = useDeferredValue(itemSearch);
+  const saveInFlightRef = useRef(false);
+  const queuedAutoSaveRef = useRef(false);
+  const saveSubmissionRef = useRef<(manual?: boolean) => Promise<boolean>>(async () => false);
+  const latestDraftSignatureRef = useRef("");
 
   useEffect(() => {
     if (!accessToken || !assignmentId) return;
@@ -198,6 +215,17 @@ export default function CandidateHiringAssignmentPage() {
     piiReviewed,
     metadata: draftMetadata,
   });
+  const reviewedPIIEntries = useMemo(() => cleanPIIEntries(draftPIIEntries), [draftPIIEntries]);
+  const piiEntryCount = reviewedPIIEntries.length;
+  const piiStatusText = piiReviewed ? "PII review complete" : "PII review required";
+  const autoSaveText =
+    saveState === "saving"
+      ? "Auto-saving changes..."
+      : saveState === "failed"
+        ? "Auto-save failed. Use Save now."
+        : saveState === "unsaved"
+          ? "Changes will auto-save shortly"
+          : `Auto-saved ${formatDateTime(lastSavedAt)}`;
   const submitSummary = detail?.items.map((item) => {
     const submission = submissionsByItemId.get(item.id);
     return {
@@ -220,6 +248,17 @@ export default function CandidateHiringAssignmentPage() {
     setMessage(null);
     setError(null);
   }, [selectedSubmission?.id]);
+
+  useEffect(() => {
+    latestDraftSignatureRef.current = draftSignature({
+      final_transcript: draftTranscript,
+      pii_text: draftPIIText,
+      pii_entries: reviewedPIIEntries,
+      notes: draftNotes,
+      metadata_values: draftMetadata,
+      pii_reviewed: piiReviewed,
+    });
+  }, [draftMetadata, draftNotes, draftPIIText, draftTranscript, piiReviewed, reviewedPIIEntries]);
 
   useEffect(() => {
     setSecondsRemaining(detail?.seconds_remaining ?? null);
@@ -323,22 +362,35 @@ export default function CandidateHiringAssignmentPage() {
   async function saveSubmission(manual = true): Promise<boolean> {
     if (!accessToken || !selectedSubmission || editingDisabled) return false;
     if (!manual && !draftDirty) return true;
+    if (saveInFlightRef.current) {
+      queuedAutoSaveRef.current = true;
+      setSaveState("saving");
+      return false;
+    }
+    const draftSnapshot: CandidateSubmissionDraft = {
+      final_transcript: draftTranscript,
+      pii_text: draftPIIText,
+      pii_entries: reviewedPIIEntries,
+      notes: draftNotes,
+      metadata_values: draftMetadata,
+      pii_reviewed: piiReviewed,
+    };
+    const savedSignature = draftSignature(draftSnapshot);
+    saveInFlightRef.current = true;
     if (manual) setBusy(true);
     setSaveState("saving");
     try {
       const updated = await patchCandidateHiringSubmission(accessToken, selectedSubmission.id, {
         version: selectedSubmission.version,
-        final_transcript: draftTranscript,
-        pii_text: draftPIIText,
-        pii_entries: cleanPIIEntries(draftPIIEntries),
-        notes: draftNotes,
-        metadata_values: draftMetadata,
-        pii_reviewed: piiReviewed,
+        ...draftSnapshot,
       });
+      const nextSubmission = updated.submissions.find((submission) => submission.id === selectedSubmission.id);
+      const hasNewerDraft = latestDraftSignatureRef.current !== savedSignature;
       setDetail(updated);
-      setDraftDirty(false);
-      setSaveState("saved");
-      setLastSavedAt(new Date().toISOString());
+      setDraftDirty(hasNewerDraft);
+      setSaveState(hasNewerDraft ? "unsaved" : "saved");
+      setLastSavedAt(nextSubmission?.last_saved_at ?? new Date().toISOString());
+      if (hasNewerDraft) queuedAutoSaveRef.current = true;
       if (manual) setMessage("Saved");
       setError(null);
       return true;
@@ -347,9 +399,18 @@ export default function CandidateHiringAssignmentPage() {
       setError(err instanceof APIError ? err.message : "Save failed");
       return false;
     } finally {
+      saveInFlightRef.current = false;
       if (manual) setBusy(false);
+      if (queuedAutoSaveRef.current && !editingDisabled) {
+        queuedAutoSaveRef.current = false;
+        window.setTimeout(() => void saveSubmissionRef.current(false), 0);
+      }
     }
   }
+
+  useEffect(() => {
+    saveSubmissionRef.current = saveSubmission;
+  });
 
   async function selectItem(itemId: string) {
     if (itemId === selectedItemId) return;
@@ -615,19 +676,43 @@ export default function CandidateHiringAssignmentPage() {
               <div className="space-y-3">
                 <div className="oa-card p-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <h3 className="oa-title text-base font-semibold">PII Answer</h3>
-                    <label className="flex items-center gap-2 text-xs text-[#5f5b79]">
-                      <input
-                        type="checkbox"
-                        checked={piiReviewed}
+                    <div>
+                      <h3 className="oa-title text-base font-semibold">PII Answer</h3>
+                      <p className="mt-0.5 text-xs font-medium text-[#6b7280]">{piiEntryCount} PII row{piiEntryCount === 1 ? "" : "s"} captured</p>
+                    </div>
+                  </div>
+                  <div
+                    className={`mt-3 rounded-xl border px-3 py-3 ${
+                      piiReviewed
+                        ? "border-[#a7dfb8] bg-[#f0fbf4]"
+                        : "border-[#f2c083] bg-[#fff8ec]"
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#6f6688]">Review status</p>
+                        <p className={`mt-1 text-sm font-semibold ${piiReviewed ? "text-[#236140]" : "text-[#8a5b1e]"}`}>
+                          {piiStatusText}
+                        </p>
+                        <p className="mt-1 text-xs text-[#5f5b79]">Required before this audio can be submitted.</p>
+                      </div>
+                      <button
+                        type="button"
+                        aria-pressed={piiReviewed}
                         disabled={editingDisabled}
-                        onChange={(event) => {
-                          setPiiReviewed(event.target.checked);
+                        onClick={() => {
+                          setPiiReviewed((previous) => !previous);
                           markDirty();
                         }}
-                      />
-                      Reviewed
-                    </label>
+                        className={`rounded-lg border px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                          piiReviewed
+                            ? "border-[#91d5a9] bg-white text-[#236140] hover:bg-[#f7fff9]"
+                            : "border-[#c47a20] bg-[#8a5b1e] text-white hover:bg-[#744b18]"
+                        }`}
+                      >
+                        {piiReviewed ? "Reviewed" : "Mark PII reviewed"}
+                      </button>
+                    </div>
                   </div>
                   <div className="mt-3 space-y-2">
                     {draftPIIEntries.map((entry, index) => (
@@ -766,11 +851,11 @@ export default function CandidateHiringAssignmentPage() {
             </div>
 
             <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#e4dcf0] bg-white/95 px-3 py-2 shadow-[0_-16px_32px_-28px_rgba(18,13,40,0.6)] backdrop-blur">
-              <span className="text-xs font-medium text-[#5f5b79]">
-                {saveState === "saving" ? "Saving changes..." : saveState === "failed" ? "Save failed" : saveState === "unsaved" ? "Unsaved changes" : `Saved ${formatDateTime(lastSavedAt)}`}
+              <span className={`text-xs font-semibold ${saveState === "failed" ? "text-[#a13a3a]" : saveState === "saved" ? "text-[#236140]" : "text-[#5f5b79]"}`}>
+                {autoSaveText}
               </span>
-              <button type="button" onClick={() => void saveSubmission(true)} disabled={busy || editingDisabled} className="oa-btn-primary px-5 py-2 text-sm font-semibold disabled:opacity-50">
-                Save Item
+              <button type="button" onClick={() => void saveSubmission(true)} disabled={busy || editingDisabled || saveState === "saving"} className="oa-btn-primary px-5 py-2 text-sm font-semibold disabled:opacity-50">
+                Save now
               </button>
             </div>
           </div>
