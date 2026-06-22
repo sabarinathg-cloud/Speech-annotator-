@@ -4,7 +4,7 @@ services:
     volumes:
       - ./apps/backend:/app
       - backend_uploads:/app/data/uploads
-      - ./sample_data/audio:/app/data/uploads/sample-audio:ro
+      - ${HIRING_AUDIO_HOST_DIR:-/home/ubuntu/amc-data}:${HIRING_AUDIO_CONTAINER_DIR:-/mnt/amc-data}:ro
     ports:
       - "8000:8000"
 
@@ -12,7 +12,7 @@ services:
     volumes:
       - ./apps/backend:/app
       - backend_uploads:/app/data/uploads
-      - ./sample_data/audio:/app/data/uploads/sample-audio:ro
+      - ${HIRING_AUDIO_HOST_DIR:-/home/ubuntu/amc-data}:${HIRING_AUDIO_CONTAINER_DIR:-/mnt/amc-data}:ro
 
   frontend:
     build:

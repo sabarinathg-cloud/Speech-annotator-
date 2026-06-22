@@ -43,13 +43,13 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JOBS_INLINE: ${JOBS_INLINE:-false}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/data/uploads}
-      HIRING_AUDIO_IMPORT_ROOTS: ${HIRING_AUDIO_IMPORT_ROOTS:-/app/data/uploads/sample-audio}
+      HIRING_AUDIO_IMPORT_ROOTS: ${HIRING_AUDIO_IMPORT_ROOTS:-/mnt/amc-data}
       HF_HOME: ${HF_HOME:-/app/.cache/huggingface}
       PII_MODEL_PRELOAD_ENABLED: ${PII_MODEL_PRELOAD_ENABLED:-false}
       AUTO_SEED_DEV_USERS: ${AUTO_SEED_DEV_USERS:-true}
     volumes:
       - backend_uploads:/app/data/uploads
-      - ./sample_data/audio:/app/data/uploads/sample-audio:ro
+      - ${HIRING_AUDIO_HOST_DIR:-/home/ubuntu/amc-data}:${HIRING_AUDIO_CONTAINER_DIR:-/mnt/amc-data}:ro
       - huggingface_cache:/app/.cache/huggingface
     depends_on:
       postgres:
@@ -73,11 +73,11 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JOBS_INLINE: "false"
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/data/uploads}
-      HIRING_AUDIO_IMPORT_ROOTS: ${HIRING_AUDIO_IMPORT_ROOTS:-/app/data/uploads/sample-audio}
+      HIRING_AUDIO_IMPORT_ROOTS: ${HIRING_AUDIO_IMPORT_ROOTS:-/mnt/amc-data}
       HF_HOME: ${HF_HOME:-/app/.cache/huggingface}
     volumes:
       - backend_uploads:/app/data/uploads
-      - ./sample_data/audio:/app/data/uploads/sample-audio:ro
+      - ${HIRING_AUDIO_HOST_DIR:-/home/ubuntu/amc-data}:${HIRING_AUDIO_CONTAINER_DIR:-/mnt/amc-data}:ro
       - huggingface_cache:/app/.cache/huggingface
     depends_on:
       postgres:
