@@ -777,6 +777,28 @@ export async function updateHiringAssignmentAccess(
   );
 }
 
+export async function clearHiringAssignmentAudio(
+  token: string,
+  assignmentId: string
+): Promise<HiringAssignmentSummary> {
+  return request<HiringAssignmentSummary>(
+    `/hiring/assignments/${assignmentId}/items`,
+    { method: "DELETE" },
+    token
+  );
+}
+
+export async function deleteHiringAssignment(
+  token: string,
+  assignmentId: string
+): Promise<{ deleted_assignment_id: string }> {
+  return request<{ deleted_assignment_id: string }>(
+    `/hiring/assignments/${assignmentId}`,
+    { method: "DELETE" },
+    token
+  );
+}
+
 export async function fetchHiringAssignmentAuditEvents(
   token: string,
   assignmentId: string

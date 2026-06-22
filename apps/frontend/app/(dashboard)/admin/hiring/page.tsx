@@ -21,9 +21,11 @@ import { useAuth } from "@/components/auth-provider";
 import {
   APIError,
   assignHiringCandidates,
+  clearHiringAssignmentAudio,
   createHiringAssignmentInvite,
   createUser,
   createHiringAssessment,
+  deleteHiringAssignment,
   deleteUser,
   fetchHiringAssignmentAuditEvents,
   fetchHiringAssessment,
@@ -675,6 +677,52 @@ export default function AdminHiringPage() {
     }
   }
 
+  async function clearAssignmentAudio(assignment: HiringAssignmentSummary) {
+    if (!accessToken || !detail) return;
+    if (!window.confirm(`Clear candidate-specific audio for ${assignment.candidate_name}? Shared assessment audio will stay.`)) return;
+    setBusy(true);
+    try {
+      await clearHiringAssignmentAudio(accessToken, assignment.id);
+      setAssignmentFolderDrafts((current) => ({
+        ...current,
+        [assignment.id]: current[assignment.id] ?? { folder_path: "", recursive: false },
+      }));
+      await loadAssessment(detail.id);
+      if (review?.id === assignment.id) await openReview(assignment.id);
+      setMessage("Candidate audio cleared. You can import a new bucket now.");
+      setError(null);
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Could not clear candidate audio");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeAssignment(assignment: HiringAssignmentSummary) {
+    if (!accessToken || !detail) return;
+    if (!window.confirm(`Remove assignment for ${assignment.candidate_name}? This cannot be undone.`)) return;
+    setBusy(true);
+    try {
+      await deleteHiringAssignment(accessToken, assignment.id);
+      setAssignmentFolderDrafts((current) => {
+        const next = { ...current };
+        delete next[assignment.id];
+        return next;
+      });
+      if (review?.id === assignment.id) {
+        setReview(null);
+        setAuditEvents([]);
+      }
+      await loadAssessment(detail.id);
+      setMessage("Assignment removed");
+      setError(null);
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Could not remove assignment");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function applySuggestedTranscriptScore(score: number | null = suggestedTranscriptScore) {
     if (score === null) return;
     const value = String(score);
@@ -1126,7 +1174,7 @@ export default function AdminHiringPage() {
                 <div className="oa-card p-4">
                   <h3 className="oa-title text-base font-semibold">Candidate progress</h3>
                   <div className="mt-3 overflow-x-auto">
-                    <table className="w-full min-w-[1220px] text-left text-sm">
+                    <table className="w-full min-w-[1320px] text-left text-sm">
                       <thead className="text-xs uppercase tracking-[0.12em] text-[#7a7395]">
                         <tr>
                           <th className="py-2">Candidate</th>
@@ -1146,6 +1194,7 @@ export default function AdminHiringPage() {
                         {assignments.map((assignment) => {
                           const folderDraft = assignmentFolderDrafts[assignment.id] ?? { folder_path: "", recursive: false };
                           const canImportCandidateAudio = !["SUBMITTED", "EVALUATED"].includes(assignment.status);
+                          const canModifyAssignment = !["SUBMITTED", "EVALUATED"].includes(assignment.status);
                           return (
                             <tr key={assignment.id} className="border-t border-[#eee5f8]">
                               <td className="py-2 pr-3">
@@ -1200,7 +1249,23 @@ export default function AdminHiringPage() {
                                 >
                                   {assignment.access_revoked ? "Restore" : "Revoke"}
                                 </button>
-                                <button type="button" onClick={() => void openReview(assignment.id)} className="oa-btn-secondary px-3 py-1.5 text-xs">Review</button>
+                                <button
+                                  type="button"
+                                  onClick={() => void clearAssignmentAudio(assignment)}
+                                  disabled={busy || !canModifyAssignment}
+                                  className="oa-btn-secondary mr-2 px-3 py-1.5 text-xs disabled:opacity-50"
+                                >
+                                  Clear Audio
+                                </button>
+                                <button type="button" onClick={() => void openReview(assignment.id)} className="oa-btn-secondary mr-2 px-3 py-1.5 text-xs">Review</button>
+                                <button
+                                  type="button"
+                                  onClick={() => void removeAssignment(assignment)}
+                                  disabled={busy || !canModifyAssignment}
+                                  className="oa-btn-secondary px-3 py-1.5 text-xs disabled:opacity-50"
+                                >
+                                  Remove
+                                </button>
                               </td>
                             </tr>
                           );

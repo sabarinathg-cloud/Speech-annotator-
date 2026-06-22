@@ -13,6 +13,7 @@ from app.schemas.hiring import (
     HiringAssessmentListResponse,
     HiringAssessmentUpdateRequest,
     HiringAssignmentAccessUpdateRequest,
+    HiringAssignmentDeleteResponse,
     HiringAssignmentCreateRequest,
     HiringAssignmentInviteResponse,
     HiringAssignmentListResponse,
@@ -265,6 +266,30 @@ def update_assignment_access(
             payload=payload,
             actor=current_user,
         )
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.delete("/assignments/{assignment_id}/items", response_model=HiringAssignmentSummaryResponse)
+def clear_assignment_audio(
+    assignment_id: str,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    try:
+        return HiringService(db).clear_assignment_audio(assignment_id=assignment_id, actor=current_user)
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.delete("/assignments/{assignment_id}", response_model=HiringAssignmentDeleteResponse)
+def delete_assignment(
+    assignment_id: str,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    try:
+        return HiringService(db).delete_assignment(assignment_id=assignment_id, actor=current_user)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 

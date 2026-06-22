@@ -195,6 +195,21 @@ def test_admin_can_import_candidate_specific_folders(client, auth_headers, seed_
         assert [item["original_filename"] for item in first_review.json()["items"]] == ["candidate-one.wav"]
         assert [item["original_filename"] for item in second_review.json()["items"]] == ["candidate-two.wav"]
 
+        clear_response = client.delete(
+            f"/api/v1/hiring/assignments/{first_assignment_id}/items",
+            headers=auth_headers["admin"],
+        )
+        assert clear_response.status_code == 200
+        assert clear_response.json()["item_count"] == 0
+
+        reimport_response = client.post(
+            f"/api/v1/hiring/assignments/{first_assignment_id}/items/folder",
+            headers=auth_headers["admin"],
+            json={"folder_path": str(first_folder), "recursive": False},
+        )
+        assert reimport_response.status_code == 200
+        assert reimport_response.json()["imported_items"] == 1
+
         _activate_assessment(client, auth_headers, assessment["id"])
         candidate_detail = client.get(
             f"/api/v1/hiring/candidate/assignments/{first_assignment_id}",
@@ -209,6 +224,19 @@ def test_admin_can_import_candidate_specific_folders(client, auth_headers, seed_
             headers=auth_headers["candidate"],
         )
         assert wrong_assignment_download.status_code == 404
+
+        delete_response = client.delete(
+            f"/api/v1/hiring/assignments/{second_assignment_id}",
+            headers=auth_headers["admin"],
+        )
+        assert delete_response.status_code == 200
+        assert delete_response.json()["deleted_assignment_id"] == second_assignment_id
+        assignments_response = client.get(
+            f"/api/v1/hiring/assessments/{assessment['id']}/assignments",
+            headers=auth_headers["admin"],
+        )
+        assert assignments_response.status_code == 200
+        assert [item["id"] for item in assignments_response.json()["items"]] == [first_assignment_id]
     finally:
         settings.hiring_audio_import_roots = original_roots
 

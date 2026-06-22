@@ -88,6 +88,10 @@ class HiringAssignmentAccessUpdateRequest(BaseModel):
     access_revoked: bool
 
 
+class HiringAssignmentDeleteResponse(BaseModel):
+    deleted_assignment_id: str
+
+
 class HiringSubmissionUpdateRequest(BaseModel):
     version: int = Field(ge=1)
     final_transcript: str | None = None

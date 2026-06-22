@@ -36,6 +36,7 @@ from app.schemas.hiring import (
     HiringAssessmentListResponse,
     HiringAssessmentSummaryResponse,
     HiringAssignmentAccessUpdateRequest,
+    HiringAssignmentDeleteResponse,
     HiringAssignmentInviteResponse,
     HiringAssignmentListResponse,
     HiringAssignmentSummaryResponse,
@@ -417,6 +418,47 @@ class HiringService:
         )
         self.db.commit()
         return self._assignment_summary(assignment)
+
+    def clear_assignment_audio(self, *, assignment_id: str, actor: User) -> HiringAssignmentSummaryResponse:
+        assignment = self._get_assignment_or_404(assignment_id)
+        self._ensure_assignment_can_be_reworked(assignment)
+        candidate_items = [item for item in (assignment.assessment.items or []) if item.assignment_id == assignment.id]
+        stored_paths = [Path(item.stored_path) for item in candidate_items if item.stored_path]
+        for item in candidate_items:
+            self.db.delete(item)
+        assignment.version += 1
+        self._log_hiring_event(
+            "CLEAR_HIRING_ASSIGNMENT_AUDIO",
+            actor=actor,
+            resource_type="hiring_assignment",
+            resource_id=assignment.id,
+            assignment=assignment,
+            metadata={"candidate_id": assignment.candidate_id, "removed_items": len(candidate_items)},
+        )
+        self.db.commit()
+        self._remove_managed_audio_files(stored_paths)
+        return self._assignment_summary(assignment)
+
+    def delete_assignment(self, *, assignment_id: str, actor: User) -> HiringAssignmentDeleteResponse:
+        assignment = self._get_assignment_or_404(assignment_id)
+        self._ensure_assignment_can_be_reworked(assignment)
+        stored_paths = [
+            Path(item.stored_path)
+            for item in (assignment.assessment.items or [])
+            if item.assignment_id == assignment.id and item.stored_path
+        ]
+        self._log_hiring_event(
+            "DELETE_HIRING_ASSIGNMENT",
+            actor=actor,
+            resource_type="hiring_assignment",
+            resource_id=assignment.id,
+            assignment=assignment,
+            metadata={"candidate_id": assignment.candidate_id},
+        )
+        self.db.delete(assignment)
+        self.db.commit()
+        self._remove_managed_audio_files(stored_paths)
+        return HiringAssignmentDeleteResponse(deleted_assignment_id=assignment_id)
 
     def list_candidate_assignments(self, *, actor: User) -> HiringAssignmentListResponse:
         assignments = list(
@@ -808,6 +850,21 @@ class HiringService:
 
     def _ensure_download_allowed(self, assignment: HiringAssignment) -> None:
         self._ensure_assignment_editable(assignment)
+
+    def _ensure_assignment_can_be_reworked(self, assignment: HiringAssignment) -> None:
+        if assignment.status in {HiringAssignmentStatusEnum.SUBMITTED, HiringAssignmentStatusEnum.EVALUATED}:
+            raise ServiceError("Submitted hiring assignments cannot be removed or changed", status_code=409)
+
+    def _remove_managed_audio_files(self, paths: list[Path]) -> None:
+        upload_root = settings.upload_path.resolve()
+        for path in paths:
+            try:
+                resolved = path.resolve(strict=False)
+                if upload_root == resolved or upload_root not in resolved.parents:
+                    continue
+                resolved.unlink(missing_ok=True)
+            except OSError:
+                continue
 
     def _mark_assignment_opened(self, assignment: HiringAssignment, *, actor: User) -> None:
         if assignment.started_at or assignment.status in {HiringAssignmentStatusEnum.SUBMITTED, HiringAssignmentStatusEnum.EVALUATED}:
