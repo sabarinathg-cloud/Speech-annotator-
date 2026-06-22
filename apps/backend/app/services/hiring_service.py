@@ -66,6 +66,7 @@ from app.utils.excel import load_excel_as_dataframe, normalize_cell
 settings = get_settings()
 SUPPORTED_HIRING_AUDIO_EXTENSIONS = {".wav"}
 HIRING_FOLDER_IMPORT_COMMIT_BATCH_SIZE = 50
+HIRING_FOLDER_IMPORT_MAX_MESSAGES = 25
 
 
 def _now() -> datetime:
@@ -259,37 +260,33 @@ class HiringService:
         if not folder.is_dir():
             raise ServiceError("Hiring audio folder not found", status_code=404)
 
-        try:
-            iterator = folder.rglob("*") if recursive else folder.iterdir()
-            files = [path for path in iterator if path.is_file() and not path.name.startswith(".")]
-        except OSError as exc:
-            raise ServiceError(
-                "Unable to read hiring audio folder. Check backend filesystem permissions.",
-                status_code=403,
-            ) from exc
-        unsupported = [str(path) for path in files if path.suffix.lower() not in SUPPORTED_HIRING_AUDIO_EXTENSIONS]
-        if unsupported:
-            raise ServiceError(
-                "Folder import only supports WAV files",
-                status_code=422,
-                extra={"unsupported_files": unsupported[:25]},
-            )
+        files, skipped, errors = self._scan_hiring_folder(folder, recursive=recursive)
         if not files:
             raise ServiceError("No WAV files found in hiring audio folder", status_code=422)
 
         imported = 0
+        existing_sources = self._existing_folder_import_sources(assessment, assignment=assignment)
+        next_sort_order = self._next_item_sort_order(assessment, assignment=assignment)
         for path in sorted(files, key=lambda item: str(item)):
             try:
                 resolved = self._resolve_allowed_import_path(str(path))
+                resolved_source = str(resolved)
+                if resolved_source in existing_sources:
+                    skipped += 1
+                    self._append_import_message(errors, f"Skipped duplicate WAV: {path.name}")
+                    continue
                 with resolved.open("rb") as source_file:
                     item = self._create_item_from_fileobj(
                         assessment=assessment,
-                        source=str(resolved),
+                        source=resolved_source,
                         filename=resolved.name,
                         fileobj=source_file,
                         assignment=assignment,
+                        sort_order=next_sort_order,
                     )
                     self._attach_imported_item_to_assignments(assessment=assessment, item=item, assignment=assignment)
+                    existing_sources.add(resolved_source)
+                    next_sort_order += 1
             except OSError as exc:
                 self.db.rollback()
                 raise ServiceError(
@@ -300,7 +297,7 @@ class HiringService:
             if imported % HIRING_FOLDER_IMPORT_COMMIT_BATCH_SIZE == 0:
                 self.db.commit()
         self.db.commit()
-        return HiringImportResponse(imported_items=imported)
+        return HiringImportResponse(imported_items=imported, skipped_items=skipped, errors=errors)
 
     def import_manifest(self, *, assessment_id: str, file: UploadFile) -> HiringImportResponse:
         assessment = self._get_assessment_or_404(assessment_id)
@@ -998,6 +995,44 @@ class HiringService:
                 candidate_assignment.submissions.append(submission)
                 self.db.add(submission)
 
+    def _scan_hiring_folder(self, folder: Path, *, recursive: bool) -> tuple[list[Path], int, list[str]]:
+        files: list[Path] = []
+        skipped = 0
+        errors: list[str] = []
+        try:
+            iterator = folder.rglob("*") if recursive else folder.iterdir()
+            for path in iterator:
+                if path.name.startswith(".") or not path.is_file():
+                    continue
+                if path.suffix.lower() not in SUPPORTED_HIRING_AUDIO_EXTENSIONS:
+                    skipped += 1
+                    self._append_import_message(errors, f"Skipped non-WAV file: {path.name}")
+                    continue
+                files.append(path)
+        except OSError as exc:
+            raise ServiceError(
+                "Unable to read hiring audio folder. Check backend filesystem permissions.",
+                status_code=403,
+            ) from exc
+        return files, skipped, errors
+
+    def _existing_folder_import_sources(
+        self,
+        assessment: HiringAssessment,
+        *,
+        assignment: HiringAssignment | None,
+    ) -> set[str]:
+        assignment_id = assignment.id if assignment else None
+        return {
+            item.original_source
+            for item in (assessment.items or [])
+            if item.assignment_id == assignment_id and item.original_source
+        }
+
+    def _append_import_message(self, errors: list[str], message: str) -> None:
+        if len(errors) < HIRING_FOLDER_IMPORT_MAX_MESSAGES:
+            errors.append(message)
+
     def _assignment_items(self, assignment: HiringAssignment) -> list[HiringAssessmentItem]:
         items_by_id: dict[str, HiringAssessmentItem] = {}
         for submission in assignment.submissions or []:
@@ -1171,6 +1206,7 @@ class HiringService:
         reference_metadata: dict | None = None,
         external_id: str | None = None,
         assignment: HiringAssignment | None = None,
+        sort_order: int | None = None,
     ) -> HiringAssessmentItem:
         safe_filename = Path(filename).name
         if Path(safe_filename).suffix.lower() not in SUPPORTED_HIRING_AUDIO_EXTENSIONS:
@@ -1193,7 +1229,9 @@ class HiringService:
             reference_pii_annotations=reference_pii_annotations or [],
             reference_pii_entries=reference_pii_entries or [],
             reference_metadata=reference_metadata or {},
-            sort_order=self._next_item_sort_order(assessment, assignment=assignment),
+            sort_order=sort_order
+            if sort_order is not None
+            else self._next_item_sort_order(assessment, assignment=assignment),
         )
         self.db.add(item)
         self.db.flush()

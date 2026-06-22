@@ -71,15 +71,6 @@ def test_folder_import_requires_allowlisted_wav_files(client, auth_headers, tmp_
         _write_wav(audio_folder / "sample.wav")
         (audio_folder / "readme.txt").write_text("not audio")
 
-        reject_response = client.post(
-            f"/api/v1/hiring/assessments/{assessment['id']}/items/folder",
-            headers=auth_headers["admin"],
-            json={"folder_path": str(audio_folder), "recursive": False},
-        )
-        assert reject_response.status_code == 422
-        assert reject_response.json()["detail"]["message"] == "Folder import only supports WAV files"
-
-        (audio_folder / "readme.txt").unlink()
         import_response = client.post(
             f"/api/v1/hiring/assessments/{assessment['id']}/items/folder",
             headers=auth_headers["admin"],
@@ -87,6 +78,17 @@ def test_folder_import_requires_allowlisted_wav_files(client, auth_headers, tmp_
         )
         assert import_response.status_code == 200
         assert import_response.json()["imported_items"] == 1
+        assert import_response.json()["skipped_items"] == 1
+        assert import_response.json()["errors"] == ["Skipped non-WAV file: readme.txt"]
+
+        duplicate_response = client.post(
+            f"/api/v1/hiring/assessments/{assessment['id']}/items/folder",
+            headers=auth_headers["admin"],
+            json={"folder_path": str(audio_folder), "recursive": False},
+        )
+        assert duplicate_response.status_code == 200
+        assert duplicate_response.json()["imported_items"] == 0
+        assert duplicate_response.json()["skipped_items"] == 2
 
         outside = tmp_path / "outside"
         outside.mkdir()
@@ -97,6 +99,39 @@ def test_folder_import_requires_allowlisted_wav_files(client, auth_headers, tmp_
             json={"folder_path": str(outside), "recursive": False},
         )
         assert outside_response.status_code == 403
+    finally:
+        settings.hiring_audio_import_roots = original_roots
+
+
+def test_folder_import_handles_more_than_one_thousand_wavs(client, auth_headers, tmp_path):
+    settings = get_settings()
+    original_roots = settings.hiring_audio_import_roots
+    settings.hiring_audio_import_roots = str(tmp_path)
+    try:
+        assessment = _create_assessment(client, auth_headers)
+        audio_folder = tmp_path / "large-batch"
+        audio_folder.mkdir()
+        for index in range(1005):
+            _write_wav(audio_folder / f"sample-{index:04d}.wav")
+
+        import_response = client.post(
+            f"/api/v1/hiring/assessments/{assessment['id']}/items/folder",
+            headers=auth_headers["admin"],
+            json={"folder_path": str(audio_folder), "recursive": False},
+        )
+        assert import_response.status_code == 200
+        assert import_response.json()["imported_items"] == 1005
+        assert import_response.json()["skipped_items"] == 0
+
+        retry_response = client.post(
+            f"/api/v1/hiring/assessments/{assessment['id']}/items/folder",
+            headers=auth_headers["admin"],
+            json={"folder_path": str(audio_folder), "recursive": False},
+        )
+        assert retry_response.status_code == 200
+        assert retry_response.json()["imported_items"] == 0
+        assert retry_response.json()["skipped_items"] == 1005
+        assert len(retry_response.json()["errors"]) == 25
     finally:
         settings.hiring_audio_import_roots = original_roots
 
