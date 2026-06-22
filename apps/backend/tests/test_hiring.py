@@ -392,7 +392,9 @@ def test_hiring_candidate_submit_download_and_admin_scorecard(client, auth_heade
         )
         assert save_response.status_code == 200
         submission = save_response.json()["submissions"][0]
+        assert submission["final_transcript"] == "hello candidate"
         assert submission["pii_text"] == "None"
+        assert submission["pii_reviewed"] is True
 
         blocked_submit = client.post(
             f"/api/v1/hiring/candidate/assignments/{assignment_id}/submit",
@@ -412,6 +414,10 @@ def test_hiring_candidate_submit_download_and_admin_scorecard(client, auth_heade
             },
         )
         assert save_metadata_response.status_code == 200
+        saved_metadata_submission = save_metadata_response.json()["submissions"][0]
+        assert saved_metadata_submission["final_transcript"] == "hello candidate"
+        assert saved_metadata_submission["pii_text"] == "None"
+        assert saved_metadata_submission["metadata_values"] == {"language": "en"}
 
         submit_response = client.post(
             f"/api/v1/hiring/candidate/assignments/{assignment_id}/submit",
@@ -434,7 +440,11 @@ def test_hiring_candidate_submit_download_and_admin_scorecard(client, auth_heade
         assert review_response.status_code == 200
         review_payload = review_response.json()
         assert review_payload["candidate_email"] == "candidate@test.com"
-        assert review_payload["submissions"][0]["pii_text"] == "None"
+        admin_submission = review_payload["submissions"][0]
+        assert admin_submission["final_transcript"] == "hello candidate"
+        assert admin_submission["pii_text"] == "None"
+        assert admin_submission["metadata_values"] == {"language": "en"}
+        assert admin_submission["pii_reviewed"] is True
 
         validation_response = client.patch(
             f"/api/v1/hiring/submissions/{review_payload['submissions'][0]['id']}/validation",

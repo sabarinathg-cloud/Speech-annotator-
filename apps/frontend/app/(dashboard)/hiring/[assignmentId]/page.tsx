@@ -142,21 +142,31 @@ export default function CandidateHiringAssignmentPage() {
   const timeExpired = secondsRemaining !== null && secondsRemaining <= 0 && !readOnly;
   const editingDisabled = readOnly || timeExpired;
   const transcriptWordCount = draftTranscript.trim() ? draftTranscript.trim().split(/\s+/).length : 0;
-  const completedItems = detail?.submissions.filter(
-    (submission) =>
-      submission.final_transcript.trim() &&
-      submission.pii_reviewed &&
-      metadataReady(detail.assessment.metadata_schema, submission.metadata_values)
-  ).length ?? 0;
+  function readinessForSubmission(submission: HiringSubmission) {
+    return submissionReady(
+      submission,
+      detail?.assessment.metadata_schema ?? [],
+      submission.id === selectedSubmission?.id
+        ? {
+            transcript: draftTranscript,
+            piiReviewed,
+            metadata: draftMetadata,
+          }
+        : undefined
+    );
+  }
+
+  const completedItems = detail?.submissions.filter((submission) => {
+    const readiness = readinessForSubmission(submission);
+    return readiness.transcript && readiness.pii && readiness.metadata;
+  }).length ?? 0;
   const allReady = Boolean(
     detail &&
       detail.submissions.length > 0 &&
-      detail.submissions.every(
-        (submission) =>
-          submission.final_transcript.trim() &&
-          submission.pii_reviewed &&
-          metadataReady(detail.assessment.metadata_schema, submission.metadata_values)
-      )
+      detail.submissions.every((submission) => {
+        const readiness = readinessForSubmission(submission);
+        return readiness.transcript && readiness.pii && readiness.metadata;
+      })
   );
   const currentReadiness = submissionReady(selectedSubmission, detail?.assessment.metadata_schema ?? [], {
     transcript: draftTranscript,
@@ -167,7 +177,7 @@ export default function CandidateHiringAssignmentPage() {
     const submission = detail.submissions.find((candidate) => candidate.item_id === item.id);
     return {
       item,
-      readiness: submissionReady(submission, detail.assessment.metadata_schema),
+      readiness: submission ? readinessForSubmission(submission) : submissionReady(submission, detail.assessment.metadata_schema),
     };
   }) ?? [];
 
@@ -278,9 +288,9 @@ export default function CandidateHiringAssignmentPage() {
     setMessage(null);
   }
 
-  async function saveSubmission(manual = true) {
-    if (!accessToken || !selectedSubmission || editingDisabled) return;
-    if (!manual && !draftDirty) return;
+  async function saveSubmission(manual = true): Promise<boolean> {
+    if (!accessToken || !selectedSubmission || editingDisabled) return false;
+    if (!manual && !draftDirty) return true;
     if (manual) setBusy(true);
     setSaveState("saving");
     try {
@@ -299,18 +309,61 @@ export default function CandidateHiringAssignmentPage() {
       setLastSavedAt(new Date().toISOString());
       if (manual) setMessage("Saved");
       setError(null);
+      return true;
     } catch (err) {
       setSaveState("failed");
       setError(err instanceof APIError ? err.message : "Save failed");
+      return false;
     } finally {
       if (manual) setBusy(false);
     }
+  }
+
+  async function selectItem(itemId: string) {
+    if (itemId === selectedItemId) return;
+    if (draftDirty && !editingDisabled) {
+      const saved = await saveSubmission(false);
+      if (!saved) return;
+    }
+    setSelectedItemId(itemId);
   }
 
   useEffect(() => {
     if (!draftDirty || editingDisabled || !selectedSubmission) return;
     const timeoutId = window.setTimeout(() => void saveSubmission(false), 1800);
     return () => window.clearTimeout(timeoutId);
+  }, [
+    draftDirty,
+    editingDisabled,
+    selectedSubmission?.id,
+    selectedSubmission?.version,
+    draftTranscript,
+    draftPIIText,
+    draftPIIEntries,
+    draftNotes,
+    draftMetadata,
+    piiReviewed,
+  ]);
+
+  useEffect(() => {
+    function saveBeforeLeaving() {
+      if (document.visibilityState === "hidden" && draftDirty && !editingDisabled && selectedSubmission) {
+        void saveSubmission(false);
+      }
+    }
+
+    function saveBeforePageHide() {
+      if (draftDirty && !editingDisabled && selectedSubmission) {
+        void saveSubmission(false);
+      }
+    }
+
+    document.addEventListener("visibilitychange", saveBeforeLeaving);
+    window.addEventListener("pagehide", saveBeforePageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", saveBeforeLeaving);
+      window.removeEventListener("pagehide", saveBeforePageHide);
+    };
   }, [
     draftDirty,
     editingDisabled,
@@ -343,7 +396,8 @@ export default function CandidateHiringAssignmentPage() {
   async function prepareSubmit() {
     if (!detail || !allReady || editingDisabled) return;
     if (draftDirty) {
-      await saveSubmission(false);
+      const saved = await saveSubmission(false);
+      if (!saved) return;
     }
     setConfirmSubmitOpen(true);
   }
@@ -422,7 +476,7 @@ export default function CandidateHiringAssignmentPage() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setSelectedItemId(item.id)}
+                onClick={() => void selectItem(item.id)}
                 className={`w-full rounded-xl border p-3 text-left text-sm transition ${
                   item.id === selectedItemId ? "border-[#b99bde] bg-white" : "border-[#eee5f8] bg-[#fbf8ff]"
                 }`}
