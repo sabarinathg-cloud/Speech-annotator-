@@ -32,6 +32,7 @@ from app.schemas.hiring import (
     HiringAdminAssignmentReviewResponse,
     HiringAudioBucketListResponse,
     HiringAudioBucketResponse,
+    HiringAssessmentDeleteResponse,
     HiringAssessmentDetailResponse,
     HiringAssessmentItemReferenceUpdateRequest,
     HiringAssessmentItemResponse,
@@ -171,6 +172,32 @@ class HiringService:
             assessment.rubric_schema = [field.model_dump() for field in payload.rubric_schema]
         self.db.commit()
         return self.get_assessment(assessment.id)
+
+    def delete_assessment(self, *, assessment_id: str, actor: User) -> HiringAssessmentDeleteResponse:
+        assessment = self._get_assessment_or_404(assessment_id)
+        deleted_items = len(assessment.items or [])
+        deleted_assignments = len(assessment.assignments or [])
+        stored_paths = [Path(item.stored_path) for item in (assessment.items or []) if item.stored_path]
+        SecurityAuditService(self.db).log_event(
+            action="DELETE_HIRING_ASSESSMENT",
+            actor=actor,
+            resource_type="hiring_assessment",
+            resource_id=assessment.id,
+            metadata={
+                "assessment_title": assessment.title,
+                "deleted_items": deleted_items,
+                "deleted_assignments": deleted_assignments,
+            },
+            commit=False,
+        )
+        self.db.delete(assessment)
+        self.db.commit()
+        self._remove_managed_audio_files(stored_paths)
+        return HiringAssessmentDeleteResponse(
+            deleted_assessment_id=assessment_id,
+            deleted_items=deleted_items,
+            deleted_assignments=deleted_assignments,
+        )
 
     def update_item_reference(
         self,

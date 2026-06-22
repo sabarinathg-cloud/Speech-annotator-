@@ -26,6 +26,7 @@ import {
   createHiringAssignmentInvite,
   createUser,
   createHiringAssessment,
+  deleteHiringAssessment,
   deleteHiringAssignment,
   deleteUser,
   fetchHiringAssignmentAuditEvents,
@@ -329,7 +330,7 @@ export default function AdminHiringPage() {
     return Math.round((suggestions.reduce((total, value) => total + value, 0) / suggestions.length) * 100) / 100;
   }, [review]);
 
-  async function refreshAll() {
+  async function refreshAll(preferredAssessmentId: string | null = selectedAssessmentId) {
     if (!accessToken) return;
     try {
       const [assessmentResponse, userResponse] = await Promise.all([
@@ -338,8 +339,17 @@ export default function AdminHiringPage() {
       ]);
       setAssessments(assessmentResponse.items);
       setCandidates(userResponse.items);
-      if (!selectedAssessmentId && assessmentResponse.items[0]) {
-        setSelectedAssessmentId(assessmentResponse.items[0].id);
+      const preferredStillExists = assessmentResponse.items.some((assessment) => assessment.id === preferredAssessmentId);
+      const nextSelectedAssessmentId = preferredStillExists
+        ? preferredAssessmentId
+        : assessmentResponse.items[0]?.id ?? null;
+      setSelectedAssessmentId(nextSelectedAssessmentId);
+      if (!nextSelectedAssessmentId) {
+        setDetail(null);
+        setAssignments([]);
+        setRanking([]);
+        setReview(null);
+        setAuditEvents([]);
       }
     } catch (err) {
       setError(err instanceof APIError ? err.message : "Could not load hiring data");
@@ -386,9 +396,45 @@ export default function AdminHiringPage() {
       setRubricFields(defaultRubricFields());
       setSelectedAssessmentId(created.id);
       setMessage("Assessment created");
-      await refreshAll();
+      await refreshAll(created.id);
     } catch (err) {
       setError(err instanceof APIError ? err.message : "Create failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeAssessment(assessment: Awaited<ReturnType<typeof fetchHiringAssessments>>["items"][number]) {
+    if (!accessToken) return;
+    const confirmation = window.prompt(
+      `Type "${assessment.title}" to delete this assessment. This removes its audio, candidate assignments, and submissions.`
+    );
+    if (confirmation === null) return;
+    if (confirmation !== assessment.title) {
+      setError("Assessment title did not match. Delete cancelled.");
+      return;
+    }
+    const remainingAssessments = assessments.filter((item) => item.id !== assessment.id);
+    const nextSelectedAssessmentId =
+      selectedAssessmentId === assessment.id ? remainingAssessments[0]?.id ?? null : selectedAssessmentId;
+    setBusy(true);
+    try {
+      const result = await deleteHiringAssessment(accessToken, assessment.id);
+      if (selectedAssessmentId === assessment.id) {
+        setDetail(null);
+        setAssignments([]);
+        setRanking([]);
+        setReview(null);
+        setAuditEvents([]);
+      }
+      setSelectedAssessmentId(nextSelectedAssessmentId);
+      await refreshAll(nextSelectedAssessmentId);
+      setMessage(
+        `Deleted ${assessment.title} with ${result.deleted_items} audio item${result.deleted_items === 1 ? "" : "s"} and ${result.deleted_assignments} candidate assignment${result.deleted_assignments === 1 ? "" : "s"}.`
+      );
+      setError(null);
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Could not delete assessment");
     } finally {
       setBusy(false);
     }
@@ -916,15 +962,27 @@ export default function AdminHiringPage() {
             <h2 className="oa-title text-lg font-semibold">Assessments</h2>
             <div className="mt-3 space-y-2">
               {assessments.map((assessment) => (
-                <button
+                <div
                   key={assessment.id}
-                  type="button"
-                  onClick={() => setSelectedAssessmentId(assessment.id)}
-                  className={`w-full rounded-xl border p-3 text-left text-sm ${selectedAssessmentId === assessment.id ? "border-[#b99bde] bg-white" : "border-[#eee5f8] bg-[#fbf8ff]"}`}
+                  className={`flex items-center gap-2 rounded-xl border p-2 text-sm ${selectedAssessmentId === assessment.id ? "border-[#b99bde] bg-white" : "border-[#eee5f8] bg-[#fbf8ff]"}`}
                 >
-                  <span className="block font-semibold text-[#1f1b3f]">{assessment.title}</span>
-                  <span className="mt-1 block text-xs text-[#6b7280]">{assessment.status} | {assessment.item_count} audio | {assessment.assignment_count} candidates</span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedAssessmentId(assessment.id)}
+                    className="min-w-0 flex-1 rounded-lg px-1 py-1 text-left transition hover:bg-white"
+                  >
+                    <span className="block truncate font-semibold text-[#1f1b3f]">{assessment.title}</span>
+                    <span className="mt-1 block text-xs text-[#6b7280]">{assessment.status} | {assessment.item_count} audio | {assessment.assignment_count} candidates</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void removeAssessment(assessment)}
+                    disabled={busy}
+                    className="oa-btn-secondary shrink-0 px-2.5 py-1.5 text-xs disabled:opacity-50"
+                  >
+                    Delete
+                  </button>
+                </div>
               ))}
               {assessments.length === 0 ? <p className="text-sm text-[#5f5b79]">No assessments yet.</p> : null}
             </div>

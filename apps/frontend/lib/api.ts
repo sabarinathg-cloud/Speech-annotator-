@@ -8,6 +8,7 @@ import type {
   DetectPIIResponse,
   HiringAdminAssignmentReview,
   HiringAudioBucketListResponse,
+  HiringAssessmentDeleteResponse,
   HiringAssessmentDetail,
   HiringAssessmentListResponse,
   HiringAssignmentInviteResponse,
@@ -639,6 +640,17 @@ export async function updateHiringAssessment(
 
 export async function fetchHiringAssessment(token: string, assessmentId: string): Promise<HiringAssessmentDetail> {
   return request<HiringAssessmentDetail>(`/hiring/assessments/${assessmentId}`, { method: "GET" }, token);
+}
+
+export async function deleteHiringAssessment(
+  token: string,
+  assessmentId: string
+): Promise<HiringAssessmentDeleteResponse> {
+  return request<HiringAssessmentDeleteResponse>(
+    `/hiring/assessments/${assessmentId}`,
+    { method: "DELETE" },
+    token
+  );
 }
 
 export async function updateHiringItemReference(

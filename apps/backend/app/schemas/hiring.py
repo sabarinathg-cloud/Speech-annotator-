@@ -104,6 +104,12 @@ class HiringAssignmentAccessUpdateRequest(BaseModel):
     access_revoked: bool
 
 
+class HiringAssessmentDeleteResponse(BaseModel):
+    deleted_assessment_id: str
+    deleted_items: int
+    deleted_assignments: int
+
+
 class HiringAssignmentDeleteResponse(BaseModel):
     deleted_assignment_id: str
 

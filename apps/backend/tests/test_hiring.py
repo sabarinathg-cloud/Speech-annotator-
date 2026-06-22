@@ -4,7 +4,7 @@ from pathlib import Path
 from app.core.security import get_password_hash
 from app.core.config import get_settings
 from app.models.enums import RoleEnum
-from app.models.hiring import HiringAssessmentItem
+from app.models.hiring import HiringAssessment, HiringAssessmentItem, HiringAssignment, HiringSubmission
 from app.models.user import User
 
 
@@ -132,6 +132,60 @@ def test_folder_import_handles_more_than_one_thousand_wavs(client, auth_headers,
         assert retry_response.json()["imported_items"] == 0
         assert retry_response.json()["skipped_items"] == 1005
         assert len(retry_response.json()["errors"]) == 25
+    finally:
+        settings.hiring_audio_import_roots = original_roots
+
+
+def test_admin_can_delete_hiring_assessment_and_managed_audio(client, auth_headers, seed_users, tmp_path, db_session):
+    settings = get_settings()
+    original_roots = settings.hiring_audio_import_roots
+    settings.hiring_audio_import_roots = str(tmp_path)
+    try:
+        assessment = _create_assessment(client, auth_headers)
+        audio_folder = tmp_path / "audio"
+        audio_folder.mkdir()
+        _write_wav(audio_folder / "delete-me.wav")
+
+        import_response = client.post(
+            f"/api/v1/hiring/assessments/{assessment['id']}/items/folder",
+            headers=auth_headers["admin"],
+            json={"folder_path": str(audio_folder), "recursive": False},
+        )
+        assert import_response.status_code == 200
+
+        assign_response = client.post(
+            f"/api/v1/hiring/assessments/{assessment['id']}/assignments",
+            headers=auth_headers["admin"],
+            json={"candidate_ids": [seed_users["candidate"].id]},
+        )
+        assert assign_response.status_code == 200
+
+        item = db_session.query(HiringAssessmentItem).filter_by(assessment_id=assessment["id"]).one()
+        stored_path = Path(item.stored_path)
+        assert stored_path.exists()
+
+        delete_response = client.delete(
+            f"/api/v1/hiring/assessments/{assessment['id']}",
+            headers=auth_headers["admin"],
+        )
+        assert delete_response.status_code == 200
+        assert delete_response.json() == {
+            "deleted_assessment_id": assessment["id"],
+            "deleted_items": 1,
+            "deleted_assignments": 1,
+        }
+
+        assert db_session.query(HiringAssessment).filter_by(id=assessment["id"]).count() == 0
+        assert db_session.query(HiringAssessmentItem).filter_by(assessment_id=assessment["id"]).count() == 0
+        assert db_session.query(HiringAssignment).filter_by(assessment_id=assessment["id"]).count() == 0
+        assert db_session.query(HiringSubmission).count() == 0
+        assert not stored_path.exists()
+
+        get_response = client.get(
+            f"/api/v1/hiring/assessments/{assessment['id']}",
+            headers=auth_headers["admin"],
+        )
+        assert get_response.status_code == 404
     finally:
         settings.hiring_audio_import_roots = original_roots
 

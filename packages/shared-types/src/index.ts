@@ -568,6 +568,12 @@ export interface HiringAssessmentListResponse {
   items: HiringAssessmentSummary[];
 }
 
+export interface HiringAssessmentDeleteResponse {
+  deleted_assessment_id: string;
+  deleted_items: number;
+  deleted_assignments: number;
+}
+
 export interface HiringAssignmentSummary {
   id: string;
   assessment_id: string;

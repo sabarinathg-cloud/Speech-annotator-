@@ -20,6 +20,7 @@ from app.schemas.hiring import (
     HiringAssignmentInviteResponse,
     HiringAssignmentListResponse,
     HiringAssignmentSummaryResponse,
+    HiringAssessmentDeleteResponse,
     HiringAuditEventListResponse,
     HiringCandidateAssignmentDetailResponse,
     HiringFolderImportRequest,
@@ -101,6 +102,18 @@ def update_assessment(
             payload=payload,
             provided_fields=set(payload.model_fields_set),
         )
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.delete("/assessments/{assessment_id}", response_model=HiringAssessmentDeleteResponse)
+def delete_assessment(
+    assessment_id: str,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    try:
+        return HiringService(db).delete_assessment(assessment_id=assessment_id, actor=current_user)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
