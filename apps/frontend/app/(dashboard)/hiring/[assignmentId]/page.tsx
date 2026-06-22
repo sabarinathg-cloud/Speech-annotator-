@@ -2,7 +2,7 @@
 
 import type { HiringAssessmentItem, HiringMetadataField, HiringPIIEntry, HiringSubmission } from "@outcomes/shared-types";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { useAuth } from "@/components/auth-provider";
@@ -106,8 +106,10 @@ export default function CandidateHiringAssignmentPage() {
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [secondsRemaining, setSecondsRemaining] = useState<number | null>(null);
   const [confirmSubmitOpen, setConfirmSubmitOpen] = useState(false);
+  const [itemSearch, setItemSearch] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const deferredItemSearch = useDeferredValue(itemSearch);
 
   useEffect(() => {
     if (!accessToken || !assignmentId) return;
@@ -138,6 +140,10 @@ export default function CandidateHiringAssignmentPage() {
     () => detail?.submissions.find((submission) => submission.item_id === selectedItemId) ?? null,
     [detail?.submissions, selectedItemId]
   );
+  const submissionsByItemId = useMemo(
+    () => new Map((detail?.submissions ?? []).map((submission) => [submission.item_id, submission])),
+    [detail?.submissions]
+  );
   const readOnly = detail?.status === "SUBMITTED" || detail?.status === "EVALUATED";
   const assessmentActive = detail?.assessment.status === "ACTIVE";
   const assessmentInactive = Boolean(detail && !assessmentActive && !readOnly);
@@ -150,6 +156,17 @@ export default function CandidateHiringAssignmentPage() {
       : null;
   const visibleError = error && error !== candidateBlockedMessage ? error : null;
   const transcriptWordCount = draftTranscript.trim() ? draftTranscript.trim().split(/\s+/).length : 0;
+  const selectedItemIndex = detail?.items.findIndex((item) => item.id === selectedItemId) ?? -1;
+  const searchNeedle = deferredItemSearch.trim().toLowerCase();
+  const filteredItems = useMemo(
+    () =>
+      (detail?.items ?? []).filter((item) => {
+        if (!searchNeedle) return true;
+        return `${item.original_filename} ${item.external_id ?? ""}`.toLowerCase().includes(searchNeedle);
+      }),
+    [detail?.items, searchNeedle]
+  );
+  const visibleQueueItems = filteredItems.slice(0, 300);
   function readinessForSubmission(submission: HiringSubmission) {
     return submissionReady(
       submission,
@@ -182,7 +199,7 @@ export default function CandidateHiringAssignmentPage() {
     metadata: draftMetadata,
   });
   const submitSummary = detail?.items.map((item) => {
-    const submission = detail.submissions.find((candidate) => candidate.item_id === item.id);
+    const submission = submissionsByItemId.get(item.id);
     return {
       item,
       readiness: submission ? readinessForSubmission(submission) : submissionReady(submission, detail.assessment.metadata_schema),
@@ -422,108 +439,124 @@ export default function CandidateHiringAssignmentPage() {
   }
 
   return (
-    <section className="animate-fade-in space-y-4">
-      <div
-        aria-label="Hiring test watermark"
-        className="pointer-events-none rounded-xl border border-[#e6dcf2] bg-white/80 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-[#514a70]"
-      >
-        Hiring test | {user?.email ?? "signed-in candidate"} | {detail.assessment.title}
-      </div>
-
-      <div className="rounded-[1.35rem] border border-[#e4e7ee] bg-[linear-gradient(135deg,#ffffff_0%,#f6f8fb_100%)] shadow-[0_22px_48px_-40px_rgba(15,23,42,0.45)]">
-        <div className="p-5 sm:p-6">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6b7280]">Candidate Workspace</p>
-              <div className="mt-1 flex flex-wrap items-center gap-2">
-                <h1 className="oa-title text-xl font-semibold">{detail.assessment.title}</h1>
-                <span className="rounded-full border border-[#dbeafe] bg-[#eff6ff] px-2.5 py-1 text-xs font-semibold text-[#1d4ed8]">
-                  {detail.status}
-                </span>
-              </div>
-              {detail.assessment.instructions ? (
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-[#5f5b79]">{detail.assessment.instructions}</p>
-              ) : null}
+    <section className="animate-fade-in space-y-3 xl:flex xl:h-[calc(100vh-154px)] xl:min-h-[660px] xl:flex-col xl:overflow-hidden">
+      <div className="rounded-xl border border-[#e4e7ee] bg-white shadow-[0_18px_40px_-34px_rgba(15,23,42,0.55)]">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="oa-title truncate text-lg font-semibold">{detail.assessment.title}</h1>
+              <span className="rounded-full border border-[#dbeafe] bg-[#eff6ff] px-2 py-0.5 text-[11px] font-semibold text-[#1d4ed8]">
+                {detail.status}
+              </span>
+              <span className="rounded-full border border-[#e2e8f0] bg-[#f8fafc] px-2 py-0.5 text-[11px] font-medium text-[#475569]">
+                {user?.email ?? "candidate"}
+              </span>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={downloadAll} disabled={busy || editingDisabled} className="oa-btn-secondary px-3 py-2 text-sm disabled:opacity-50">
-                Download All
-              </button>
-              <button type="button" onClick={prepareSubmit} disabled={busy || editingDisabled || !allReady} className="oa-btn-primary px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50">
-                {readOnly ? "Submitted" : "Submit Test"}
-              </button>
-            </div>
+            {detail.assessment.instructions ? (
+              <p className="mt-1 max-w-5xl truncate text-xs text-[#5f5b79]" title={detail.assessment.instructions}>
+                {detail.assessment.instructions}
+              </p>
+            ) : null}
           </div>
-
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-[#e2e8f0] bg-white px-3 py-1 text-xs font-medium text-[#374151]">
-              Due {formatDeadline(detail.assessment.due_at, detail.assessment.due_date)}
-            </span>
-            <span className="rounded-full border border-[#e2e8f0] bg-white px-3 py-1 text-xs font-medium text-[#374151]">
-              Deadline {detail.submission_deadline_at ? formatDateTime(detail.submission_deadline_at) : "No deadline"}
-            </span>
-            <span className="rounded-full border border-[#e2e8f0] bg-white px-3 py-1 text-xs font-medium text-[#374151]">
-              {completedItems}/{detail.items.length} audio completed
-            </span>
-            <span className="rounded-full border border-[#e2e8f0] bg-white px-3 py-1 text-xs font-medium text-[#374151]">
-              {transcriptWordCount} words in current transcript
-            </span>
-            <span className={`rounded-full border px-3 py-1 text-xs font-medium ${timeExpired ? "border-[#f0c8c8] bg-[#fff3f3] text-[#a13a3a]" : "border-[#e2e8f0] bg-white text-[#374151]"}`}>
-              Time {formatDuration(secondsRemaining)}
-            </span>
-            <span className="rounded-full border border-[#e2e8f0] bg-white px-3 py-1 text-xs font-medium text-[#374151]">
-              {saveState === "saving" ? "Saving..." : saveState === "failed" ? "Autosave failed" : saveState === "unsaved" ? "Unsaved edits" : `Saved ${formatDateTime(lastSavedAt)}`}
-            </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={downloadAll} disabled={busy || editingDisabled} className="oa-btn-secondary px-3 py-1.5 text-sm disabled:opacity-50">
+              Download All
+            </button>
+            <button type="button" onClick={prepareSubmit} disabled={busy || editingDisabled || !allReady} className="oa-btn-primary px-4 py-1.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50">
+              {readOnly ? "Submitted" : "Submit Test"}
+            </button>
           </div>
+        </div>
+        <div className="grid gap-px border-t border-[#eef2f7] bg-[#eef2f7] text-xs sm:grid-cols-3 xl:grid-cols-6">
+          <MetricTile label="Progress" value={`${completedItems}/${detail.items.length}`} />
+          <MetricTile label="Selected" value={selectedItemIndex >= 0 ? `${selectedItemIndex + 1}/${detail.items.length}` : "--"} />
+          <MetricTile label="Words" value={String(transcriptWordCount)} />
+          <MetricTile label="Time left" value={formatDuration(secondsRemaining)} tone={timeExpired ? "danger" : "default"} />
+          <MetricTile label="Deadline" value={detail.submission_deadline_at ? formatDateTime(detail.submission_deadline_at) : "No deadline"} />
+          <MetricTile label="Save" value={saveState === "saving" ? "Saving" : saveState === "failed" ? "Failed" : saveState === "unsaved" ? "Unsaved" : "Saved"} />
         </div>
       </div>
 
-      {candidateBlockedMessage ? <p className="rounded-lg border border-[#f0c8c8] bg-[#fff3f3] px-3 py-2 text-sm text-[#a13a3a]">{candidateBlockedMessage}</p> : null}
-      {visibleError ? <p className="rounded-lg border border-[#f0c8c8] bg-[#fff3f3] px-3 py-2 text-sm text-[#a13a3a]">{visibleError}</p> : null}
-      {message ? <p className="rounded-lg border border-[#c8e6d4] bg-[#f0fbf4] px-3 py-2 text-sm text-[#236140]">{message}</p> : null}
+      {(candidateBlockedMessage || visibleError || message) ? (
+        <div className="space-y-2">
+          {candidateBlockedMessage ? <p className="rounded-lg border border-[#f0c8c8] bg-[#fff3f3] px-3 py-2 text-sm text-[#a13a3a]">{candidateBlockedMessage}</p> : null}
+          {visibleError ? <p className="rounded-lg border border-[#f0c8c8] bg-[#fff3f3] px-3 py-2 text-sm text-[#a13a3a]">{visibleError}</p> : null}
+          {message ? <p className="rounded-lg border border-[#c8e6d4] bg-[#f0fbf4] px-3 py-2 text-sm text-[#236140]">{message}</p> : null}
+        </div>
+      ) : null}
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="space-y-2">
-          {detail.items.map((item) => {
-            const submission = detail.submissions.find((candidate) => candidate.item_id === item.id);
-            const checklist = submissionReady(submission, detail.assessment.metadata_schema);
-            const ready = checklist.transcript && checklist.pii && checklist.metadata;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => void selectItem(item.id)}
-                className={`w-full rounded-xl border p-3 text-left text-sm transition ${
-                  item.id === selectedItemId ? "border-[#b99bde] bg-white" : "border-[#eee5f8] bg-[#fbf8ff]"
-                }`}
-              >
-                <span className="block font-semibold text-[#1f1b3f]">{item.original_filename}</span>
-                <span className={`mt-1 inline-block text-xs ${ready ? "text-[#236140]" : "text-[#8a5b1e]"}`}>
-                  {ready ? "Ready" : "Needs work"}
-                </span>
-                <span className="mt-2 grid grid-cols-3 gap-1 text-[11px]">
-                  <span className={checklist.transcript ? "text-[#236140]" : "text-[#8a5b1e]"}>Transcript</span>
-                  <span className={checklist.pii ? "text-[#236140]" : "text-[#8a5b1e]"}>PII</span>
-                  <span className={checklist.metadata ? "text-[#236140]" : "text-[#8a5b1e]"}>Metadata</span>
-                </span>
-              </button>
-            );
-          })}
+      <div className="grid grid-cols-1 gap-3 xl:min-h-0 xl:flex-1 xl:grid-cols-[320px_minmax(0,1fr)]">
+        <aside className="oa-card flex min-h-[320px] flex-col overflow-hidden p-3 xl:min-h-0">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h2 className="oa-title text-sm font-semibold">Audio Queue</h2>
+              <p className="text-xs text-[#6b7280]">{filteredItems.length} shown</p>
+            </div>
+            <span className="rounded-full bg-[#f3ebff] px-2 py-1 text-xs font-semibold text-[#5d3f84]">
+              {Math.round((completedItems / Math.max(detail.items.length, 1)) * 100)}%
+            </span>
+          </div>
+          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#ece5f6]">
+            <div className="h-full rounded-full bg-[#241f43]" style={{ width: `${Math.round((completedItems / Math.max(detail.items.length, 1)) * 100)}%` }} />
+          </div>
+          <input
+            className="oa-input mt-3 h-9 text-sm"
+            placeholder="Search audio"
+            value={itemSearch}
+            onChange={(event) => setItemSearch(event.target.value)}
+          />
+          <div className="mt-3 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+            {visibleQueueItems.map((item) => {
+              const submission = submissionsByItemId.get(item.id);
+              const checklist = submissionReady(submission, detail.assessment.metadata_schema);
+              const ready = checklist.transcript && checklist.pii && checklist.metadata;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => void selectItem(item.id)}
+                  className={`w-full rounded-lg border px-2 py-2 text-left text-xs transition ${
+                    item.id === selectedItemId ? "border-[#b99bde] bg-white shadow-sm" : "border-[#eee5f8] bg-[#fbf8ff] hover:bg-white"
+                  }`}
+                >
+                  <span className="block truncate font-semibold text-[#1f1b3f]" title={item.original_filename}>{item.original_filename}</span>
+                  <span className="mt-1 flex items-center justify-between gap-2">
+                    <span className={ready ? "font-medium text-[#236140]" : "font-medium text-[#8a5b1e]"}>
+                      {ready ? "Ready" : "Needs work"}
+                    </span>
+                    <span className="flex gap-1">
+                      <StatusDot ready={checklist.transcript} label="Transcript" />
+                      <StatusDot ready={checklist.pii} label="PII" />
+                      <StatusDot ready={checklist.metadata} label="Metadata" />
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+            {filteredItems.length > visibleQueueItems.length ? (
+              <p className="rounded-lg border border-[#eee5f8] bg-white px-2 py-2 text-xs text-[#6b7280]">
+                Showing first {visibleQueueItems.length}. Search to narrow the queue.
+              </p>
+            ) : null}
+            {filteredItems.length === 0 ? (
+              <p className="rounded-lg border border-[#eee5f8] bg-white px-2 py-2 text-xs text-[#6b7280]">No audio matches this search.</p>
+            ) : null}
+          </div>
         </aside>
 
         {selectedItem && selectedSubmission ? (
-          <div className="space-y-4">
-            <div className="oa-card p-4">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="oa-title text-sm font-semibold uppercase tracking-[0.1em] text-[#4b5563]">Audio</h2>
-                  <p className="mt-1 text-sm font-semibold text-[#1f1b3f]">{selectedItem.original_filename}</p>
+          <div className="min-h-0 space-y-3 xl:overflow-y-auto xl:pr-1">
+            <div className="oa-card p-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <h2 className="oa-title text-xs font-semibold uppercase tracking-[0.1em] text-[#4b5563]">Audio</h2>
+                  <p className="mt-0.5 truncate text-sm font-semibold text-[#1f1b3f]" title={selectedItem.original_filename}>{selectedItem.original_filename}</p>
                 </div>
-                <button type="button" onClick={() => void downloadAudio(selectedItem)} disabled={busy || editingDisabled} className="oa-btn-secondary px-3 py-2 text-sm disabled:opacity-50">
+                <button type="button" onClick={() => void downloadAudio(selectedItem)} disabled={busy || editingDisabled} className="oa-btn-secondary px-3 py-1.5 text-sm disabled:opacity-50">
                   Download
                 </button>
               </div>
-              <div className="mb-3 grid gap-2 text-xs text-[#4b5563] sm:grid-cols-3">
+              <div className="mb-2 grid gap-2 text-xs text-[#4b5563] sm:grid-cols-3">
                 <ChecklistPill label="Transcript" ready={currentReadiness.transcript} />
                 <ChecklistPill label="PII reviewed" ready={currentReadiness.pii} />
                 <ChecklistPill label="Metadata" ready={currentReadiness.metadata} />
@@ -537,14 +570,14 @@ export default function CandidateHiringAssignmentPage() {
               )}
             </div>
 
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(340px,0.95fr)]">
-              <div className="space-y-4">
-                <div className="oa-card p-4 sm:p-5">
+            <div className="grid grid-cols-1 gap-3 2xl:grid-cols-[minmax(0,1.25fr)_390px]">
+              <div className="space-y-3">
+                <div className="oa-card p-3">
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <label className="oa-title text-sm font-semibold" htmlFor="candidate-transcript">
                       Final Transcript
                     </label>
-                    <span className="text-xs text-[#6b7280]">Type the transcript manually</span>
+                    <span className="text-xs text-[#6b7280]">Manual entry</span>
                   </div>
                   <textarea
                     id="candidate-transcript"
@@ -555,13 +588,13 @@ export default function CandidateHiringAssignmentPage() {
                       markDirty();
                     }}
                     disabled={editingDisabled}
-                    rows={14}
-                    className="oa-textarea min-h-[460px] bg-white font-mono text-[15px] disabled:bg-[#f5f2f8]"
+                    rows={10}
+                    className="oa-textarea min-h-[320px] bg-white font-mono text-[15px] disabled:bg-[#f5f2f8] xl:min-h-[360px]"
                     placeholder="Start typing the transcript from the audio..."
                   />
                 </div>
 
-                <div className="oa-card p-4">
+                <div className="oa-card p-3">
                   <label className="text-sm font-semibold text-[#332d53]" htmlFor="candidate-notes">
                     Notes to evaluator
                   </label>
@@ -573,14 +606,14 @@ export default function CandidateHiringAssignmentPage() {
                       markDirty();
                     }}
                     disabled={editingDisabled}
-                    className="oa-textarea mt-2 min-h-[88px] disabled:bg-[#f5f2f8]"
+                    className="oa-textarea mt-2 min-h-[72px] disabled:bg-[#f5f2f8]"
                     placeholder="Optional context about unclear speech, uncertainty, or assumptions."
                   />
                 </div>
               </div>
 
-              <div className="space-y-4">
-                <div className="oa-card p-4">
+              <div className="space-y-3">
+                <div className="oa-card p-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <h3 className="oa-title text-base font-semibold">PII Answer</h3>
                     <label className="flex items-center gap-2 text-xs text-[#5f5b79]">
@@ -601,7 +634,7 @@ export default function CandidateHiringAssignmentPage() {
                       <div key={index} className="rounded-lg border border-[#e5dbf1] bg-[#fbf8ff] p-2">
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                           <input
-                            className="oa-input"
+                            className="oa-input h-9"
                             placeholder="PII type"
                             value={entry.type}
                             disabled={editingDisabled}
@@ -612,7 +645,7 @@ export default function CandidateHiringAssignmentPage() {
                             }}
                           />
                           <input
-                            className="oa-input"
+                            className="oa-input h-9"
                             placeholder="Value heard"
                             value={entry.value}
                             disabled={editingDisabled}
@@ -623,7 +656,7 @@ export default function CandidateHiringAssignmentPage() {
                             }}
                           />
                           <input
-                            className="oa-input"
+                            className="oa-input h-9"
                             placeholder="Approx time"
                             value={entry.timestamp ?? ""}
                             disabled={editingDisabled}
@@ -634,7 +667,7 @@ export default function CandidateHiringAssignmentPage() {
                             }}
                           />
                           <input
-                            className="oa-input"
+                            className="oa-input h-9"
                             placeholder="Notes"
                             value={entry.notes ?? ""}
                             disabled={editingDisabled}
@@ -667,7 +700,7 @@ export default function CandidateHiringAssignmentPage() {
                         setPiiReviewed(false);
                         markDirty();
                       }}
-                      className="oa-btn-secondary px-3 py-2 text-sm disabled:opacity-50"
+                      className="oa-btn-secondary px-3 py-1.5 text-sm disabled:opacity-50"
                     >
                       Add PII Row
                     </button>
@@ -681,14 +714,14 @@ export default function CandidateHiringAssignmentPage() {
                       markDirty();
                     }}
                     disabled={editingDisabled}
-                    className="oa-textarea mt-3 min-h-[100px] disabled:bg-[#f5f2f8]"
+                    className="oa-textarea mt-3 min-h-[84px] disabled:bg-[#f5f2f8]"
                     placeholder="Optional: write None or add extra PII notes."
                   />
                 </div>
 
-                <div className="oa-card p-4">
+                <div className="oa-card p-3">
                   <h3 className="oa-title text-base font-semibold">Metadata</h3>
-                  <div className="mt-3 space-y-3">
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
                     {detail.assessment.metadata_schema.length === 0 ? (
                       <p className="text-sm text-[#5f5b79]">No metadata fields configured.</p>
                     ) : (
@@ -732,8 +765,11 @@ export default function CandidateHiringAssignmentPage() {
               </div>
             </div>
 
-            <div className="sticky bottom-8 z-10 flex justify-end">
-              <button type="button" onClick={() => void saveSubmission(true)} disabled={busy || editingDisabled} className="oa-btn-primary px-5 py-2.5 text-sm font-semibold disabled:opacity-50">
+            <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#e4dcf0] bg-white/95 px-3 py-2 shadow-[0_-16px_32px_-28px_rgba(18,13,40,0.6)] backdrop-blur">
+              <span className="text-xs font-medium text-[#5f5b79]">
+                {saveState === "saving" ? "Saving changes..." : saveState === "failed" ? "Save failed" : saveState === "unsaved" ? "Unsaved changes" : `Saved ${formatDateTime(lastSavedAt)}`}
+              </span>
+              <button type="button" onClick={() => void saveSubmission(true)} disabled={busy || editingDisabled} className="oa-btn-primary px-5 py-2 text-sm font-semibold disabled:opacity-50">
                 Save Item
               </button>
             </div>
@@ -784,5 +820,26 @@ function ChecklistPill({ label, ready }: { label: string; ready: boolean }) {
     <span className={`rounded-lg border px-2.5 py-1.5 font-semibold ${ready ? "border-[#bfe5cb] bg-[#f1fbf5] text-[#266544]" : "border-[#ffd9a8] bg-[#fff8ec] text-[#925b17]"}`}>
       {label}: {ready ? "Done" : "Missing"}
     </span>
+  );
+}
+
+function MetricTile({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "danger" }) {
+  return (
+    <div className="bg-white px-3 py-2">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#7a7395]">{label}</p>
+      <p className={`mt-0.5 truncate text-xs font-semibold ${tone === "danger" ? "text-[#a13a3a]" : "text-[#1f1b3f]"}`} title={value}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function StatusDot({ ready, label }: { ready: boolean; label: string }) {
+  return (
+    <span
+      aria-label={`${label}: ${ready ? "done" : "missing"}`}
+      title={`${label}: ${ready ? "done" : "missing"}`}
+      className={`h-2 w-2 rounded-full ${ready ? "bg-[#2f8a56]" : "bg-[#c47a20]"}`}
+    />
   );
 }

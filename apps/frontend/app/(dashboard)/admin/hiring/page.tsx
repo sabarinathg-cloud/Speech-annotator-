@@ -16,7 +16,7 @@ import type {
   HiringSubmission,
   HiringSubmissionValidationStatus,
 } from "@outcomes/shared-types";
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
 import {
@@ -82,6 +82,8 @@ type AssignmentFolderDraft = {
   folder_path: string;
   recursive: boolean;
 };
+
+type AdminHiringTab = "setup" | "audio" | "candidates" | "review";
 
 function defaultMetadataFields(): HiringMetadataField[] {
   return [
@@ -225,6 +227,9 @@ export default function AdminHiringPage() {
   const [inviteCredential, setInviteCredential] = useState<HiringAssignmentInviteResponse | null>(null);
   const [auditEvents, setAuditEvents] = useState<HiringAuditEvent[]>([]);
   const [referenceDrafts, setReferenceDrafts] = useState<Record<string, ReferenceDraft>>({});
+  const [activeTab, setActiveTab] = useState<AdminHiringTab>("candidates");
+  const [referenceSearch, setReferenceSearch] = useState("");
+  const [selectedReferenceItemId, setSelectedReferenceItemId] = useState<string | null>(null);
   const [scoreDraft, setScoreDraft] = useState({
     transcript_score: "",
     pii_score: "",
@@ -237,6 +242,7 @@ export default function AdminHiringPage() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const deferredReferenceSearch = useDeferredValue(referenceSearch);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -264,6 +270,7 @@ export default function AdminHiringPage() {
   useEffect(() => {
     if (!detail) {
       setReferenceDrafts({});
+      setSelectedReferenceItemId(null);
       return;
     }
     setReferenceDrafts(
@@ -277,7 +284,49 @@ export default function AdminHiringPage() {
         ])
       )
     );
+    setSelectedReferenceItemId((current) =>
+      current && detail.items.some((item) => item.id === current) ? current : detail.items[0]?.id ?? null
+    );
   }, [detail]);
+
+  const assignmentStats = useMemo(() => {
+    const submitted = assignments.filter((assignment) => assignment.status === "SUBMITTED").length;
+    const evaluated = assignments.filter((assignment) => assignment.status === "EVALUATED").length;
+    const revoked = assignments.filter((assignment) => assignment.access_revoked).length;
+    const inProgress = assignments.filter((assignment) => assignment.status === "IN_PROGRESS").length;
+    return { submitted, evaluated, revoked, inProgress };
+  }, [assignments]);
+
+  const referenceNeedle = deferredReferenceSearch.trim().toLowerCase();
+  const filteredReferenceItems = useMemo(
+    () =>
+      (detail?.items ?? []).filter((item) => {
+        if (!referenceNeedle) return true;
+        return `${item.original_filename} ${item.original_source ?? ""}`.toLowerCase().includes(referenceNeedle);
+      }),
+    [detail?.items, referenceNeedle]
+  );
+  const selectedReferenceItem = useMemo(
+    () =>
+      (detail?.items ?? []).find((item) => item.id === selectedReferenceItemId) ??
+      filteredReferenceItems[0] ??
+      detail?.items[0] ??
+      null,
+    [detail?.items, filteredReferenceItems, selectedReferenceItemId]
+  );
+  const selectedReferenceDraft = selectedReferenceItem
+    ? referenceDrafts[selectedReferenceItem.id] ?? { reference_transcript: "", reference_pii_entries: [] }
+    : null;
+  const referenceAnswerCount = useMemo(
+    () =>
+      (detail?.items ?? []).filter((item) => Boolean(item.reference_transcript) || item.reference_pii_entries.length > 0)
+        .length,
+    [detail?.items]
+  );
+  const reviewItemsById = useMemo(
+    () => new Map((review?.items ?? []).map((item) => [item.id, item])),
+    [review?.items]
+  );
 
   const cleanedMetadataFields = useMemo(
     () =>
@@ -642,7 +691,6 @@ export default function AdminHiringPage() {
         reference_pii_entries: referencePiiEntries,
       });
       setDetail(updated);
-      await loadAssessment(detail.id);
       if (review) await openReview(review.id);
       setMessage("Reference answer saved");
       setError(null);
@@ -809,7 +857,10 @@ export default function AdminHiringPage() {
   async function openReview(assignmentId: string) {
     if (!accessToken) return;
     try {
-      const response = await fetchHiringAssignmentReview(accessToken, assignmentId);
+      const [response, auditResponse] = await Promise.all([
+        fetchHiringAssignmentReview(accessToken, assignmentId),
+        fetchHiringAssignmentAuditEvents(accessToken, assignmentId),
+      ]);
       setReview(response);
       setScoreDraft({
         transcript_score: numericInputValue(response.transcript_score),
@@ -822,8 +873,8 @@ export default function AdminHiringPage() {
         decision: response.decision,
         evaluator_notes: response.evaluator_notes ?? "",
       });
-      const auditResponse = await fetchHiringAssignmentAuditEvents(accessToken, assignmentId);
       setAuditEvents(auditResponse.items);
+      setActiveTab("review");
       setError(null);
     } catch (err) {
       setError(err instanceof APIError ? err.message : "Could not load review");
@@ -882,8 +933,8 @@ export default function AdminHiringPage() {
       {error ? <p className="rounded-lg border border-[#f0c8c8] bg-[#fff3f3] px-3 py-2 text-sm text-[#a13a3a]">{error}</p> : null}
       {message ? <p className="rounded-lg border border-[#c8e6d4] bg-[#f0fbf4] px-3 py-2 text-sm text-[#236140]">{message}</p> : null}
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[380px_1fr]">
-        <aside className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
+        <aside className="space-y-4 xl:sticky xl:top-24 xl:max-h-[calc(100vh-132px)] xl:overflow-y-auto xl:pr-1">
           <section className="oa-card p-4">
             <h2 className="oa-title text-lg font-semibold">Create assessment</h2>
             <div className="mt-3 space-y-3">
@@ -1007,6 +1058,30 @@ export default function AdminHiringPage() {
                 </div>
               </section>
 
+              <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                <AdminMetric label="Audio" value={String(detail.item_count)} />
+                <AdminMetric label="Candidates" value={String(assignments.length)} />
+                <AdminMetric label="Submitted" value={String(assignmentStats.submitted)} />
+                <AdminMetric label="Need review" value={String(Math.max(assignmentStats.submitted - assignmentStats.evaluated, 0))} />
+              </section>
+
+              <nav className="oa-card flex flex-wrap gap-2 p-2" aria-label="Hiring admin sections">
+                <AdminTabButton active={activeTab === "candidates"} onClick={() => setActiveTab("candidates")}>
+                  Candidates
+                </AdminTabButton>
+                <AdminTabButton active={activeTab === "review"} onClick={() => setActiveTab("review")}>
+                  Review
+                </AdminTabButton>
+                <AdminTabButton active={activeTab === "audio"} onClick={() => setActiveTab("audio")}>
+                  Audio & References
+                </AdminTabButton>
+                <AdminTabButton active={activeTab === "setup"} onClick={() => setActiveTab("setup")}>
+                  Setup
+                </AdminTabButton>
+              </nav>
+
+              {activeTab === "setup" ? (
+                <>
               <section className="oa-card p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <h3 className="oa-title text-base font-semibold">Assessment settings</h3>
@@ -1073,40 +1148,99 @@ export default function AdminHiringPage() {
                   <button type="button" onClick={importManifest} disabled={busy || !manifestFile} className="oa-btn-secondary mt-3 px-3 py-2 text-sm disabled:opacity-50">Import Manifest</button>
                 </div>
               </section>
+                </>
+              ) : null}
 
-              <section className="oa-card p-4">
-                <h3 className="oa-title text-base font-semibold">Audio items</h3>
-                <div className="mt-3 space-y-3">
-                  {detail.items.map((item) => {
-                    const draft = referenceDrafts[item.id] ?? { reference_transcript: "", reference_pii_entries: [] };
-                    return (
-                      <article key={item.id} className="rounded-xl border border-[#eee5f8] bg-[#fbf8ff] p-3">
+              {activeTab === "audio" ? (
+                <section className="oa-card p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="oa-title text-base font-semibold">Audio & reference answers</h3>
+                      <p className="mt-1 text-xs text-[#6b7280]">
+                        {referenceAnswerCount}/{detail.items.length} files have a reference answer
+                      </p>
+                    </div>
+                    {selectedReferenceItem ? (
+                      <button
+                        type="button"
+                        onClick={() => void saveItemReference(selectedReferenceItem.id)}
+                        disabled={busy}
+                        className="oa-btn-primary px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                      >
+                        Save Reference
+                      </button>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+                    <div className="rounded-xl border border-[#eee5f8] bg-[#fbf8ff] p-3">
+                      <input
+                        className="oa-input h-9 text-sm"
+                        placeholder="Search audio"
+                        value={referenceSearch}
+                        onChange={(event) => setReferenceSearch(event.target.value)}
+                      />
+                      <div className="mt-3 max-h-[540px] space-y-1 overflow-y-auto pr-1">
+                        {filteredReferenceItems.slice(0, 300).map((item) => {
+                          const hasReference = Boolean(item.reference_transcript) || item.reference_pii_entries.length > 0;
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => setSelectedReferenceItemId(item.id)}
+                              className={`w-full rounded-lg border px-2 py-2 text-left text-xs transition ${
+                                selectedReferenceItem?.id === item.id
+                                  ? "border-[#b99bde] bg-white shadow-sm"
+                                  : "border-[#eee5f8] bg-[#fffafe] hover:bg-white"
+                              }`}
+                            >
+                              <span className="block truncate font-semibold text-[#1f1b3f]" title={item.original_filename}>
+                                {item.original_filename}
+                              </span>
+                              <span className="mt-1 flex items-center justify-between gap-2">
+                                <span className="text-[#7a7395]">{item.assignment_id ? "Candidate-specific" : "Shared"}</span>
+                                <span className={hasReference ? "text-[#236140]" : "text-[#8a5b1e]"}>
+                                  {hasReference ? "Reference set" : "No reference"}
+                                </span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {filteredReferenceItems.length > 300 ? (
+                          <p className="rounded-lg border border-[#eee5f8] bg-white px-2 py-2 text-xs text-[#6b7280]">
+                            Showing first 300. Search to narrow the list.
+                          </p>
+                        ) : null}
+                        {filteredReferenceItems.length === 0 ? (
+                          <p className="rounded-lg border border-[#eee5f8] bg-white px-2 py-2 text-xs text-[#6b7280]">No audio matches this search.</p>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {selectedReferenceItem && selectedReferenceDraft ? (
+                      <article className="rounded-xl border border-[#eee5f8] bg-[#fbf8ff] p-3">
                         <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div>
+                          <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
-                              <p className="font-semibold text-[#1f1b3f]">{item.original_filename}</p>
+                              <p className="truncate font-semibold text-[#1f1b3f]" title={selectedReferenceItem.original_filename}>
+                                {selectedReferenceItem.original_filename}
+                              </p>
                               <span className="rounded-full border border-[#ddd5ef] bg-white px-2 py-0.5 text-[11px] uppercase tracking-[0.12em] text-[#6c5f90]">
-                                {item.assignment_id ? "Candidate" : "Shared"}
+                                {selectedReferenceItem.assignment_id ? "Candidate" : "Shared"}
                               </span>
                             </div>
-                            <p className="mt-1 break-all text-xs text-[#6b7280]">{item.original_source}</p>
+                            <p className="mt-1 break-all text-xs text-[#6b7280]">{selectedReferenceItem.original_source}</p>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => void saveItemReference(item.id)}
-                            disabled={busy}
-                            className="oa-btn-secondary px-3 py-1.5 text-xs disabled:opacity-50"
-                          >
-                            Save Reference
-                          </button>
                         </div>
-                        <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-[1fr_420px]">
+                        <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_380px]">
                           <label className="block text-sm">
                             <span className="font-medium text-[#332d53]">Reference transcript</span>
                             <textarea
-                              className="oa-textarea mt-1 min-h-[120px]"
-                              value={draft.reference_transcript}
-                              onChange={(event) => updateReferenceDraft(item.id, { reference_transcript: event.target.value })}
+                              className="oa-textarea mt-1 min-h-[280px]"
+                              value={selectedReferenceDraft.reference_transcript}
+                              onChange={(event) =>
+                                updateReferenceDraft(selectedReferenceItem.id, { reference_transcript: event.target.value })
+                              }
                             />
                           </label>
                           <div>
@@ -1115,62 +1249,75 @@ export default function AdminHiringPage() {
                               <button
                                 type="button"
                                 className="oa-btn-quiet px-2.5 py-1 text-xs"
-                                onClick={() => addReferencePiiEntry(item.id)}
+                                onClick={() => addReferencePiiEntry(selectedReferenceItem.id)}
                               >
                                 Add
                               </button>
                             </div>
-                            <div className="mt-2 space-y-2">
-                              {draft.reference_pii_entries.map((entry, index) => (
-                                <div key={`${item.id}-reference-pii-${index}`} className="rounded-lg border border-[#e5dbf1] bg-white p-2">
+                            <div className="mt-2 max-h-[420px] space-y-2 overflow-y-auto pr-1">
+                              {selectedReferenceDraft.reference_pii_entries.map((entry, index) => (
+                                <div key={`${selectedReferenceItem.id}-reference-pii-${index}`} className="rounded-lg border border-[#e5dbf1] bg-white p-2">
                                   <div className="grid grid-cols-2 gap-2">
                                     <input
-                                      className="oa-input"
+                                      className="oa-input h-9"
                                       placeholder="Type"
                                       value={entry.type}
-                                      onChange={(event) => updateReferencePiiEntry(item.id, index, { type: event.target.value })}
+                                      onChange={(event) =>
+                                        updateReferencePiiEntry(selectedReferenceItem.id, index, { type: event.target.value })
+                                      }
                                     />
                                     <input
-                                      className="oa-input"
+                                      className="oa-input h-9"
                                       placeholder="Value"
                                       value={entry.value}
-                                      onChange={(event) => updateReferencePiiEntry(item.id, index, { value: event.target.value })}
+                                      onChange={(event) =>
+                                        updateReferencePiiEntry(selectedReferenceItem.id, index, { value: event.target.value })
+                                      }
                                     />
                                     <input
-                                      className="oa-input"
+                                      className="oa-input h-9"
                                       placeholder="Timestamp"
                                       value={entry.timestamp ?? ""}
-                                      onChange={(event) => updateReferencePiiEntry(item.id, index, { timestamp: event.target.value || null })}
+                                      onChange={(event) =>
+                                        updateReferencePiiEntry(selectedReferenceItem.id, index, { timestamp: event.target.value || null })
+                                      }
                                     />
                                     <input
-                                      className="oa-input"
+                                      className="oa-input h-9"
                                       placeholder="Notes"
                                       value={entry.notes ?? ""}
-                                      onChange={(event) => updateReferencePiiEntry(item.id, index, { notes: event.target.value || null })}
+                                      onChange={(event) =>
+                                        updateReferencePiiEntry(selectedReferenceItem.id, index, { notes: event.target.value || null })
+                                      }
                                     />
                                   </div>
                                   <button
                                     type="button"
                                     className="oa-btn-quiet mt-2 px-2.5 py-1 text-xs"
-                                    onClick={() => removeReferencePiiEntry(item.id, index)}
+                                    onClick={() => removeReferencePiiEntry(selectedReferenceItem.id, index)}
                                   >
                                     Remove
                                   </button>
                                 </div>
                               ))}
-                              {draft.reference_pii_entries.length === 0 ? (
+                              {selectedReferenceDraft.reference_pii_entries.length === 0 ? (
                                 <p className="rounded-lg border border-[#e5dbf1] bg-white px-3 py-2 text-xs text-[#7a7395]">No expected PII rows</p>
                               ) : null}
                             </div>
                           </div>
                         </div>
                       </article>
-                    );
-                  })}
-                  {detail.items.length === 0 ? <p className="text-sm text-[#5f5b79]">No audio imported yet.</p> : null}
-                </div>
-              </section>
+                    ) : (
+                      <div className="rounded-xl border border-[#eee5f8] bg-[#fbf8ff] p-6 text-sm text-[#5f5b79]">
+                        Import audio to add reference answers.
+                      </div>
+                    )}
+                  </div>
+                </section>
+              ) : null}
 
+              {activeTab === "candidates" ? (
+                <>
               <section className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
                 <div className="oa-card p-4">
                   <h3 className="oa-title text-base font-semibold">Assign candidates</h3>
@@ -1434,8 +1581,10 @@ export default function AdminHiringPage() {
                   {ranking.length === 0 ? <p className="mt-3 text-sm text-[#5f5b79]">No candidates assigned yet.</p> : null}
                 </div>
               </section>
+                </>
+              ) : null}
 
-              {review ? (
+              {activeTab === "review" && review ? (
                 <section className="oa-card p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -1494,7 +1643,7 @@ export default function AdminHiringPage() {
 
                   <div className="mt-5 space-y-4">
                     {review.submissions.map((submission) => {
-                      const item = review.items.find((candidate) => candidate.id === submission.item_id);
+                      const item = reviewItemsById.get(submission.item_id);
                       const metrics = submission.reference_metrics;
                       const itemSuggestedTranscriptScore = metrics?.suggested_transcript_score;
                       return (
@@ -1656,6 +1805,11 @@ export default function AdminHiringPage() {
                   </div>
                 </section>
               ) : null}
+              {activeTab === "review" && !review ? (
+                <section className="oa-card p-6 text-center text-sm text-[#5f5b79]">
+                  Open the Candidates tab and choose Review on a submitted candidate.
+                </section>
+              ) : null}
             </>
           ) : (
             <section className="oa-card p-6 text-center text-sm text-[#5f5b79]">Select or create an assessment.</section>
@@ -1663,5 +1817,36 @@ export default function AdminHiringPage() {
         </main>
       </div>
     </div>
+  );
+}
+
+function AdminMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="oa-card px-3 py-2">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#7a7395]">{label}</p>
+      <p className="mt-1 text-lg font-semibold text-[#1f1b3f]">{value}</p>
+    </div>
+  );
+}
+
+function AdminTabButton({
+  active,
+  children,
+  onClick,
+}: {
+  active: boolean;
+  children: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-lg px-3 py-1.5 text-sm font-semibold transition ${
+        active ? "bg-[#241f43] text-white shadow-sm" : "text-[#5f5b79] hover:bg-[#f7f2ff]"
+      }`}
+    >
+      {children}
+    </button>
   );
 }

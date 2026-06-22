@@ -14,7 +14,7 @@ from urllib.parse import quote
 import pandas as pd
 from fastapi import UploadFile
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
 from app.core.security import get_password_hash
@@ -100,7 +100,7 @@ class HiringService:
         assessments = list(
             self.db.execute(
                 select(HiringAssessment)
-                .options(joinedload(HiringAssessment.items), joinedload(HiringAssessment.assignments))
+                .options(selectinload(HiringAssessment.items), selectinload(HiringAssessment.assignments))
                 .order_by(HiringAssessment.created_at.desc())
             )
             .unique()
@@ -450,9 +450,9 @@ class HiringService:
             self.db.execute(
                 select(HiringAssignment)
                 .options(
-                    joinedload(HiringAssignment.assessment).joinedload(HiringAssessment.items),
-                    joinedload(HiringAssignment.candidate),
-                    joinedload(HiringAssignment.submissions).joinedload(HiringSubmission.item),
+                    selectinload(HiringAssignment.assessment).selectinload(HiringAssessment.items),
+                    selectinload(HiringAssignment.candidate),
+                    selectinload(HiringAssignment.submissions).selectinload(HiringSubmission.item),
                 )
                 .where(HiringAssignment.assessment_id == assessment_id)
                 .order_by(HiringAssignment.assigned_at.desc())
@@ -533,9 +533,9 @@ class HiringService:
             self.db.execute(
                 select(HiringAssignment)
                 .options(
-                    joinedload(HiringAssignment.assessment).joinedload(HiringAssessment.items),
-                    joinedload(HiringAssignment.candidate),
-                    joinedload(HiringAssignment.submissions).joinedload(HiringSubmission.item),
+                    selectinload(HiringAssignment.assessment).selectinload(HiringAssessment.items),
+                    selectinload(HiringAssignment.candidate),
+                    selectinload(HiringAssignment.submissions).selectinload(HiringSubmission.item),
                 )
                 .where(HiringAssignment.candidate_id == actor.id)
                 .where(HiringAssignment.access_revoked.is_(False))
@@ -838,11 +838,11 @@ class HiringService:
             self.db.execute(
                 select(HiringAssessment)
                 .options(
-                    joinedload(HiringAssessment.items),
-                    joinedload(HiringAssessment.assignments)
-                    .joinedload(HiringAssignment.submissions)
-                    .joinedload(HiringSubmission.item),
-                    joinedload(HiringAssessment.assignments).joinedload(HiringAssignment.candidate),
+                    selectinload(HiringAssessment.items),
+                    selectinload(HiringAssessment.assignments)
+                    .selectinload(HiringAssignment.submissions)
+                    .selectinload(HiringSubmission.item),
+                    selectinload(HiringAssessment.assignments).selectinload(HiringAssignment.candidate),
                 )
                 .where(HiringAssessment.id == assessment_id)
             )
@@ -858,9 +858,9 @@ class HiringService:
             self.db.execute(
                 select(HiringAssignment)
                 .options(
-                    joinedload(HiringAssignment.assessment).joinedload(HiringAssessment.items),
-                    joinedload(HiringAssignment.candidate),
-                    joinedload(HiringAssignment.submissions).joinedload(HiringSubmission.item),
+                    selectinload(HiringAssignment.assessment).selectinload(HiringAssessment.items),
+                    selectinload(HiringAssignment.candidate),
+                    selectinload(HiringAssignment.submissions).selectinload(HiringSubmission.item),
                 )
                 .where(HiringAssignment.id == assignment_id)
             )
@@ -884,11 +884,11 @@ class HiringService:
             self.db.execute(
                 select(HiringSubmission)
                 .options(
-                    joinedload(HiringSubmission.assignment)
-                    .joinedload(HiringAssignment.assessment)
-                    .joinedload(HiringAssessment.items),
-                    joinedload(HiringSubmission.assignment).joinedload(HiringAssignment.candidate),
-                    joinedload(HiringSubmission.item),
+                    selectinload(HiringSubmission.assignment)
+                    .selectinload(HiringAssignment.assessment)
+                    .selectinload(HiringAssessment.items),
+                    selectinload(HiringSubmission.assignment).selectinload(HiringAssignment.candidate),
+                    selectinload(HiringSubmission.item),
                 )
                 .where(HiringSubmission.id == submission_id)
             )
