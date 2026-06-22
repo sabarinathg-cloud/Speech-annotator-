@@ -139,8 +139,16 @@ export default function CandidateHiringAssignmentPage() {
     [detail?.submissions, selectedItemId]
   );
   const readOnly = detail?.status === "SUBMITTED" || detail?.status === "EVALUATED";
+  const assessmentActive = detail?.assessment.status === "ACTIVE";
+  const assessmentInactive = Boolean(detail && !assessmentActive && !readOnly);
   const timeExpired = secondsRemaining !== null && secondsRemaining <= 0 && !readOnly;
-  const editingDisabled = readOnly || timeExpired;
+  const editingDisabled = readOnly || assessmentInactive || timeExpired;
+  const candidateBlockedMessage = assessmentInactive
+    ? "Hiring assessment is not active. Ask an admin to activate it before starting."
+    : timeExpired
+      ? "Time is up. Ask an admin to extend the deadline if you need more time."
+      : null;
+  const visibleError = error && error !== candidateBlockedMessage ? error : null;
   const transcriptWordCount = draftTranscript.trim() ? draftTranscript.trim().split(/\s+/).length : 0;
   function readinessForSubmission(submission: HiringSubmission) {
     return submissionReady(
@@ -218,7 +226,14 @@ export default function CandidateHiringAssignmentPage() {
   }, []);
 
   useEffect(() => {
-    if (!accessToken || !selectedItem) return;
+    if (!accessToken || !selectedItem || editingDisabled) {
+      setAudioBusy(false);
+      setAudioUrl((previous) => {
+        if (previous) URL.revokeObjectURL(previous);
+        return null;
+      });
+      return;
+    }
     let cancelled = false;
     setAudioBusy(true);
     setAudioUrl((previous) => {
@@ -240,7 +255,7 @@ export default function CandidateHiringAssignmentPage() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, assignmentId, selectedItem?.id]);
+  }, [accessToken, assignmentId, selectedItem?.id, editingDisabled]);
 
   async function refresh() {
     if (!accessToken) return;
@@ -463,7 +478,8 @@ export default function CandidateHiringAssignmentPage() {
         </div>
       </div>
 
-      {error ? <p className="rounded-lg border border-[#f0c8c8] bg-[#fff3f3] px-3 py-2 text-sm text-[#a13a3a]">{error}</p> : null}
+      {candidateBlockedMessage ? <p className="rounded-lg border border-[#f0c8c8] bg-[#fff3f3] px-3 py-2 text-sm text-[#a13a3a]">{candidateBlockedMessage}</p> : null}
+      {visibleError ? <p className="rounded-lg border border-[#f0c8c8] bg-[#fff3f3] px-3 py-2 text-sm text-[#a13a3a]">{visibleError}</p> : null}
       {message ? <p className="rounded-lg border border-[#c8e6d4] bg-[#f0fbf4] px-3 py-2 text-sm text-[#236140]">{message}</p> : null}
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
@@ -512,7 +528,9 @@ export default function CandidateHiringAssignmentPage() {
                 <ChecklistPill label="PII reviewed" ready={currentReadiness.pii} />
                 <ChecklistPill label="Metadata" ready={currentReadiness.metadata} />
               </div>
-              {audioBusy ? (
+              {candidateBlockedMessage ? (
+                <div className="rounded-xl border border-[#f0c8c8] bg-[#fff8f8] px-3 py-4 text-sm text-[#8a3434]">{candidateBlockedMessage}</div>
+              ) : audioBusy ? (
                 <div className="rounded-xl border border-[#e5e7eb] bg-[#f8fafc] px-3 py-4 text-sm text-[#5f5b79]">Loading audio...</div>
               ) : (
                 <AudioWaveformPlayer audioUrl={audioUrl} allowDownloadControls />
