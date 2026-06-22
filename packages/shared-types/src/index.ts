@@ -719,3 +719,14 @@ export interface HiringImportResponse {
   skipped_items: number;
   errors: string[];
 }
+
+export interface HiringAudioBucket {
+  name: string;
+  path: string;
+  wav_count: number;
+}
+
+export interface HiringAudioBucketListResponse {
+  root_path: string;
+  buckets: HiringAudioBucket[];
+}

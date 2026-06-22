@@ -80,6 +80,22 @@ class HiringFolderImportRequest(BaseModel):
     recursive: bool = False
 
 
+class HiringAudioBucketListRequest(BaseModel):
+    root_path: str = Field(min_length=1)
+    recursive: bool = False
+
+
+class HiringAudioBucketResponse(BaseModel):
+    name: str
+    path: str
+    wav_count: int
+
+
+class HiringAudioBucketListResponse(BaseModel):
+    root_path: str
+    buckets: list[HiringAudioBucketResponse]
+
+
 class HiringAssignmentCreateRequest(BaseModel):
     candidate_ids: list[str] = Field(min_length=1, max_length=200)
 

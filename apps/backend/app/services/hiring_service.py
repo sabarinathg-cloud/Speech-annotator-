@@ -30,6 +30,8 @@ from app.models.security import SecurityAuditEvent
 from app.models.user import User
 from app.schemas.hiring import (
     HiringAdminAssignmentReviewResponse,
+    HiringAudioBucketListResponse,
+    HiringAudioBucketResponse,
     HiringAssessmentDetailResponse,
     HiringAssessmentItemReferenceUpdateRequest,
     HiringAssessmentItemResponse,
@@ -237,6 +239,30 @@ class HiringService:
     def import_folder(self, *, assessment_id: str, folder_path: str, recursive: bool) -> HiringImportResponse:
         assessment = self._get_assessment_or_404(assessment_id)
         return self._import_folder_items(assessment=assessment, folder_path=folder_path, recursive=recursive)
+
+    def list_audio_buckets(self, *, root_path: str, recursive: bool) -> HiringAudioBucketListResponse:
+        root = self._resolve_allowed_import_path(root_path)
+        if not root.is_dir():
+            raise ServiceError("Hiring audio bucket root not found", status_code=404)
+        try:
+            directories = sorted(
+                [path for path in root.iterdir() if path.is_dir() and not path.name.startswith(".")],
+                key=lambda path: path.name.lower(),
+            )
+        except OSError as exc:
+            raise ServiceError(
+                "Unable to read hiring audio bucket root. Check backend filesystem permissions.",
+                status_code=403,
+            ) from exc
+        buckets = [
+            HiringAudioBucketResponse(
+                name=directory.name,
+                path=str(directory.resolve(strict=True)),
+                wav_count=self._count_wav_files(directory, recursive=recursive),
+            )
+            for directory in directories
+        ]
+        return HiringAudioBucketListResponse(root_path=str(root), buckets=buckets)
 
     def import_assignment_folder(self, *, assignment_id: str, folder_path: str, recursive: bool) -> HiringImportResponse:
         assignment = self._get_assignment_or_404(assignment_id)
@@ -1072,6 +1098,10 @@ class HiringService:
                 status_code=403,
             ) from exc
         return files, skipped, errors
+
+    def _count_wav_files(self, folder: Path, *, recursive: bool) -> int:
+        files, _, _ = self._scan_hiring_folder(folder, recursive=recursive)
+        return len(files)
 
     def _existing_folder_import_sources(
         self,

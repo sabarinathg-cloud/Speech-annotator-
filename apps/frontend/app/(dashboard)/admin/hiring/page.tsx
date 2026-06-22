@@ -3,6 +3,7 @@
 import type {
   AdminUser,
   HiringAdminAssignmentReview,
+  HiringAudioBucket,
   HiringAssignmentInviteResponse,
   HiringAuditEvent,
   HiringAssessmentDetail,
@@ -33,6 +34,7 @@ import {
   fetchHiringAssignmentReview,
   fetchHiringAssessmentRanking,
   fetchHiringAssessments,
+  fetchHiringAudioBuckets,
   fetchUsers,
   importHiringAssignmentFolder,
   importHiringFolder,
@@ -209,6 +211,9 @@ export default function AdminHiringPage() {
   const [settingsRubricFields, setSettingsRubricFields] = useState<HiringRubricField[]>(defaultRubricFields);
   const [folderPath, setFolderPath] = useState("");
   const [recursive, setRecursive] = useState(false);
+  const [bucketRootPath, setBucketRootPath] = useState("");
+  const [bucketScanRecursive, setBucketScanRecursive] = useState(false);
+  const [audioBuckets, setAudioBuckets] = useState<HiringAudioBucket[]>([]);
   const [assignmentFolderDrafts, setAssignmentFolderDrafts] = useState<Record<string, AssignmentFolderDraft>>({});
   const [audioFiles, setAudioFiles] = useState<File[]>([]);
   const [manifestFile, setManifestFile] = useState<File | null>(null);
@@ -437,6 +442,25 @@ export default function AdminHiringPage() {
       await loadAssessment(detail.id);
     } catch (err) {
       setError(err instanceof APIError ? err.message : "Folder import failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadAudioBuckets() {
+    if (!accessToken || !bucketRootPath.trim()) return;
+    setBusy(true);
+    try {
+      const response = await fetchHiringAudioBuckets(accessToken, {
+        root_path: bucketRootPath.trim(),
+        recursive: bucketScanRecursive,
+      });
+      setBucketRootPath(response.root_path);
+      setAudioBuckets(response.buckets);
+      setMessage(`Loaded ${response.buckets.length} bucket${response.buckets.length === 1 ? "" : "s"}`);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Bucket load failed");
     } finally {
       setBusy(false);
     }
@@ -1173,6 +1197,30 @@ export default function AdminHiringPage() {
 
                 <div className="oa-card p-4">
                   <h3 className="oa-title text-base font-semibold">Candidate progress</h3>
+                  <div className="mt-3 grid grid-cols-1 gap-3 rounded-lg border border-[#eee5f8] bg-[#fbf8ff] p-3 lg:grid-cols-[minmax(260px,1fr)_auto_auto]">
+                    <input
+                      className="oa-input h-10 text-sm"
+                      placeholder="/mnt/amc-data/vad_triage_4_buckets_balanced_by_call_id"
+                      value={bucketRootPath}
+                      onChange={(event) => setBucketRootPath(event.target.value)}
+                    />
+                    <label className="flex items-center gap-2 text-xs text-[#5f5b79]">
+                      <input
+                        type="checkbox"
+                        checked={bucketScanRecursive}
+                        onChange={(event) => setBucketScanRecursive(event.target.checked)}
+                      />
+                      Recursive count
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void loadAudioBuckets()}
+                      disabled={busy || !bucketRootPath.trim()}
+                      className="oa-btn-secondary px-3 py-2 text-sm disabled:opacity-50"
+                    >
+                      Load Buckets
+                    </button>
+                  </div>
                   <div className="mt-3 overflow-x-auto">
                     <table className="w-full min-w-[1320px] text-left text-sm">
                       <thead className="text-xs uppercase tracking-[0.12em] text-[#7a7395]">
@@ -1206,6 +1254,23 @@ export default function AdminHiringPage() {
                               <td className="py-2 pr-3">{assignment.submitted_count}/{assignment.item_count}</td>
                               <td className="py-2 pr-3">
                                 <div className="flex min-w-[260px] max-w-[320px] flex-col gap-2">
+                                  {audioBuckets.length > 0 ? (
+                                    <select
+                                      className="oa-input h-9 text-xs"
+                                      value={folderDraft.folder_path}
+                                      onChange={(event) =>
+                                        updateAssignmentFolderDraft(assignment.id, { folder_path: event.target.value })
+                                      }
+                                      disabled={!canImportCandidateAudio}
+                                    >
+                                      <option value="">Select bucket</option>
+                                      {audioBuckets.map((bucket) => (
+                                        <option key={bucket.path} value={bucket.path}>
+                                          {bucket.name} ({bucket.wav_count})
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : null}
                                   <input
                                     className="oa-input h-9 text-xs"
                                     placeholder="/mnt/hiring-audio/candidate"

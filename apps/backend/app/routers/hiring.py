@@ -7,6 +7,8 @@ from app.models.enums import RoleEnum
 from app.models.user import User
 from app.schemas.hiring import (
     HiringAdminAssignmentReviewResponse,
+    HiringAudioBucketListRequest,
+    HiringAudioBucketListResponse,
     HiringAssessmentCreateRequest,
     HiringAssessmentDetailResponse,
     HiringAssessmentItemReferenceUpdateRequest,
@@ -148,6 +150,18 @@ def import_assessment_folder(
             folder_path=payload.folder_path,
             recursive=payload.recursive,
         )
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/audio-buckets", response_model=HiringAudioBucketListResponse)
+def list_audio_buckets(
+    payload: HiringAudioBucketListRequest,
+    db: Session = Depends(get_db_session),
+    _: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    try:
+        return HiringService(db).list_audio_buckets(root_path=payload.root_path, recursive=payload.recursive)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 

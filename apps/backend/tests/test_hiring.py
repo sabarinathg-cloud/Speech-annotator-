@@ -136,6 +136,37 @@ def test_folder_import_handles_more_than_one_thousand_wavs(client, auth_headers,
         settings.hiring_audio_import_roots = original_roots
 
 
+def test_admin_can_list_audio_buckets_from_allowed_root(client, auth_headers, tmp_path):
+    settings = get_settings()
+    original_roots = settings.hiring_audio_import_roots
+    settings.hiring_audio_import_roots = str(tmp_path)
+    try:
+        bucket_root = tmp_path / "bucket-root"
+        bucket_root.mkdir()
+        bucket_one = bucket_root / "bucket_1"
+        bucket_two = bucket_root / "bucket_2"
+        bucket_one.mkdir()
+        bucket_two.mkdir()
+        _write_wav(bucket_one / "one.wav")
+        _write_wav(bucket_one / "two.wav")
+        _write_wav(bucket_two / "three.wav")
+        (bucket_two / "notes.txt").write_text("not audio")
+
+        response = client.post(
+            "/api/v1/hiring/audio-buckets",
+            headers=auth_headers["admin"],
+            json={"root_path": str(bucket_root), "recursive": False},
+        )
+        assert response.status_code == 200
+        assert response.json()["root_path"] == str(bucket_root)
+        assert response.json()["buckets"] == [
+            {"name": "bucket_1", "path": str(bucket_one), "wav_count": 2},
+            {"name": "bucket_2", "path": str(bucket_two), "wav_count": 1},
+        ]
+    finally:
+        settings.hiring_audio_import_roots = original_roots
+
+
 def test_admin_can_import_candidate_specific_folders(client, auth_headers, seed_users, tmp_path, db_session):
     settings = get_settings()
     original_roots = settings.hiring_audio_import_roots

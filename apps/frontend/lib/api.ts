@@ -7,6 +7,7 @@ import type {
   ColumnMappingRequest,
   DetectPIIResponse,
   HiringAdminAssignmentReview,
+  HiringAudioBucketListResponse,
   HiringAssessmentDetail,
   HiringAssessmentListResponse,
   HiringAssignmentInviteResponse,
@@ -678,6 +679,17 @@ export async function importHiringFolder(
 ): Promise<HiringImportResponse> {
   return request<HiringImportResponse>(
     `/hiring/assessments/${assessmentId}/items/folder`,
+    { method: "POST", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function fetchHiringAudioBuckets(
+  token: string,
+  payload: { root_path: string; recursive: boolean }
+): Promise<HiringAudioBucketListResponse> {
+  return request<HiringAudioBucketListResponse>(
+    "/hiring/audio-buckets",
     { method: "POST", body: JSON.stringify(payload) },
     token
   );
