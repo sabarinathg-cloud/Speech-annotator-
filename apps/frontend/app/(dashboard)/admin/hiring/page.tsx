@@ -228,6 +228,9 @@ export default function AdminHiringPage() {
   const [auditEvents, setAuditEvents] = useState<HiringAuditEvent[]>([]);
   const [referenceDrafts, setReferenceDrafts] = useState<Record<string, ReferenceDraft>>({});
   const [activeTab, setActiveTab] = useState<AdminHiringTab>("candidates");
+  const [answerViewerOpen, setAnswerViewerOpen] = useState(false);
+  const [answerSearch, setAnswerSearch] = useState("");
+  const [selectedAnswerSubmissionId, setSelectedAnswerSubmissionId] = useState<string | null>(null);
   const [referenceSearch, setReferenceSearch] = useState("");
   const [selectedReferenceItemId, setSelectedReferenceItemId] = useState<string | null>(null);
   const [scoreDraft, setScoreDraft] = useState({
@@ -242,6 +245,7 @@ export default function AdminHiringPage() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const deferredAnswerSearch = useDeferredValue(answerSearch);
   const deferredReferenceSearch = useDeferredValue(referenceSearch);
 
   useEffect(() => {
@@ -327,6 +331,40 @@ export default function AdminHiringPage() {
     () => new Map((review?.items ?? []).map((item) => [item.id, item])),
     [review?.items]
   );
+  const answerNeedle = deferredAnswerSearch.trim().toLowerCase();
+  const filteredAnswerSubmissions = useMemo(
+    () =>
+      (review?.submissions ?? []).filter((submission) => {
+        if (!answerNeedle) return true;
+        const item = reviewItemsById.get(submission.item_id);
+        return `${item?.original_filename ?? ""} ${submission.final_transcript} ${submission.pii_text}`
+          .toLowerCase()
+          .includes(answerNeedle);
+      }),
+    [answerNeedle, review?.submissions, reviewItemsById]
+  );
+  const selectedAnswerSubmission = useMemo(
+    () =>
+      (review?.submissions ?? []).find((submission) => submission.id === selectedAnswerSubmissionId) ??
+      filteredAnswerSubmissions[0] ??
+      review?.submissions[0] ??
+      null,
+    [filteredAnswerSubmissions, review?.submissions, selectedAnswerSubmissionId]
+  );
+  const selectedAnswerItem = selectedAnswerSubmission ? reviewItemsById.get(selectedAnswerSubmission.item_id) ?? null : null;
+
+  useEffect(() => {
+    if (!review) {
+      setAnswerViewerOpen(false);
+      setSelectedAnswerSubmissionId(null);
+      return;
+    }
+    setSelectedAnswerSubmissionId((current) =>
+      current && review.submissions.some((submission) => submission.id === current)
+        ? current
+        : review.submissions[0]?.id ?? null
+    );
+  }, [review]);
 
   const cleanedMetadataFields = useMemo(
     () =>
@@ -854,7 +892,10 @@ export default function AdminHiringPage() {
     }));
   }
 
-  async function openReview(assignmentId: string) {
+  async function openReview(
+    assignmentId: string,
+    options: { openAnswers?: boolean; switchToReviewTab?: boolean } = {}
+  ) {
     if (!accessToken) return;
     try {
       const [response, auditResponse] = await Promise.all([
@@ -874,11 +915,22 @@ export default function AdminHiringPage() {
         evaluator_notes: response.evaluator_notes ?? "",
       });
       setAuditEvents(auditResponse.items);
-      setActiveTab("review");
+      if (options.openAnswers) {
+        setAnswerSearch("");
+        setSelectedAnswerSubmissionId(response.submissions[0]?.id ?? null);
+        setAnswerViewerOpen(true);
+      }
+      if (options.switchToReviewTab ?? true) {
+        setActiveTab("review");
+      }
       setError(null);
     } catch (err) {
       setError(err instanceof APIError ? err.message : "Could not load review");
     }
+  }
+
+  async function openCandidateAnswers(assignmentId: string) {
+    await openReview(assignmentId, { openAnswers: true, switchToReviewTab: false });
   }
 
   async function validateSubmission(submissionId: string, validation_status: HiringSubmissionValidationStatus) {
@@ -1527,7 +1579,7 @@ export default function AdminHiringPage() {
                                 >
                                   Clear Audio
                                 </button>
-                                <button type="button" onClick={() => void openReview(assignment.id)} className="oa-btn-secondary mr-2 px-3 py-1.5 text-xs">Review</button>
+                                <button type="button" onClick={() => void openCandidateAnswers(assignment.id)} className="oa-btn-secondary mr-2 px-3 py-1.5 text-xs">Answers</button>
                                 <button
                                   type="button"
                                   onClick={() => void removeAssignment(assignment)}
@@ -1816,6 +1868,224 @@ export default function AdminHiringPage() {
           )}
         </main>
       </div>
+      {answerViewerOpen && review ? (
+        <div className="fixed inset-0 z-50 bg-[#17142b]/45 px-3 py-4 backdrop-blur-sm sm:px-5">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="candidate-answer-title"
+            className="mx-auto flex h-full max-w-7xl flex-col overflow-hidden rounded-xl border border-[#ded6ea] bg-white shadow-[0_28px_80px_-32px_rgba(18,13,40,0.9)]"
+          >
+            <div className="border-b border-[#eee5f8] px-4 py-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#7a7395]">Candidate answers</p>
+                  <h2 id="candidate-answer-title" className="oa-title mt-1 truncate text-xl font-semibold">{review.candidate_name}</h2>
+                  <p className="mt-1 text-sm text-[#5f5b79]">
+                    {review.candidate_email} | {review.status} | Submitted {formatDateTime(review.submitted_at)}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="oa-btn-secondary px-3 py-2 text-sm"
+                    onClick={() => {
+                      setAnswerViewerOpen(false);
+                      setActiveTab("review");
+                    }}
+                  >
+                    Open scoring view
+                  </button>
+                  <button type="button" className="oa-btn-quiet px-3 py-2 text-sm" onClick={() => setAnswerViewerOpen(false)}>
+                    Close
+                  </button>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-px overflow-hidden rounded-lg border border-[#eee5f8] bg-[#eee5f8] text-xs sm:grid-cols-4">
+                <AdminAnswerMetric label="Progress" value={`${review.submissions.filter((submission) => submission.final_transcript.trim() || submission.pii_reviewed || Object.keys(submission.metadata_values).length > 0).length}/${review.items.length}`} />
+                <AdminAnswerMetric label="Score" value={review.total_score === null ? "--" : String(review.total_score)} />
+                <AdminAnswerMetric label="Decision" value={review.decision} />
+                <AdminAnswerMetric label="Last save" value={formatDateTime(assignments.find((assignment) => assignment.id === review.id)?.last_saved_at ?? null)} />
+              </div>
+            </div>
+
+            <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)]">
+              <aside className="flex min-h-[260px] flex-col border-b border-[#eee5f8] p-3 lg:min-h-0 lg:border-b-0 lg:border-r">
+                <input
+                  className="oa-input h-10 text-sm"
+                  placeholder="Search answers"
+                  value={answerSearch}
+                  onChange={(event) => setAnswerSearch(event.target.value)}
+                />
+                <div className="mt-3 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+                  {filteredAnswerSubmissions.slice(0, 250).map((submission) => {
+                    const item = reviewItemsById.get(submission.item_id);
+                    const answered = Boolean(
+                      submission.final_transcript.trim() ||
+                      submission.pii_reviewed ||
+                      submission.pii_entries.length > 0 ||
+                      Object.keys(submission.metadata_values).length > 0
+                    );
+                    return (
+                      <button
+                        key={submission.id}
+                        type="button"
+                        onClick={() => setSelectedAnswerSubmissionId(submission.id)}
+                        className={`w-full rounded-lg border px-3 py-2 text-left text-xs transition ${
+                          submission.id === selectedAnswerSubmission?.id
+                            ? "border-[#b99bde] bg-white shadow-sm"
+                            : "border-[#eee5f8] bg-[#fbf8ff] hover:bg-white"
+                        }`}
+                      >
+                        <span className="block truncate font-semibold text-[#1f1b3f]" title={item?.original_filename ?? submission.item_id}>
+                          {item?.original_filename ?? submission.item_id}
+                        </span>
+                        <span className="mt-1 flex items-center justify-between gap-2 text-[#5f5b79]">
+                          <span>{answered ? "Answered" : "No answer"}</span>
+                          <span className={submission.validation_status === "VALIDATED" ? "text-[#236140]" : submission.validation_status === "REJECTED" ? "text-[#a13a3a]" : "text-[#7a7395]"}>
+                            {submission.validation_status}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                  {filteredAnswerSubmissions.length > 250 ? (
+                    <p className="rounded-lg border border-[#eee5f8] bg-white px-3 py-2 text-xs text-[#6b7280]">
+                      Showing first 250 answers. Search to narrow the list.
+                    </p>
+                  ) : null}
+                  {filteredAnswerSubmissions.length === 0 ? (
+                    <p className="rounded-lg border border-[#eee5f8] bg-white px-3 py-2 text-xs text-[#6b7280]">No answers match this search.</p>
+                  ) : null}
+                </div>
+              </aside>
+
+              <div className="min-h-0 overflow-y-auto p-4">
+                {selectedAnswerSubmission ? (
+                  <article className="space-y-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#7a7395]">Audio file</p>
+                        <h3 className="oa-title mt-1 truncate text-lg font-semibold" title={selectedAnswerItem?.original_filename ?? selectedAnswerSubmission.item_id}>
+                          {selectedAnswerItem?.original_filename ?? selectedAnswerSubmission.item_id}
+                        </h3>
+                        <p className="mt-1 text-xs text-[#7a7395]">
+                          Saved {formatDateTime(selectedAnswerSubmission.last_saved_at)} | Submitted {formatDateTime(selectedAnswerSubmission.submitted_at)}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={() => void validateSubmission(selectedAnswerSubmission.id, "VALIDATED")} className="oa-btn-secondary px-3 py-1.5 text-xs">Validate</button>
+                        <button type="button" onClick={() => void validateSubmission(selectedAnswerSubmission.id, "REJECTED")} className="oa-btn-secondary px-3 py-1.5 text-xs">Reject</button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                      <section className="rounded-xl border border-[#e5dbf1] bg-[#fbf8ff] p-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#7a7395]">Candidate transcript</p>
+                        <p className="mt-2 max-h-[320px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-[#e5dbf1] bg-white p-3 text-sm leading-6 text-[#1f1b3f]">
+                          {selectedAnswerSubmission.final_transcript || "No transcript submitted"}
+                        </p>
+                      </section>
+                      <section className="rounded-xl border border-[#e5dbf1] bg-[#fbf8ff] p-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#7a7395]">PII answer</p>
+                        <div className="mt-2 rounded-lg border border-[#e5dbf1] bg-white p-3 text-sm">
+                          <p className={selectedAnswerSubmission.pii_reviewed ? "font-semibold text-[#236140]" : "font-semibold text-[#8a5b1e]"}>
+                            {selectedAnswerSubmission.pii_reviewed ? "PII reviewed" : "PII not reviewed"}
+                          </p>
+                          {selectedAnswerSubmission.pii_entries.length > 0 ? (
+                            <dl className="mt-3 space-y-2 text-xs text-[#332d53]">
+                              {selectedAnswerSubmission.pii_entries.map((entry, index) => (
+                                <div key={`${entry.type}-${entry.value}-${index}`} className="rounded-md bg-[#fbf8ff] px-2 py-1">
+                                  <dt className="font-semibold">{entry.type}: {entry.value}</dt>
+                                  <dd>{entry.timestamp ? `Time ${entry.timestamp}` : "No timestamp"}{entry.notes ? ` | ${entry.notes}` : ""}</dd>
+                                </div>
+                              ))}
+                            </dl>
+                          ) : (
+                            <p className="mt-3 rounded-md bg-[#fbf8ff] px-2 py-1 text-xs text-[#332d53]">No structured PII rows</p>
+                          )}
+                          <p className="mt-3 whitespace-pre-wrap rounded-md bg-[#fbf8ff] px-2 py-1 text-xs text-[#332d53]">
+                            {selectedAnswerSubmission.pii_text || "No additional PII notes"}
+                          </p>
+                        </div>
+                      </section>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+                      <section className="rounded-xl border border-[#e5dbf1] bg-white p-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#7a7395]">Metadata</p>
+                        {Object.entries(selectedAnswerSubmission.metadata_values).length > 0 ? (
+                          <dl className="mt-2 space-y-2 text-xs text-[#332d53]">
+                            {Object.entries(selectedAnswerSubmission.metadata_values).map(([key, value]) => {
+                              const field = review.assessment.metadata_schema.find((candidate) => candidate.key === key);
+                              return (
+                                <div key={key} className="rounded-md bg-[#fbf8ff] px-2 py-1">
+                                  <dt className="font-semibold">{field?.label ?? key}</dt>
+                                  <dd>{displayAnswerValue(value)}</dd>
+                                </div>
+                              );
+                            })}
+                          </dl>
+                        ) : (
+                          <p className="mt-2 text-sm text-[#5f5b79]">No metadata answers</p>
+                        )}
+                      </section>
+                      <section className="rounded-xl border border-[#e5dbf1] bg-white p-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#7a7395]">Candidate notes</p>
+                        <p className="mt-2 whitespace-pre-wrap text-sm text-[#1f1b3f]">{selectedAnswerSubmission.notes || "No notes"}</p>
+                      </section>
+                      <section className="rounded-xl border border-[#e5dbf1] bg-white p-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#7a7395]">Validation</p>
+                        <p className="mt-2 text-sm font-semibold text-[#1f1b3f]">{selectedAnswerSubmission.validation_status}</p>
+                        {selectedAnswerSubmission.validation_feedback ? (
+                          <p className="mt-2 text-sm text-[#5f5b79]">{selectedAnswerSubmission.validation_feedback}</p>
+                        ) : null}
+                      </section>
+                    </div>
+
+                    {selectedAnswerSubmission.reference_metrics ? (
+                      <section className="rounded-xl border border-[#e5dbf1] bg-[#fbf8ff] p-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#7a7395]">Reference comparison</p>
+                        <div className="mt-3 grid gap-2 text-xs text-[#332d53] md:grid-cols-4">
+                          <div className="rounded-lg bg-white p-3">
+                            <p className="font-semibold">Accuracy</p>
+                            <p className="mt-1">{formatPercent(selectedAnswerSubmission.reference_metrics.transcript_accuracy_percent)}</p>
+                          </div>
+                          <div className="rounded-lg bg-white p-3">
+                            <p className="font-semibold">WER</p>
+                            <p className="mt-1">{formatWer(selectedAnswerSubmission.reference_metrics.word_error_rate)}</p>
+                          </div>
+                          <div className="rounded-lg bg-white p-3">
+                            <p className="font-semibold">PII matched</p>
+                            <p className="mt-1">{selectedAnswerSubmission.reference_metrics.pii_matched_count}/{selectedAnswerSubmission.reference_metrics.pii_expected_count}</p>
+                          </div>
+                          <div className="rounded-lg bg-white p-3">
+                            <p className="font-semibold">Suggested score</p>
+                            <p className="mt-1">{formatSuggestion(selectedAnswerSubmission)}</p>
+                          </div>
+                        </div>
+                      </section>
+                    ) : null}
+                  </article>
+                ) : (
+                  <div className="rounded-xl border border-[#eee5f8] bg-[#fbf8ff] p-6 text-center text-sm text-[#5f5b79]">
+                    No submitted answers are available for this candidate yet.
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AdminAnswerMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-white px-3 py-2">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#7a7395]">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold text-[#1f1b3f]" title={value}>{value}</p>
     </div>
   );
 }
