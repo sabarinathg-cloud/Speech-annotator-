@@ -63,7 +63,6 @@ from app.schemas.hiring import (
 from app.schemas.task import PIIAnnotation
 from app.services.errors import ServiceError
 from app.services.security_audit_service import SecurityAuditService
-from app.services.text_validation import find_invalid_annotation_text
 from app.storage.audio_resolver import AudioResolver
 from app.utils.excel import load_excel_as_dataframe, normalize_cell
 
@@ -583,19 +582,10 @@ class HiringService:
             raise ServiceError("Submission was updated elsewhere. Reload and try again.", status_code=409)
 
         if "final_transcript" in provided_fields and payload.final_transcript is not None:
-            message = find_invalid_annotation_text(payload.final_transcript, "transcript")
-            if message:
-                raise ServiceError(message, status_code=422)
             submission.final_transcript = payload.final_transcript
         if "notes" in provided_fields and payload.notes is not None:
-            message = find_invalid_annotation_text(payload.notes, "notes")
-            if message:
-                raise ServiceError(message, status_code=422)
             submission.notes = payload.notes
         if "pii_text" in provided_fields and payload.pii_text is not None:
-            message = find_invalid_annotation_text(payload.pii_text, "PII answer")
-            if message:
-                raise ServiceError(message, status_code=422)
             submission.pii_text = payload.pii_text
         if "pii_entries" in provided_fields and payload.pii_entries is not None:
             submission.pii_entries = [entry.model_dump() for entry in payload.pii_entries]

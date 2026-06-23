@@ -120,6 +120,21 @@ function buildAssignmentWithInstructions() {
   return assignment;
 }
 
+function buildTextMetadataAssignment() {
+  const assignment = buildAssignment();
+  assignment.assessment.metadata_schema = [
+    {
+      key: "speaker_note",
+      label: "Speaker note",
+      type: "text",
+      required: true,
+      options: [],
+      sort_order: 0,
+    },
+  ];
+  return assignment;
+}
+
 vi.mock("next/navigation", () => ({
   useParams: () => ({ assignmentId: "assignment-1" }),
 }));
@@ -268,6 +283,37 @@ describe("CandidateHiringAssignmentPage", () => {
 
     expect(screen.getByText("PII review required")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Mark PII reviewed" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("saves candidate transcript and metadata with commas and special characters", async () => {
+    assignmentFixture = buildTextMetadataAssignment();
+    const transcript = 'Hello, "John"! Account #42 costs $5.00 (USD) / today; okay?';
+    const metadata = "Male, senior speaker / noisy (line #2)";
+
+    render(<CandidateHiringAssignmentPage />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Instructions" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start test" }));
+    fireEvent.change(screen.getByLabelText("Final Transcript"), {
+      target: { value: transcript },
+    });
+    fireEvent.change(screen.getByLabelText(/Speaker note/), {
+      target: { value: metadata },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save now" }));
+      await Promise.resolve();
+    });
+
+    expect(patchCandidateHiringSubmission).toHaveBeenCalledWith(
+      "test-token",
+      "submission-1",
+      expect.objectContaining({
+        final_transcript: transcript,
+        metadata_values: { speaker_note: metadata },
+      })
+    );
   });
 
   it("moves to the next audio file after a manual save", async () => {

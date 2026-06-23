@@ -139,6 +139,14 @@ function datetimeLocalToIso(value: string) {
   return value ? new Date(value).toISOString() : null;
 }
 
+function metadataOptionsToText(options: string[]) {
+  return options.join("\n");
+}
+
+function parseMetadataOptionsText(value: string) {
+  return value.split(/\r?\n/);
+}
+
 function formatDuration(totalSeconds: number | null) {
   if (totalSeconds === null) return "--";
   const safeSeconds = Math.max(0, totalSeconds);
@@ -377,7 +385,7 @@ export default function AdminHiringPage() {
           ...field,
           key: field.key.trim(),
           label: field.label.trim(),
-          options: field.type === "select" ? field.options.filter(Boolean) : [],
+          options: field.type === "select" ? field.options.map((option) => option.trim()).filter(Boolean) : [],
           sort_order: index,
         })),
     [metadataFields]
@@ -1038,7 +1046,12 @@ export default function AdminHiringPage() {
                         </label>
                       </div>
                       {field.type === "select" ? (
-                        <input className="oa-input mt-2" placeholder="Options, comma separated" value={field.options.join(", ")} onChange={(event) => setMetadataFields((prev) => prev.map((item, itemIndex) => itemIndex === index ? { ...item, options: event.target.value.split(",").map((option) => option.trim()).filter(Boolean) } : item))} />
+                        <textarea
+                          className="oa-textarea mt-2 min-h-[84px]"
+                          placeholder={"One option per line\nClean audio\nBackground noise, speaker talking"}
+                          value={metadataOptionsToText(field.options)}
+                          onChange={(event) => setMetadataFields((prev) => prev.map((item, itemIndex) => itemIndex === index ? { ...item, options: parseMetadataOptionsText(event.target.value) } : item))}
+                        />
                       ) : null}
                     </div>
                   ))}

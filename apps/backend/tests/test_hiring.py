@@ -25,6 +25,14 @@ def _create_assessment(client, auth_headers):
                     "required": True,
                     "options": ["en", "hi"],
                     "sort_order": 0,
+                },
+                {
+                    "key": "candidate_note",
+                    "label": "Candidate note",
+                    "type": "text",
+                    "required": False,
+                    "options": [],
+                    "sort_order": 1,
                 }
             ],
         },
@@ -441,15 +449,17 @@ def test_hiring_candidate_submit_download_and_admin_scorecard(client, auth_heade
             headers=auth_headers["candidate"],
             json={
                 "version": submission["version"],
-                "final_transcript": "hello candidate",
-                "pii_text": "None",
+                "final_transcript": 'hello, candidate (VIP) said: "pay $5.00" / acct #42',
+                "pii_text": "Name: Candidate; Amount: $5.00 / acct #42",
+                "notes": "Unclear phrase at 00:02; used [best-effort].",
                 "pii_reviewed": True,
             },
         )
         assert save_response.status_code == 200
         submission = save_response.json()["submissions"][0]
-        assert submission["final_transcript"] == "hello candidate"
-        assert submission["pii_text"] == "None"
+        assert submission["final_transcript"] == 'hello, candidate (VIP) said: "pay $5.00" / acct #42'
+        assert submission["pii_text"] == "Name: Candidate; Amount: $5.00 / acct #42"
+        assert submission["notes"] == "Unclear phrase at 00:02; used [best-effort]."
         assert submission["pii_reviewed"] is True
 
         blocked_submit = client.post(
@@ -464,16 +474,19 @@ def test_hiring_candidate_submit_download_and_admin_scorecard(client, auth_heade
             headers=auth_headers["candidate"],
             json={
                 "version": submission["version"],
-                "metadata_values": {"language": "en"},
+                "metadata_values": {"language": "en", "candidate_note": "Male, senior caller / noisy (line #2)"},
                 "pii_annotations": [],
                 "pii_reviewed": True,
             },
         )
         assert save_metadata_response.status_code == 200
         saved_metadata_submission = save_metadata_response.json()["submissions"][0]
-        assert saved_metadata_submission["final_transcript"] == "hello candidate"
-        assert saved_metadata_submission["pii_text"] == "None"
-        assert saved_metadata_submission["metadata_values"] == {"language": "en"}
+        assert saved_metadata_submission["final_transcript"] == 'hello, candidate (VIP) said: "pay $5.00" / acct #42'
+        assert saved_metadata_submission["pii_text"] == "Name: Candidate; Amount: $5.00 / acct #42"
+        assert saved_metadata_submission["metadata_values"] == {
+            "language": "en",
+            "candidate_note": "Male, senior caller / noisy (line #2)",
+        }
 
         submit_response = client.post(
             f"/api/v1/hiring/candidate/assignments/{assignment_id}/submit",
@@ -497,9 +510,12 @@ def test_hiring_candidate_submit_download_and_admin_scorecard(client, auth_heade
         review_payload = review_response.json()
         assert review_payload["candidate_email"] == "candidate@test.com"
         admin_submission = review_payload["submissions"][0]
-        assert admin_submission["final_transcript"] == "hello candidate"
-        assert admin_submission["pii_text"] == "None"
-        assert admin_submission["metadata_values"] == {"language": "en"}
+        assert admin_submission["final_transcript"] == 'hello, candidate (VIP) said: "pay $5.00" / acct #42'
+        assert admin_submission["pii_text"] == "Name: Candidate; Amount: $5.00 / acct #42"
+        assert admin_submission["metadata_values"] == {
+            "language": "en",
+            "candidate_note": "Male, senior caller / noisy (line #2)",
+        }
         assert admin_submission["pii_reviewed"] is True
 
         validation_response = client.patch(

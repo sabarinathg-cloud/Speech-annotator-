@@ -1,5 +1,5 @@
 import React from "react";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import AdminHiringPage from "@/app/(dashboard)/admin/hiring/page";
@@ -236,6 +236,7 @@ describe("AdminHiringPage candidate answers", () => {
     fetchHiringAssessmentRanking.mockResolvedValue({ items: [] });
     fetchHiringAssignmentReview.mockResolvedValue(reviewResponse);
     fetchHiringAssignmentAuditEvents.mockResolvedValue({ items: [] });
+    createHiringAssessment.mockResolvedValue({ ...assessmentSummary, id: "assessment-new" });
   });
 
   afterEach(() => {
@@ -262,5 +263,37 @@ describe("AdminHiringPage candidate answers", () => {
 
     const instructionFields = await screen.findAllByPlaceholderText("Candidate instructions");
     expect(instructionFields[0]).toHaveValue(defaultHiringInstructions);
+  });
+
+  it("keeps commas and special characters in select metadata options", async () => {
+    render(<AdminHiringPage />);
+
+    const optionEditor = await screen.findByPlaceholderText(/One option per line/);
+    fireEvent.change(optionEditor, {
+      target: {
+        value: "Clean audio, mild noise\nBackground speaker / crosstalk (low)\nNeeds review #1",
+      },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Assessment title"), {
+      target: { value: "Special metadata options" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(createHiringAssessment).toHaveBeenCalled());
+    expect(createHiringAssessment).toHaveBeenCalledWith(
+      "admin-token",
+      expect.objectContaining({
+        metadata_schema: expect.arrayContaining([
+          expect.objectContaining({
+            key: "audio_quality",
+            options: [
+              "Clean audio, mild noise",
+              "Background speaker / crosstalk (low)",
+              "Needs review #1",
+            ],
+          }),
+        ]),
+      })
+    );
   });
 });
