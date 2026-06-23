@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import AdminHiringPage from "@/app/(dashboard)/admin/hiring/page";
+import { defaultHiringInstructions } from "@/lib/hiring-instructions";
 
 const {
   assignHiringCandidates,
@@ -254,5 +255,12 @@ describe("AdminHiringPage candidate answers", () => {
     expect(within(drawer).getByText("PHONE: 555 0100")).toBeInTheDocument();
     expect(within(drawer).getByText("Clean audio")).toBeInTheDocument();
     expect(within(drawer).getByText("Clear speech")).toBeInTheDocument();
+  });
+
+  it("prefills new assessments with candidate instructions", async () => {
+    render(<AdminHiringPage />);
+
+    const instructionFields = await screen.findAllByPlaceholderText("Candidate instructions");
+    expect(instructionFields[0]).toHaveValue(defaultHiringInstructions);
   });
 });

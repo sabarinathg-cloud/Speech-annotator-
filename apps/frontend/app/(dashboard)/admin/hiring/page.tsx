@@ -48,6 +48,7 @@ import {
   updateUser,
   uploadHiringAudio,
 } from "@/lib/api";
+import { defaultHiringInstructions } from "@/lib/hiring-instructions";
 
 const emptyField: HiringMetadataField = {
   key: "",
@@ -202,7 +203,7 @@ export default function AdminHiringPage() {
   const [candidates, setCandidates] = useState<AdminUser[]>([]);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
   const [title, setTitle] = useState("");
-  const [instructions, setInstructions] = useState("");
+  const [instructions, setInstructions] = useState(defaultHiringInstructions);
   const [dueAt, setDueAt] = useState("");
   const [timeLimitMinutes, setTimeLimitMinutes] = useState("");
   const [blindReviewEnabled, setBlindReviewEnabled] = useState(false);
@@ -210,6 +211,7 @@ export default function AdminHiringPage() {
   const [rubricFields, setRubricFields] = useState<HiringRubricField[]>(defaultRubricFields);
   const [settingsDueAt, setSettingsDueAt] = useState("");
   const [settingsTimeLimitMinutes, setSettingsTimeLimitMinutes] = useState("");
+  const [settingsInstructions, setSettingsInstructions] = useState("");
   const [settingsBlindReviewEnabled, setSettingsBlindReviewEnabled] = useState(false);
   const [settingsRubricFields, setSettingsRubricFields] = useState<HiringRubricField[]>(defaultRubricFields);
   const [folderPath, setFolderPath] = useState("");
@@ -265,11 +267,12 @@ export default function AdminHiringPage() {
 
   useEffect(() => {
     if (!detail) return;
+    setSettingsInstructions(detail.instructions);
     setSettingsDueAt(toDatetimeLocal(detail.due_at));
     setSettingsTimeLimitMinutes(detail.time_limit_minutes ? String(detail.time_limit_minutes) : "");
     setSettingsBlindReviewEnabled(detail.blind_review_enabled);
     setSettingsRubricFields(detail.rubric_schema.length > 0 ? detail.rubric_schema : defaultRubricFields());
-  }, [detail?.id, detail?.due_at, detail?.time_limit_minutes, detail?.blind_review_enabled, detail?.rubric_schema]);
+  }, [detail?.id, detail?.instructions, detail?.due_at, detail?.time_limit_minutes, detail?.blind_review_enabled, detail?.rubric_schema]);
 
   useEffect(() => {
     if (!detail) {
@@ -466,7 +469,7 @@ export default function AdminHiringPage() {
     try {
       const created = await createHiringAssessment(accessToken, {
         title,
-        instructions,
+        instructions: instructions.trim(),
         due_date: dueAt ? dueAt.slice(0, 10) : null,
         due_at: datetimeLocalToIso(dueAt),
         time_limit_minutes: timeLimitMinutes ? Number(timeLimitMinutes) : null,
@@ -475,7 +478,7 @@ export default function AdminHiringPage() {
         rubric_schema: cleanedRubricFields,
       });
       setTitle("");
-      setInstructions("");
+      setInstructions(defaultHiringInstructions);
       setDueAt("");
       setTimeLimitMinutes("");
       setBlindReviewEnabled(false);
@@ -550,6 +553,7 @@ export default function AdminHiringPage() {
       const updated = await updateHiringAssessment(accessToken, detail.id, {
         due_date: settingsDueAt ? settingsDueAt.slice(0, 10) : null,
         due_at: datetimeLocalToIso(settingsDueAt),
+        instructions: settingsInstructions.trim(),
         time_limit_minutes: settingsTimeLimitMinutes ? Number(settingsTimeLimitMinutes) : null,
         blind_review_enabled: settingsBlindReviewEnabled,
         rubric_schema: cleanedSettingsRubricFields,
@@ -991,7 +995,15 @@ export default function AdminHiringPage() {
             <h2 className="oa-title text-lg font-semibold">Create assessment</h2>
             <div className="mt-3 space-y-3">
               <input className="oa-input" placeholder="Assessment title" value={title} onChange={(event) => setTitle(event.target.value)} />
-              <textarea className="oa-textarea min-h-[90px]" placeholder="Candidate instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} />
+              <label className="block text-sm">
+                <span className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-[#332d53]">Candidate instructions</span>
+                  <button type="button" className="oa-btn-quiet px-2 py-1 text-xs" onClick={() => setInstructions(defaultHiringInstructions)}>
+                    Use default
+                  </button>
+                </span>
+                <textarea className="oa-textarea mt-1 min-h-[180px]" placeholder="Candidate instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} />
+              </label>
               <label className="block text-sm">
                 <span className="font-medium text-[#332d53]">Submission deadline</span>
                 <input className="oa-input mt-1" type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} />
@@ -1141,7 +1153,7 @@ export default function AdminHiringPage() {
                     Save Settings
                   </button>
                 </div>
-                <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[220px_1fr]">
+                <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(280px,360px)_1fr]">
                   <div className="space-y-3">
                     <label className="block text-sm">
                       <span className="font-medium text-[#332d53]">Submission deadline</span>
@@ -1151,6 +1163,20 @@ export default function AdminHiringPage() {
                     <label className="flex items-center gap-2 text-sm text-[#5f5b79]">
                       <input type="checkbox" checked={settingsBlindReviewEnabled} onChange={(event) => setSettingsBlindReviewEnabled(event.target.checked)} />
                       Blind review mode
+                    </label>
+                    <label className="block text-sm">
+                      <span className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-[#332d53]">Candidate instructions</span>
+                        <button type="button" className="oa-btn-quiet px-2 py-1 text-xs" onClick={() => setSettingsInstructions(defaultHiringInstructions)}>
+                          Use default
+                        </button>
+                      </span>
+                      <textarea
+                        className="oa-textarea mt-1 min-h-[220px]"
+                        placeholder="Candidate instructions"
+                        value={settingsInstructions}
+                        onChange={(event) => setSettingsInstructions(event.target.value)}
+                      />
                     </label>
                   </div>
                   <div className="rounded-xl border border-[#eee5f8] bg-[#fbf8ff] p-3">

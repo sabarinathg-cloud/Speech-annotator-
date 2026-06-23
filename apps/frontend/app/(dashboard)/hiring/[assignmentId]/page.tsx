@@ -118,6 +118,7 @@ export default function CandidateHiringAssignmentPage() {
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "failed">("saved");
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [secondsRemaining, setSecondsRemaining] = useState<number | null>(null);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [confirmSubmitOpen, setConfirmSubmitOpen] = useState(false);
   const [itemSearch, setItemSearch] = useState("");
   const [message, setMessage] = useState<string | null>(null);
@@ -222,6 +223,7 @@ export default function CandidateHiringAssignmentPage() {
     piiReviewed,
     metadata: draftMetadata,
   });
+  const candidateInstructions = detail?.assessment.instructions.trim() ?? "";
   const reviewedPIIEntries = useMemo(() => cleanPIIEntries(draftPIIEntries), [draftPIIEntries]);
   const piiEntryCount = reviewedPIIEntries.length;
   const piiStatusText = piiReviewed ? "PII review complete" : "PII review required";
@@ -240,6 +242,10 @@ export default function CandidateHiringAssignmentPage() {
       readiness: submission ? readinessForSubmission(submission) : submissionReady(submission, detail.assessment.metadata_schema),
     };
   }) ?? [];
+
+  useEffect(() => {
+    setInstructionsOpen(Boolean(candidateInstructions));
+  }, [detail?.id, candidateInstructions]);
 
   useEffect(() => {
     if (!selectedSubmission) return;
@@ -528,13 +534,13 @@ export default function CandidateHiringAssignmentPage() {
                 {user?.email ?? "candidate"}
               </span>
             </div>
-            {detail.assessment.instructions ? (
-              <p className="mt-1 max-w-5xl truncate text-xs text-[#5f5b79]" title={detail.assessment.instructions}>
-                {detail.assessment.instructions}
-              </p>
-            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {candidateInstructions ? (
+              <button type="button" onClick={() => setInstructionsOpen(true)} className="oa-btn-secondary px-3 py-1.5 text-sm">
+                Instructions
+              </button>
+            ) : null}
             <button type="button" onClick={downloadAll} disabled={busy || editingDisabled} className="oa-btn-secondary px-3 py-1.5 text-sm disabled:opacity-50">
               Download All
             </button>
@@ -876,6 +882,29 @@ export default function CandidateHiringAssignmentPage() {
           </div>
         ) : null}
       </div>
+      {instructionsOpen && candidateInstructions ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#17142b]/40 px-4 py-6">
+          <section role="dialog" aria-modal="true" aria-labelledby="candidate-instructions-title" className="oa-card max-h-[88vh] w-full max-w-2xl overflow-auto p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#7a7395]">Hiring test</p>
+                <h2 id="candidate-instructions-title" className="oa-title text-lg font-semibold">Instructions</h2>
+              </div>
+              <button type="button" className="oa-btn-quiet px-2.5 py-1 text-sm" onClick={() => setInstructionsOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="mt-4 whitespace-pre-wrap rounded-xl border border-[#eee5f8] bg-[#fbf8ff] p-4 text-sm leading-6 text-[#1f1b3f]">
+              {candidateInstructions}
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button type="button" className="oa-btn-primary px-4 py-2 text-sm font-semibold" onClick={() => setInstructionsOpen(false)}>
+                Start test
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {confirmSubmitOpen ? (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#17142b]/40 px-4 py-6">
           <section className="oa-card max-h-[90vh] w-full max-w-2xl overflow-auto p-5">

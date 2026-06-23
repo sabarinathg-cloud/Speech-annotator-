@@ -1,5 +1,5 @@
 import React from "react";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import CandidateHiringAssignmentPage from "@/app/(dashboard)/hiring/[assignmentId]/page";
@@ -113,6 +113,12 @@ function buildTwoItemAssignment() {
   return assignment;
 }
 
+function buildAssignmentWithInstructions() {
+  const assignment = buildAssignment();
+  assignment.assessment.instructions = "Follow these instructions\nUse Save & Next when each answer is ready.";
+  return assignment;
+}
+
 vi.mock("next/navigation", () => ({
   useParams: () => ({ assignmentId: "assignment-1" }),
 }));
@@ -196,6 +202,21 @@ describe("CandidateHiringAssignmentPage", () => {
     cleanup();
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it("shows candidate instructions on load and lets the candidate reopen them", async () => {
+    assignmentFixture = buildAssignmentWithInstructions();
+
+    render(<CandidateHiringAssignmentPage />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Instructions" });
+    expect(within(dialog).getByText(/Follow these instructions/)).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog", { name: "Instructions" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Instructions" }));
+    expect(await screen.findByRole("dialog", { name: "Instructions" })).toBeInTheDocument();
   });
 
   it("makes PII review obvious and auto-saves the reviewed flag", async () => {
