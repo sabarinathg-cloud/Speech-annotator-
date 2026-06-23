@@ -8,14 +8,12 @@ import { defaultHiringInstructions } from "@/lib/hiring-instructions";
 const {
   fetchCandidateHiringAssignment,
   patchCandidateHiringSubmission,
-  downloadCandidateHiringAudio,
-  downloadCandidateHiringZip,
+  streamCandidateHiringAudio,
   submitCandidateHiringAssignment,
 } = vi.hoisted(() => ({
   fetchCandidateHiringAssignment: vi.fn(),
   patchCandidateHiringSubmission: vi.fn(),
-  downloadCandidateHiringAudio: vi.fn(),
-  downloadCandidateHiringZip: vi.fn(),
+  streamCandidateHiringAudio: vi.fn(),
   submitCandidateHiringAssignment: vi.fn(),
 }));
 
@@ -152,8 +150,10 @@ vi.mock("@/components/auth-provider", () => ({
 }));
 
 vi.mock("@/components/audio-waveform-player", () => ({
-  AudioWaveformPlayer: ({ audioUrl }: { audioUrl: string | null }) => (
-    <div data-testid="audio-player">{audioUrl ? "Audio ready" : "Audio not available"}</div>
+  AudioWaveformPlayer: ({ audioUrl, allowDownloadControls }: { audioUrl: string | null; allowDownloadControls?: boolean }) => (
+    <div data-testid="audio-player" data-download-controls={allowDownloadControls ? "enabled" : "disabled"}>
+      {audioUrl ? "Audio ready" : "Audio not available"}
+    </div>
   ),
 }));
 
@@ -169,8 +169,7 @@ vi.mock("@/lib/api", () => ({
   },
   fetchCandidateHiringAssignment: (...args: unknown[]) => fetchCandidateHiringAssignment(...args),
   patchCandidateHiringSubmission: (...args: unknown[]) => patchCandidateHiringSubmission(...args),
-  downloadCandidateHiringAudio: (...args: unknown[]) => downloadCandidateHiringAudio(...args),
-  downloadCandidateHiringZip: (...args: unknown[]) => downloadCandidateHiringZip(...args),
+  streamCandidateHiringAudio: (...args: unknown[]) => streamCandidateHiringAudio(...args),
   submitCandidateHiringAssignment: (...args: unknown[]) => submitCandidateHiringAssignment(...args),
 }));
 
@@ -179,13 +178,9 @@ describe("CandidateHiringAssignmentPage", () => {
     vi.useRealTimers();
     assignmentFixture = buildAssignment();
     fetchCandidateHiringAssignment.mockImplementation(() => Promise.resolve(assignmentFixture));
-    downloadCandidateHiringAudio.mockResolvedValue({
+    streamCandidateHiringAudio.mockResolvedValue({
       blob: new Blob(["audio"], { type: "audio/wav" }),
       filename: "sample.wav",
-    });
-    downloadCandidateHiringZip.mockResolvedValue({
-      blob: new Blob(["zip"], { type: "application/zip" }),
-      filename: "assignment.zip",
     });
     submitCandidateHiringAssignment.mockResolvedValue(buildAssignment({ status: "SUBMITTED" }));
     patchCandidateHiringSubmission.mockImplementation((_token, _submissionId, payload) => {
@@ -241,6 +236,17 @@ describe("CandidateHiringAssignmentPage", () => {
     const dialog = await screen.findByRole("dialog", { name: "Instructions" });
     expect(within(dialog).getByText(/Please complete this transcription assessment carefully/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Instructions" })).toBeInTheDocument();
+  });
+
+  it("streams audio in-app without candidate download controls", async () => {
+    render(<CandidateHiringAssignmentPage />);
+
+    const player = await screen.findByTestId("audio-player");
+    expect(player).toHaveTextContent("Audio ready");
+    expect(player).toHaveAttribute("data-download-controls", "disabled");
+    expect(streamCandidateHiringAudio).toHaveBeenCalledWith("test-token", "assignment-1", "item-1");
+    expect(screen.queryByRole("button", { name: "Download All" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Download" })).not.toBeInTheDocument();
   });
 
   it("makes PII review obvious and auto-saves the reviewed flag", async () => {

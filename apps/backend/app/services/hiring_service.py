@@ -6,7 +6,6 @@ import uuid
 import zipfile
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
-from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO, Iterable
 from urllib.parse import quote
@@ -797,9 +796,9 @@ class HiringService:
         ]
         return HiringAuditEventListResponse(items=[self._audit_event_response(event) for event in filtered])
 
-    def candidate_download_path(self, *, assignment_id: str, item_id: str, actor: User) -> tuple[Path, str]:
+    def candidate_audio_path(self, *, assignment_id: str, item_id: str, actor: User) -> tuple[Path, str]:
         assignment = self._get_candidate_assignment_or_404(assignment_id, actor)
-        self._ensure_download_allowed(assignment)
+        self._ensure_playback_allowed(assignment)
         item = next((candidate for candidate in self._assignment_items(assignment) if candidate.id == item_id), None)
         if not item:
             raise ServiceError("Hiring assessment item not found", status_code=404)
@@ -808,20 +807,9 @@ class HiringService:
             raise ServiceError("Hiring audio file not found", status_code=404)
         return path, item.original_filename
 
-    def candidate_zip_bytes(self, *, assignment_id: str, actor: User) -> tuple[bytes, str]:
-        assignment = self._get_candidate_assignment_or_404(assignment_id, actor)
-        self._ensure_download_allowed(assignment)
-        output = BytesIO()
-        used_names: set[str] = set()
-        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for item in self._assignment_items(assignment):
-                path = Path(item.stored_path)
-                if not path.is_file():
-                    continue
-                archive_name = self._unique_archive_name(item.original_filename, used_names)
-                archive.write(path, archive_name)
-        filename = f"{assignment.assessment.title.replace(' ', '_').lower()}_{assignment.id}.zip"
-        return output.getvalue(), filename
+    def reject_candidate_audio_download(self, *, assignment_id: str, actor: User) -> None:
+        self._get_candidate_assignment_or_404(assignment_id, actor)
+        raise ServiceError("Candidate audio downloads are disabled. Use in-app playback.", status_code=403)
 
     def _get_assessment_or_404(self, assessment_id: str) -> HiringAssessment:
         assessment = (
@@ -906,7 +894,7 @@ class HiringService:
         if deadline_at and deadline_at <= _now():
             raise ServiceError("Hiring assessment deadline has passed", status_code=409)
 
-    def _ensure_download_allowed(self, assignment: HiringAssignment) -> None:
+    def _ensure_playback_allowed(self, assignment: HiringAssignment) -> None:
         self._ensure_assignment_editable(assignment)
 
     def _ensure_assignment_can_be_reworked(self, assignment: HiringAssignment) -> None:
@@ -1574,16 +1562,6 @@ class HiringService:
 
     def _sorted_items(self, items: Iterable[HiringAssessmentItem]) -> list[HiringAssessmentItem]:
         return sorted(items, key=lambda item: (item.sort_order, item.created_at, item.id))
-
-    def _unique_archive_name(self, filename: str, used_names: set[str]) -> str:
-        path = Path(filename)
-        candidate = path.name
-        index = 2
-        while candidate in used_names:
-            candidate = f"{path.stem}_{index}{path.suffix}"
-            index += 1
-        used_names.add(candidate)
-        return candidate
 
     def _words(self, text: str) -> list[str]:
         return [word.strip(".,!?;:\"'()[]{}").lower() for word in text.split() if word.strip()]

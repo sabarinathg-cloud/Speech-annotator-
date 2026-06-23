@@ -135,6 +135,18 @@ const assignmentSummary = {
   total_score: null,
 };
 
+const earlySubmittedAssignment = {
+  ...assignmentSummary,
+  id: "assignment-2",
+  candidate_id: "candidate-2",
+  candidate_name: "Candidate Two",
+  candidate_email: "candidate-two@example.com",
+  candidate_label: "Candidate Two",
+  submitted_at: "2026-06-22T10:00:00.000Z",
+  last_saved_at: "2026-06-22T10:05:00.000Z",
+  total_score: 8,
+};
+
 const reviewResponse = {
   id: "assignment-1",
   assessment: assessmentSummary,
@@ -256,6 +268,27 @@ describe("AdminHiringPage candidate answers", () => {
     expect(within(drawer).getByText("PHONE: 555 0100")).toBeInTheDocument();
     expect(within(drawer).getByText("Clean audio")).toBeInTheDocument();
     expect(within(drawer).getByText("Clear speech")).toBeInTheDocument();
+  });
+
+  it("sorts candidate progress by submitted time", async () => {
+    fetchHiringAssessmentAssignments.mockResolvedValue({ items: [assignmentSummary, earlySubmittedAssignment] });
+
+    render(<AdminHiringPage />);
+
+    const table = await screen.findByRole("table", { name: "Candidate progress" });
+    await waitFor(() => expect(within(table).getByText("Candidate Two")).toBeInTheDocument());
+
+    let rows = within(table).getAllByRole("row").slice(1);
+    expect(within(rows[0]).getByText("Candidate Two")).toBeInTheDocument();
+    expect(within(rows[1]).getByText("Candidate One")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Sort candidate progress"), {
+      target: { value: "submitted_latest" },
+    });
+
+    rows = within(table).getAllByRole("row").slice(1);
+    expect(within(rows[0]).getByText("Candidate One")).toBeInTheDocument();
+    expect(within(rows[1]).getByText("Candidate Two")).toBeInTheDocument();
   });
 
   it("prefills new assessments with candidate instructions", async () => {

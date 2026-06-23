@@ -368,11 +368,11 @@ def test_admin_can_import_candidate_specific_folders(client, auth_headers, seed_
         assert [item["original_filename"] for item in candidate_detail.json()["items"]] == ["candidate-one.wav"]
 
         second_item_id = second_review.json()["items"][0]["id"]
-        wrong_assignment_download = client.get(
-            f"/api/v1/hiring/candidate/assignments/{first_assignment_id}/items/{second_item_id}/download",
+        wrong_assignment_stream = client.get(
+            f"/api/v1/hiring/candidate/assignments/{first_assignment_id}/items/{second_item_id}/stream",
             headers=auth_headers["candidate"],
         )
-        assert wrong_assignment_download.status_code == 404
+        assert wrong_assignment_stream.status_code == 404
 
         delete_response = client.delete(
             f"/api/v1/hiring/assignments/{second_assignment_id}",
@@ -430,19 +430,26 @@ def test_hiring_candidate_submit_download_and_admin_scorecard(client, auth_heade
         item_id = payload["items"][0]["id"]
         assert payload["items"][0]["reference_transcript"] is None
 
+        stream_response = client.get(
+            f"/api/v1/hiring/candidate/assignments/{assignment_id}/items/{item_id}/stream",
+            headers=auth_headers["candidate"],
+        )
+        assert stream_response.status_code == 200
+        assert stream_response.headers["content-disposition"].startswith("inline")
+
         download_response = client.get(
             f"/api/v1/hiring/candidate/assignments/{assignment_id}/items/{item_id}/download",
             headers=auth_headers["candidate"],
         )
-        assert download_response.status_code == 200
-        assert download_response.headers["content-disposition"].startswith("attachment")
+        assert download_response.status_code == 403
+        assert "downloads are disabled" in download_response.json()["detail"]["message"]
 
         zip_response = client.get(
             f"/api/v1/hiring/candidate/assignments/{assignment_id}/download-zip",
             headers=auth_headers["candidate"],
         )
-        assert zip_response.status_code == 200
-        assert zip_response.headers["content-type"] == "application/zip"
+        assert zip_response.status_code == 403
+        assert "downloads are disabled" in zip_response.json()["detail"]["message"]
 
         save_response = client.patch(
             f"/api/v1/hiring/candidate/submissions/{submission['id']}",

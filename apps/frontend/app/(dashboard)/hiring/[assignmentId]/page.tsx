@@ -1,6 +1,6 @@
 "use client";
 
-import type { HiringAssessmentItem, HiringMetadataField, HiringPIIEntry, HiringSubmission } from "@outcomes/shared-types";
+import type { HiringMetadataField, HiringPIIEntry, HiringSubmission } from "@outcomes/shared-types";
 import { useParams } from "next/navigation";
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
@@ -8,22 +8,12 @@ import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { useAuth } from "@/components/auth-provider";
 import {
   APIError,
-  downloadCandidateHiringAudio,
-  downloadCandidateHiringZip,
   fetchCandidateHiringAssignment,
   patchCandidateHiringSubmission,
+  streamCandidateHiringAudio,
   submitCandidateHiringAssignment,
 } from "@/lib/api";
 import { defaultHiringInstructions } from "@/lib/hiring-instructions";
-
-function saveBlob(blob: Blob, filename: string) {
-  const objectUrl = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(objectUrl);
-}
 
 function metadataReady(fields: HiringMetadataField[], values: Record<string, unknown>) {
   return fields.every((field) => !field.required || String(values[field.key] ?? "").trim() !== "");
@@ -310,7 +300,7 @@ export default function CandidateHiringAssignmentPage() {
       if (previous) URL.revokeObjectURL(previous);
       return null;
     });
-    void downloadCandidateHiringAudio(accessToken, assignmentId, selectedItem.id)
+    void streamCandidateHiringAudio(accessToken, assignmentId, selectedItem.id)
       .then((response) => {
         if (cancelled) return;
         setAudioUrl(URL.createObjectURL(response.blob));
@@ -338,34 +328,6 @@ export default function CandidateHiringAssignmentPage() {
     const intervalId = window.setInterval(() => void refresh(), 60_000);
     return () => window.clearInterval(intervalId);
   }, [accessToken, assignmentId, readOnly]);
-
-  async function downloadAudio(item: HiringAssessmentItem) {
-    if (!accessToken) return;
-    setBusy(true);
-    try {
-      const response = await downloadCandidateHiringAudio(accessToken, assignmentId, item.id);
-      saveBlob(response.blob, response.filename);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof APIError ? err.message : "Audio download failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function downloadAll() {
-    if (!accessToken) return;
-    setBusy(true);
-    try {
-      const response = await downloadCandidateHiringZip(accessToken, assignmentId);
-      saveBlob(response.blob, response.filename);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof APIError ? err.message : "ZIP download failed");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   function markDirty() {
     setDraftDirty(true);
@@ -542,9 +504,6 @@ export default function CandidateHiringAssignmentPage() {
                 Instructions
               </button>
             ) : null}
-            <button type="button" onClick={downloadAll} disabled={busy || editingDisabled} className="oa-btn-secondary px-3 py-1.5 text-sm disabled:opacity-50">
-              Download All
-            </button>
             <button type="button" onClick={prepareSubmit} disabled={busy || editingDisabled || !allReady} className="oa-btn-primary px-4 py-1.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50">
               {readOnly ? "Submitted" : "Submit Test"}
             </button>
@@ -635,9 +594,6 @@ export default function CandidateHiringAssignmentPage() {
                   <h2 className="oa-title text-xs font-semibold uppercase tracking-[0.1em] text-[#4b5563]">Audio</h2>
                   <p className="mt-0.5 truncate text-sm font-semibold text-[#1f1b3f]" title={selectedItem.original_filename}>{selectedItem.original_filename}</p>
                 </div>
-                <button type="button" onClick={() => void downloadAudio(selectedItem)} disabled={busy || editingDisabled} className="oa-btn-secondary px-3 py-1.5 text-sm disabled:opacity-50">
-                  Download
-                </button>
               </div>
               <div className="mb-2 grid gap-2 text-xs text-[#4b5563] sm:grid-cols-3">
                 <ChecklistPill label="Transcript" ready={currentReadiness.transcript} />
@@ -649,7 +605,7 @@ export default function CandidateHiringAssignmentPage() {
               ) : audioBusy ? (
                 <div className="rounded-xl border border-[#e5e7eb] bg-[#f8fafc] px-3 py-4 text-sm text-[#5f5b79]">Loading audio...</div>
               ) : (
-                <AudioWaveformPlayer audioUrl={audioUrl} allowDownloadControls />
+                <AudioWaveformPlayer audioUrl={audioUrl} />
               )}
             </div>
 

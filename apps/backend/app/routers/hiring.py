@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db_session, require_confidentiality_ack, require_roles
@@ -423,8 +423,8 @@ def detect_candidate_pii(
     )
 
 
-@router.get("/candidate/assignments/{assignment_id}/items/{item_id}/download")
-def download_candidate_item(
+@router.get("/candidate/assignments/{assignment_id}/items/{item_id}/stream")
+def stream_candidate_item(
     assignment_id: str,
     item_id: str,
     request: Request,
@@ -432,13 +432,13 @@ def download_candidate_item(
     current_user: User = Depends(require_roles(RoleEnum.CANDIDATE)),
 ):
     try:
-        path, filename = HiringService(db).candidate_download_path(
+        path, filename = HiringService(db).candidate_audio_path(
             assignment_id=assignment_id,
             item_id=item_id,
             actor=current_user,
         )
         SecurityAuditService(db).log_event(
-            action="DOWNLOAD_HIRING_AUDIO",
+            action="STREAM_HIRING_AUDIO",
             actor=current_user,
             resource_type="hiring_audio",
             resource_id=item_id,
@@ -450,8 +450,23 @@ def download_candidate_item(
             path,
             media_type="audio/wav",
             filename=filename,
+            content_disposition_type="inline",
             headers={"Cache-Control": "no-store, max-age=0", "X-Content-Type-Options": "nosniff"},
         )
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.get("/candidate/assignments/{assignment_id}/items/{item_id}/download")
+def download_candidate_item(
+    assignment_id: str,
+    item_id: str,
+    _: Request,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.CANDIDATE)),
+):
+    try:
+        HiringService(db).reject_candidate_audio_download(assignment_id=assignment_id, actor=current_user)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -459,29 +474,11 @@ def download_candidate_item(
 @router.get("/candidate/assignments/{assignment_id}/download-zip")
 def download_candidate_zip(
     assignment_id: str,
-    request: Request,
+    _: Request,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.CANDIDATE)),
 ):
     try:
-        payload, filename = HiringService(db).candidate_zip_bytes(assignment_id=assignment_id, actor=current_user)
-        SecurityAuditService(db).log_event(
-            action="DOWNLOAD_HIRING_AUDIO_ZIP",
-            actor=current_user,
-            resource_type="hiring_assignment",
-            resource_id=assignment_id,
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent"),
-            metadata={"assignment_id": assignment_id},
-        )
-        return Response(
-            content=payload,
-            media_type="application/zip",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Cache-Control": "no-store, max-age=0",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+        HiringService(db).reject_candidate_audio_download(assignment_id=assignment_id, actor=current_user)
     except ServiceError as exc:
         raise _http_error(exc) from exc

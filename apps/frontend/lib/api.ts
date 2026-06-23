@@ -925,24 +925,16 @@ export async function detectCandidatePII(
   );
 }
 
-export async function downloadCandidateHiringAudio(
+export async function streamCandidateHiringAudio(
   token: string,
   assignmentId: string,
   itemId: string
 ): Promise<{ blob: Blob; filename: string }> {
   const response = await requestBlob(
-    `/hiring/candidate/assignments/${assignmentId}/items/${itemId}/download`,
+    `/hiring/candidate/assignments/${assignmentId}/items/${itemId}/stream`,
     token
   );
   return { blob: response.blob, filename: response.filename ?? "hiring-audio.wav" };
-}
-
-export async function downloadCandidateHiringZip(
-  token: string,
-  assignmentId: string
-): Promise<{ blob: Blob; filename: string }> {
-  const response = await requestBlob(`/hiring/candidate/assignments/${assignmentId}/download-zip`, token);
-  return { blob: response.blob, filename: response.filename ?? "hiring-audio.zip" };
 }
 
 export async function createUser(

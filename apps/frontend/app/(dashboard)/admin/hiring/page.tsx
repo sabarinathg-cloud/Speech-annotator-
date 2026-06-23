@@ -85,6 +85,28 @@ type AssignmentFolderDraft = {
 };
 
 type AdminHiringTab = "setup" | "audio" | "candidates" | "review";
+type AssignmentSortKey =
+  | "submitted_first"
+  | "submitted_latest"
+  | "last_saved_latest"
+  | "score_high"
+  | "progress_high"
+  | "progress_low"
+  | "time_left"
+  | "status"
+  | "candidate";
+
+const assignmentSortLabels: Record<AssignmentSortKey, string> = {
+  submitted_first: "Submitted first",
+  submitted_latest: "Submitted latest",
+  last_saved_latest: "Last saved latest",
+  score_high: "Score high to low",
+  progress_high: "Progress high to low",
+  progress_low: "Progress low to high",
+  time_left: "Time left soonest",
+  status: "Status",
+  candidate: "Candidate A-Z",
+};
 
 function defaultMetadataFields(): HiringMetadataField[] {
   return [
@@ -201,6 +223,66 @@ function findTranscriptRubricKey(fields: HiringRubricField[]): string | null {
   return field?.key ?? null;
 }
 
+function timestampMillis(value: string | null) {
+  if (!value) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function assignmentProgressRatio(assignment: HiringAssignmentSummary) {
+  return assignment.item_count > 0 ? assignment.submitted_count / assignment.item_count : 0;
+}
+
+function compareNullableNumber(first: number | null, second: number | null, direction: "asc" | "desc") {
+  if (first === null && second === null) return 0;
+  if (first === null) return 1;
+  if (second === null) return -1;
+  return direction === "asc" ? first - second : second - first;
+}
+
+function compareAssignmentCandidates(first: HiringAssignmentSummary, second: HiringAssignmentSummary) {
+  return first.candidate_label.localeCompare(second.candidate_label, undefined, { sensitivity: "base" });
+}
+
+function sortAssignmentsForAdmin(assignments: HiringAssignmentSummary[], sortKey: AssignmentSortKey) {
+  return [...assignments].sort((first, second) => {
+    if (sortKey === "submitted_first") {
+      return (
+        compareNullableNumber(timestampMillis(first.submitted_at), timestampMillis(second.submitted_at), "asc") ||
+        compareAssignmentCandidates(first, second)
+      );
+    }
+    if (sortKey === "submitted_latest") {
+      return (
+        compareNullableNumber(timestampMillis(first.submitted_at), timestampMillis(second.submitted_at), "desc") ||
+        compareAssignmentCandidates(first, second)
+      );
+    }
+    if (sortKey === "last_saved_latest") {
+      return (
+        compareNullableNumber(timestampMillis(first.last_saved_at), timestampMillis(second.last_saved_at), "desc") ||
+        compareAssignmentCandidates(first, second)
+      );
+    }
+    if (sortKey === "score_high") {
+      return compareNullableNumber(first.total_score, second.total_score, "desc") || compareAssignmentCandidates(first, second);
+    }
+    if (sortKey === "progress_high") {
+      return assignmentProgressRatio(second) - assignmentProgressRatio(first) || compareAssignmentCandidates(first, second);
+    }
+    if (sortKey === "progress_low") {
+      return assignmentProgressRatio(first) - assignmentProgressRatio(second) || compareAssignmentCandidates(first, second);
+    }
+    if (sortKey === "time_left") {
+      return compareNullableNumber(first.seconds_remaining, second.seconds_remaining, "asc") || compareAssignmentCandidates(first, second);
+    }
+    if (sortKey === "status") {
+      return first.status.localeCompare(second.status) || compareAssignmentCandidates(first, second);
+    }
+    return compareAssignmentCandidates(first, second);
+  });
+}
+
 export default function AdminHiringPage() {
   const { accessToken } = useAuth();
   const [assessments, setAssessments] = useState<Awaited<ReturnType<typeof fetchHiringAssessments>>["items"]>([]);
@@ -243,6 +325,7 @@ export default function AdminHiringPage() {
   const [selectedAnswerSubmissionId, setSelectedAnswerSubmissionId] = useState<string | null>(null);
   const [referenceSearch, setReferenceSearch] = useState("");
   const [selectedReferenceItemId, setSelectedReferenceItemId] = useState<string | null>(null);
+  const [assignmentSort, setAssignmentSort] = useState<AssignmentSortKey>("submitted_first");
   const [scoreDraft, setScoreDraft] = useState({
     transcript_score: "",
     pii_score: "",
@@ -311,6 +394,10 @@ export default function AdminHiringPage() {
     const inProgress = assignments.filter((assignment) => assignment.status === "IN_PROGRESS").length;
     return { submitted, evaluated, revoked, inProgress };
   }, [assignments]);
+  const sortedAssignments = useMemo(
+    () => sortAssignmentsForAdmin(assignments, assignmentSort),
+    [assignments, assignmentSort]
+  );
 
   const referenceNeedle = deferredReferenceSearch.trim().toLowerCase();
   const filteredReferenceItems = useMemo(
@@ -1492,7 +1579,24 @@ export default function AdminHiringPage() {
                 </div>
 
                 <div className="oa-card p-4">
-                  <h3 className="oa-title text-base font-semibold">Candidate progress</h3>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="oa-title text-base font-semibold">Candidate progress</h3>
+                    <label className="flex items-center gap-2 text-xs font-medium text-[#5f5b79]">
+                      <span>Sort</span>
+                      <select
+                        aria-label="Sort candidate progress"
+                        className="oa-select h-9 min-w-[190px] text-xs"
+                        value={assignmentSort}
+                        onChange={(event) => setAssignmentSort(event.target.value as AssignmentSortKey)}
+                      >
+                        {Object.entries(assignmentSortLabels).map(([value, label]) => (
+                          <option key={value} value={value}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
                   <div className="mt-3 grid grid-cols-1 gap-3 rounded-lg border border-[#eee5f8] bg-[#fbf8ff] p-3 lg:grid-cols-[minmax(260px,1fr)_auto_auto]">
                     <input
                       className="oa-input h-10 text-sm"
@@ -1518,7 +1622,7 @@ export default function AdminHiringPage() {
                     </button>
                   </div>
                   <div className="mt-3 overflow-x-auto">
-                    <table className="w-full min-w-[1320px] text-left text-sm">
+                    <table aria-label="Candidate progress" className="w-full min-w-[1320px] text-left text-sm">
                       <thead className="text-xs uppercase tracking-[0.12em] text-[#7a7395]">
                         <tr>
                           <th className="py-2">Candidate</th>
@@ -1535,7 +1639,7 @@ export default function AdminHiringPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {assignments.map((assignment) => {
+                        {sortedAssignments.map((assignment) => {
                           const folderDraft = assignmentFolderDrafts[assignment.id] ?? { folder_path: "", recursive: false };
                           const canImportCandidateAudio = !["SUBMITTED", "EVALUATED"].includes(assignment.status);
                           const canModifyAssignment = !["SUBMITTED", "EVALUATED"].includes(assignment.status);
