@@ -14,6 +14,7 @@ import {
   patchCandidateHiringSubmission,
   submitCandidateHiringAssignment,
 } from "@/lib/api";
+import { defaultHiringInstructions } from "@/lib/hiring-instructions";
 
 function saveBlob(blob: Blob, filename: string) {
   const objectUrl = URL.createObjectURL(blob);
@@ -223,7 +224,7 @@ export default function CandidateHiringAssignmentPage() {
     piiReviewed,
     metadata: draftMetadata,
   });
-  const candidateInstructions = detail?.assessment.instructions.trim() ?? "";
+  const candidateInstructions = detail ? detail.assessment.instructions.trim() || defaultHiringInstructions : "";
   const reviewedPIIEntries = useMemo(() => cleanPIIEntries(draftPIIEntries), [draftPIIEntries]);
   const piiEntryCount = reviewedPIIEntries.length;
   const piiStatusText = piiReviewed ? "PII review complete" : "PII review required";

@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import CandidateHiringAssignmentPage from "@/app/(dashboard)/hiring/[assignmentId]/page";
+import { defaultHiringInstructions } from "@/lib/hiring-instructions";
 
 const {
   fetchCandidateHiringAssignment,
@@ -217,6 +218,14 @@ describe("CandidateHiringAssignmentPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Instructions" }));
     expect(await screen.findByRole("dialog", { name: "Instructions" })).toBeInTheDocument();
+  });
+
+  it("shows default instructions when an older assessment has none saved", async () => {
+    render(<CandidateHiringAssignmentPage />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Instructions" });
+    expect(within(dialog).getByText(/Please complete this transcription assessment carefully/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Instructions" })).toBeInTheDocument();
   });
 
   it("makes PII review obvious and auto-saves the reviewed flag", async () => {
