@@ -58,6 +58,11 @@ class Settings(BaseSettings):
         default=1_073_741_824,
         alias="HIRING_AUDIO_IMPORT_MIN_FREE_BYTES",
     )
+    deepgram_api_key: str = Field(default="", alias="DEEPGRAM_API_KEY")
+    deepgram_api_url: str = Field(default="https://api.deepgram.com/v1/listen", alias="DEEPGRAM_API_URL")
+    deepgram_model: str = Field(default="nova-3", alias="DEEPGRAM_MODEL")
+    deepgram_timeout_seconds: int = Field(default=120, alias="DEEPGRAM_TIMEOUT_SECONDS")
+    hiring_deepgram_reference_max_files: int = Field(default=2500, alias="HIRING_DEEPGRAM_REFERENCE_MAX_FILES")
 
     @field_validator("database_url", mode="before")
     @classmethod

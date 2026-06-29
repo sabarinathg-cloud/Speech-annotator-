@@ -8,10 +8,12 @@ from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.job import BackgroundJob
 from app.models.user import User
+from app.schemas.hiring import HiringDeepgramReferenceRequest
 from app.schemas.job import ExportJobRequest
 from app.schemas.upload import ColumnMappingRequest
 from app.services.errors import ServiceError
 from app.services.export_service import ExportService
+from app.services.hiring_service import HiringService
 from app.services.upload_service import UploadService
 
 
@@ -41,6 +43,25 @@ class JobService:
             payload={
                 "upload_job_id": upload_job_id,
                 "mapping": mapping.model_dump(mode="json") if mapping else None,
+            },
+            actor=actor,
+        )
+        self._dispatch(job)
+        self.db.refresh(job)
+        return job
+
+    def enqueue_hiring_deepgram_reference_job(
+        self,
+        *,
+        assessment_id: str,
+        payload: HiringDeepgramReferenceRequest,
+        actor: User,
+    ) -> BackgroundJob:
+        job = self._create_job(
+            job_type="hiring_deepgram_references",
+            payload={
+                "assessment_id": assessment_id,
+                "overwrite_existing": payload.overwrite_existing,
             },
             actor=actor,
         )
@@ -125,6 +146,8 @@ class JobService:
             return self._execute_export(job)
         if job.job_type == "import":
             return self._execute_import(job)
+        if job.job_type == "hiring_deepgram_references":
+            return self._execute_hiring_deepgram_references(job)
         raise ServiceError(f"Unsupported background job type: {job.job_type}", status_code=422)
 
     def _execute_export(self, job: BackgroundJob) -> dict[str, Any]:
@@ -164,6 +187,18 @@ class JobService:
         raw_mapping = job.payload.get("mapping")
         mapping = ColumnMappingRequest.model_validate(raw_mapping) if raw_mapping else None
         result = UploadService(self.db).import_upload(upload_job_id, mapping)
+        return result.model_dump(mode="json")
+
+    def _execute_hiring_deepgram_references(self, job: BackgroundJob) -> dict[str, Any]:
+        assessment_id = str(job.payload.get("assessment_id") or "")
+        if not assessment_id:
+            raise ServiceError("Deepgram reference job is missing assessment_id", status_code=422)
+        actor = self.db.get(User, job.created_by_id)
+        result = HiringService(self.db).generate_deepgram_reference_transcripts(
+            assessment_id=assessment_id,
+            overwrite_existing=bool(job.payload.get("overwrite_existing")),
+            actor=actor,
+        )
         return result.model_dump(mode="json")
 
 

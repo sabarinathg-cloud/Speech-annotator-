@@ -8,6 +8,7 @@ import type {
   HiringAuditEvent,
   HiringAssessmentDetail,
   HiringAssignmentSummary,
+  HiringDeepgramReferenceResult,
   HiringDecision,
   HiringMetadataField,
   HiringPIIEntry,
@@ -15,6 +16,7 @@ import type {
   HiringRubricField,
   HiringSubmission,
   HiringSubmissionValidationStatus,
+  JobStatus,
 } from "@outcomes/shared-types";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
@@ -29,6 +31,7 @@ import {
   deleteHiringAssessment,
   deleteHiringAssignment,
   deleteUser,
+  enqueueHiringDeepgramReferences,
   fetchHiringAssignmentAuditEvents,
   fetchHiringAssessment,
   fetchHiringAssessmentAssignments,
@@ -36,10 +39,12 @@ import {
   fetchHiringAssessmentRanking,
   fetchHiringAssessments,
   fetchHiringAudioBuckets,
+  fetchJob,
   fetchUsers,
   importHiringAssignmentFolder,
   importHiringFolder,
   importHiringManifest,
+  parseHiringDeepgramReferenceResult,
   updateHiringAssessment,
   updateHiringAssignmentAccess,
   updateHiringItemReference,
@@ -319,6 +324,8 @@ export default function AdminHiringPage() {
   const [inviteCredential, setInviteCredential] = useState<HiringAssignmentInviteResponse | null>(null);
   const [auditEvents, setAuditEvents] = useState<HiringAuditEvent[]>([]);
   const [referenceDrafts, setReferenceDrafts] = useState<Record<string, ReferenceDraft>>({});
+  const [deepgramOverwrite, setDeepgramOverwrite] = useState(false);
+  const [deepgramJob, setDeepgramJob] = useState<JobStatus | null>(null);
   const [activeTab, setActiveTab] = useState<AdminHiringTab>("candidates");
   const [answerViewerOpen, setAnswerViewerOpen] = useState(false);
   const [answerSearch, setAnswerSearch] = useState("");
@@ -450,6 +457,10 @@ export default function AdminHiringPage() {
     [filteredAnswerSubmissions, review?.submissions, selectedAnswerSubmissionId]
   );
   const selectedAnswerItem = selectedAnswerSubmission ? reviewItemsById.get(selectedAnswerSubmission.item_id) ?? null : null;
+  const deepgramResult = useMemo<HiringDeepgramReferenceResult | null>(
+    () => parseHiringDeepgramReferenceResult(deepgramJob?.result),
+    [deepgramJob?.result]
+  );
 
   useEffect(() => {
     if (!review) {
@@ -463,6 +474,33 @@ export default function AdminHiringPage() {
         : review.submissions[0]?.id ?? null
     );
   }, [review]);
+
+  useEffect(() => {
+    if (!accessToken || !detail || !deepgramJob || !["QUEUED", "RUNNING"].includes(deepgramJob.status)) return;
+    let cancelled = false;
+    const intervalId = window.setInterval(() => {
+      void fetchJob(accessToken, deepgramJob.id).then(async (job) => {
+        if (cancelled) return;
+        setDeepgramJob(job);
+        if (["COMPLETED", "FAILED"].includes(job.status)) {
+          window.clearInterval(intervalId);
+          if (job.status === "COMPLETED") {
+            await loadAssessment(detail.id);
+            if (review) await openReview(review.id);
+            setMessage("Deepgram reference generation completed");
+          } else {
+            setError(job.error_message ?? "Deepgram reference generation failed");
+          }
+        }
+      }).catch((err) => {
+        if (!cancelled) setError(err instanceof APIError ? err.message : "Deepgram job status check failed");
+      });
+    }, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [accessToken, deepgramJob, detail, review]);
 
   const cleanedMetadataFields = useMemo(
     () =>
@@ -833,6 +871,38 @@ export default function AdminHiringPage() {
       setError(null);
     } catch (err) {
       setError(err instanceof APIError ? err.message : "Reference save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function generateDeepgramReferences() {
+    if (!accessToken || !detail) return;
+    setBusy(true);
+    try {
+      const queued = await enqueueHiringDeepgramReferences(accessToken, detail.id, {
+        overwrite_existing: deepgramOverwrite,
+      });
+      const job = await fetchJob(accessToken, queued.job_id);
+      setDeepgramJob(job);
+      if (job.status === "COMPLETED") {
+        await loadAssessment(detail.id);
+        if (review) await openReview(review.id);
+        const result = parseHiringDeepgramReferenceResult(job.result);
+        setMessage(
+          result
+            ? `Deepgram generated ${result.transcribed_items} reference transcript${result.transcribed_items === 1 ? "" : "s"}`
+            : "Deepgram reference generation completed"
+        );
+        setError(result?.errors[0] ?? null);
+      } else if (job.status === "FAILED") {
+        setError(job.error_message ?? "Deepgram reference generation failed");
+      } else {
+        setMessage("Deepgram reference generation started");
+        setError(null);
+      }
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Deepgram reference generation failed");
     } finally {
       setBusy(false);
     }
@@ -1338,17 +1408,46 @@ export default function AdminHiringPage() {
                         {referenceAnswerCount}/{detail.items.length} files have a reference answer
                       </p>
                     </div>
-                    {selectedReferenceItem ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="flex items-center gap-2 rounded-lg border border-[#eee5f8] bg-[#fbf8ff] px-3 py-2 text-xs text-[#5f5b79]">
+                        <input
+                          type="checkbox"
+                          checked={deepgramOverwrite}
+                          onChange={(event) => setDeepgramOverwrite(event.target.checked)}
+                        />
+                        Overwrite existing
+                      </label>
                       <button
                         type="button"
-                        onClick={() => void saveItemReference(selectedReferenceItem.id)}
-                        disabled={busy}
-                        className="oa-btn-primary px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                        onClick={() => void generateDeepgramReferences()}
+                        disabled={busy || detail.items.length === 0 || deepgramJob?.status === "QUEUED" || deepgramJob?.status === "RUNNING"}
+                        className="oa-btn-secondary px-3 py-2 text-sm disabled:opacity-50"
                       >
-                        Save Reference
+                        Generate with Deepgram
                       </button>
-                    ) : null}
+                      {selectedReferenceItem ? (
+                        <button
+                          type="button"
+                          onClick={() => void saveItemReference(selectedReferenceItem.id)}
+                          disabled={busy}
+                          className="oa-btn-primary px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                        >
+                          Save Reference
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
+                  {deepgramJob ? (
+                    <div className="mt-3 rounded-lg border border-[#eee5f8] bg-[#fbf8ff] px-3 py-2 text-xs text-[#5f5b79]">
+                      <span className="font-semibold text-[#332d53]">Deepgram:</span> {deepgramJob.status}
+                      {deepgramResult ? (
+                        <span>
+                          {" "} | {deepgramResult.transcribed_items} generated, {deepgramResult.skipped_items} skipped
+                          {deepgramResult.errors.length > 0 ? `, ${deepgramResult.errors.length} warning${deepgramResult.errors.length === 1 ? "" : "s"}` : ""}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
 
                   <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
                     <div className="rounded-xl border border-[#eee5f8] bg-[#fbf8ff] p-3">
@@ -1744,11 +1843,13 @@ export default function AdminHiringPage() {
               <section className="oa-card p-4">
                 <h3 className="oa-title text-base font-semibold">Candidate ranking</h3>
                 <div className="mt-3 overflow-x-auto">
-                  <table className="w-full min-w-[760px] text-left text-sm">
+                  <table className="w-full min-w-[980px] text-left text-sm">
                     <thead className="text-xs uppercase tracking-[0.12em] text-[#7a7395]">
                       <tr>
                         <th className="py-2">Rank</th>
                         <th className="py-2">Candidate</th>
+                        <th className="py-2">WER</th>
+                        <th className="py-2">Accuracy</th>
                         <th className="py-2">Score</th>
                         <th className="py-2">Progress</th>
                         <th className="py-2">Decision</th>
@@ -1764,6 +1865,11 @@ export default function AdminHiringPage() {
                             <p className="font-medium text-[#1f1b3f]">{item.candidate_name}</p>
                             <p className="text-xs text-[#7a7395]">{item.candidate_email}</p>
                           </td>
+                          <td className="py-2 pr-3">
+                            {item.average_word_error_rate === null ? "--" : formatWer(item.average_word_error_rate)}
+                            {item.reference_item_count > 0 ? <p className="text-xs text-[#7a7395]">{item.reference_item_count} reference files</p> : null}
+                          </td>
+                          <td className="py-2 pr-3">{formatPercent(item.transcript_accuracy_percent)}</td>
                           <td className="py-2 pr-3">{item.total_score ?? "--"}</td>
                           <td className="py-2 pr-3">{item.progress_percent}%</td>
                           <td className="py-2 pr-3">{item.decision}</td>

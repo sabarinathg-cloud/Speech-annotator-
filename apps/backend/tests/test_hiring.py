@@ -4,9 +4,10 @@ from types import SimpleNamespace
 
 from app.core.security import get_password_hash
 from app.core.config import get_settings
-from app.models.enums import RoleEnum
+from app.models.enums import HiringAssignmentStatusEnum, RoleEnum
 from app.models.hiring import HiringAssessment, HiringAssessmentItem, HiringAssignment, HiringSubmission
 from app.models.user import User
+from app.services.deepgram_transcription_service import DeepgramTranscript
 from app.services import hiring_service as hiring_service_module
 
 
@@ -669,6 +670,111 @@ def test_hiring_reference_answers_drive_review_comparison_and_score_suggestion(
         assert metrics["pii_type_mismatches"][0]["actual"]["type"] == "Person"
     finally:
         settings.hiring_audio_import_roots = original_roots
+
+
+def test_admin_can_generate_deepgram_references_and_rank_by_wer(
+    client,
+    auth_headers,
+    seed_users,
+    tmp_path,
+    db_session,
+    monkeypatch,
+):
+    settings = get_settings()
+    original_roots = settings.hiring_audio_import_roots
+    original_deepgram_key = settings.deepgram_api_key
+    settings.hiring_audio_import_roots = str(tmp_path)
+    settings.deepgram_api_key = "test-deepgram-key"
+
+    def fake_transcribe(_self, path):
+        return DeepgramTranscript(
+            transcript="hello world from deepgram",
+            confidence=0.97,
+            request_id=f"request-{Path(path).stem}",
+            model="nova-3",
+            raw={},
+        )
+
+    monkeypatch.setattr(
+        hiring_service_module.DeepgramTranscriptionService,
+        "transcribe_wav",
+        fake_transcribe,
+    )
+    try:
+        assessment = _create_assessment(client, auth_headers)
+        audio_folder = tmp_path / "deepgram-audio"
+        audio_folder.mkdir()
+        _write_wav(audio_folder / "deepgram.wav")
+        import_response = client.post(
+            f"/api/v1/hiring/assessments/{assessment['id']}/items/folder",
+            headers=auth_headers["admin"],
+            json={"folder_path": str(audio_folder), "recursive": False},
+        )
+        assert import_response.status_code == 200
+
+        job_response = client.post(
+            f"/api/v1/hiring/assessments/{assessment['id']}/reference-transcripts/deepgram/jobs",
+            headers=auth_headers["admin"],
+            json={"overwrite_existing": False},
+        )
+        assert job_response.status_code == 200
+        assert job_response.json()["status"] == "COMPLETED"
+        job_status = client.get(
+            f"/api/v1/jobs/{job_response.json()['job_id']}",
+            headers=auth_headers["admin"],
+        )
+        assert job_status.status_code == 200
+        assert job_status.json()["result"]["transcribed_items"] == 1
+
+        item = db_session.query(HiringAssessmentItem).filter_by(assessment_id=assessment["id"]).one()
+        assert item.reference_transcript == "hello world from deepgram"
+        assert item.reference_metadata["deepgram"]["confidence"] == 0.97
+
+        candidate_two = User(
+            email="candidate.wer@test.com",
+            full_name="Candidate WER",
+            password_hash=get_password_hash("Candidate@123"),
+            role=RoleEnum.CANDIDATE,
+            is_active=True,
+        )
+        db_session.add(candidate_two)
+        db_session.commit()
+
+        assign_response = client.post(
+            f"/api/v1/hiring/assessments/{assessment['id']}/assignments",
+            headers=auth_headers["admin"],
+            json={"candidate_ids": [seed_users["candidate"].id, candidate_two.id]},
+        )
+        assert assign_response.status_code == 200
+        assignments = {entry["candidate_id"]: entry["id"] for entry in assign_response.json()["items"]}
+        submitted_at = datetime.now(UTC)
+        first_assignment = db_session.get(HiringAssignment, assignments[seed_users["candidate"].id])
+        second_assignment = db_session.get(HiringAssignment, assignments[candidate_two.id])
+        first_assignment.status = HiringAssignmentStatusEnum.SUBMITTED
+        first_assignment.submitted_at = submitted_at
+        second_assignment.status = HiringAssignmentStatusEnum.SUBMITTED
+        second_assignment.submitted_at = submitted_at
+        first_assignment.submissions[0].final_transcript = "hello world from deepgram"
+        first_assignment.submissions[0].submitted_at = submitted_at
+        second_assignment.submissions[0].final_transcript = "hello from deepgram"
+        second_assignment.submissions[0].submitted_at = submitted_at
+        db_session.commit()
+
+        ranking_response = client.get(
+            f"/api/v1/hiring/assessments/{assessment['id']}/ranking",
+            headers=auth_headers["admin"],
+        )
+        assert ranking_response.status_code == 200
+        ranking = ranking_response.json()["items"]
+        assert ranking[0]["candidate_id"] == seed_users["candidate"].id
+        assert ranking[0]["average_word_error_rate"] == 0.0
+        assert ranking[0]["transcript_accuracy_percent"] == 100.0
+        assert ranking[1]["candidate_id"] == candidate_two.id
+        assert ranking[1]["average_word_error_rate"] == 0.25
+        assert ranking[1]["transcript_accuracy_percent"] == 75.0
+    finally:
+        settings.hiring_audio_import_roots = original_roots
+        settings.deepgram_api_key = original_deepgram_key
 
 
 def test_hiring_deadline_locks_and_admin_can_extend(client, auth_headers, seed_users, tmp_path):

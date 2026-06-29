@@ -709,6 +709,9 @@ export interface HiringRankingItem {
   submitted_at: string | null;
   evaluated_at: string | null;
   total_score: number | null;
+  average_word_error_rate: number | null;
+  transcript_accuracy_percent: number | null;
+  reference_item_count: number;
   progress_percent: number;
   validated_count: number;
   rejected_count: number;
@@ -718,6 +721,14 @@ export interface HiringRankingItem {
 
 export interface HiringRankingResponse {
   items: HiringRankingItem[];
+}
+
+export interface HiringDeepgramReferenceResult {
+  assessment_id: string;
+  processed_items: number;
+  transcribed_items: number;
+  skipped_items: number;
+  errors: string[];
 }
 
 export interface HiringImportResponse {

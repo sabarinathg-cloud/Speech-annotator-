@@ -33,6 +33,7 @@ from app.schemas.hiring import (
     HiringAudioBucketResponse,
     HiringAssessmentDeleteResponse,
     HiringAssessmentDetailResponse,
+    HiringDeepgramReferenceResult,
     HiringAssessmentItemReferenceUpdateRequest,
     HiringAssessmentItemResponse,
     HiringAssessmentListResponse,
@@ -59,6 +60,7 @@ from app.schemas.hiring import (
     HiringTranscriptSubstitution,
     HiringPIIComparisonMismatch,
 )
+from app.services.deepgram_transcription_service import DeepgramTranscriptionService
 from app.schemas.task import PIIAnnotation
 from app.services.errors import ServiceError
 from app.services.security_audit_service import SecurityAuditService
@@ -228,6 +230,82 @@ class HiringService:
         )
         self.db.commit()
         return self.get_assessment(assessment.id)
+
+    def generate_deepgram_reference_transcripts(
+        self,
+        *,
+        assessment_id: str,
+        overwrite_existing: bool,
+        actor: User | None = None,
+    ) -> HiringDeepgramReferenceResult:
+        assessment = self._get_assessment_or_404(assessment_id)
+        total_items = len(assessment.items or [])
+        candidates = [
+            item
+            for item in self._sorted_items(assessment.items or [])
+            if overwrite_existing or not (item.reference_transcript or "").strip()
+        ]
+        max_files = max(1, settings.hiring_deepgram_reference_max_files)
+        if len(candidates) > max_files:
+            raise ServiceError(
+                f"Deepgram reference generation has {len(candidates)} files. Run at most {max_files} files at a time.",
+                status_code=422,
+                extra={"file_count": len(candidates), "max_files": max_files},
+            )
+
+        transcriber = DeepgramTranscriptionService()
+        processed = 0
+        transcribed = 0
+        errors: list[str] = []
+        for item in candidates:
+            processed += 1
+            try:
+                transcript = transcriber.transcribe_wav(Path(item.stored_path))
+            except ServiceError as exc:
+                self._append_import_error(errors, f"{item.original_filename}: {exc.message}")
+                continue
+            if not transcript.transcript:
+                self._append_import_error(errors, f"{item.original_filename}: Deepgram returned an empty transcript")
+                continue
+
+            item.reference_transcript = transcript.transcript
+            item.reference_metadata = {
+                **(item.reference_metadata or {}),
+                "deepgram": {
+                    "model": transcript.model,
+                    "confidence": transcript.confidence,
+                    "request_id": transcript.request_id,
+                    "generated_at": _now().isoformat(),
+                    "source": "deepgram",
+                },
+            }
+            transcribed += 1
+            if transcribed % HIRING_FOLDER_IMPORT_COMMIT_BATCH_SIZE == 0:
+                self.db.flush()
+
+        if actor:
+            SecurityAuditService(self.db).log_event(
+                action="GENERATE_HIRING_DEEPGRAM_REFERENCES",
+                actor=actor,
+                resource_type="hiring_assessment",
+                resource_id=assessment.id,
+                metadata={
+                    "assessment_title": assessment.title,
+                    "processed_items": processed,
+                    "transcribed_items": transcribed,
+                    "skipped_items": total_items - transcribed,
+                    "overwrite_existing": overwrite_existing,
+                },
+                commit=False,
+            )
+        self.db.commit()
+        return HiringDeepgramReferenceResult(
+            assessment_id=assessment.id,
+            processed_items=processed,
+            transcribed_items=transcribed,
+            skipped_items=total_items - transcribed,
+            errors=errors,
+        )
 
     def get_assessment(self, assessment_id: str) -> HiringAssessmentDetailResponse:
         assessment = self._get_assessment_or_404(assessment_id)
@@ -734,48 +812,58 @@ class HiringService:
 
     def assessment_ranking(self, assessment_id: str) -> HiringRankingResponse:
         assessment = self._get_assessment_or_404(assessment_id)
-        assignments = sorted(
-            assessment.assignments or [],
-            key=lambda assignment: (
-                assignment.total_score is None,
-                -(float(assignment.total_score or 0)),
-                assignment.submitted_at or datetime.min.replace(tzinfo=UTC),
+        ranking_inputs = [
+            (assignment, self._assignment_reference_summary(assignment))
+            for assignment in (assessment.assignments or [])
+        ]
+        ranking_inputs = sorted(
+            ranking_inputs,
+            key=lambda entry: (
+                entry[1]["average_word_error_rate"] is None,
+                entry[1]["average_word_error_rate"] if entry[1]["average_word_error_rate"] is not None else 0,
+                entry[0].total_score is None,
+                -(float(entry[0].total_score or 0)),
+                entry[0].submitted_at or datetime.max.replace(tzinfo=UTC),
             ),
         )
-        items = [
-            HiringRankingItem(
-                rank=index,
-                assignment_id=assignment.id,
-                candidate_id=assignment.candidate_id,
-                candidate_name=self._candidate_name_for_admin(assignment),
-                candidate_email=self._candidate_email_for_admin(assignment),
-                candidate_label=self._candidate_label(assignment),
-                candidate_identity_hidden=bool(assessment.blind_review_enabled),
-                status=assignment.status,
-                decision=assignment.decision,
-                submitted_at=assignment.submitted_at,
-                evaluated_at=assignment.evaluated_at,
-                total_score=_score_to_float(assignment.total_score),
-                progress_percent=self._progress_percent(assignment),
-                validated_count=len(
-                    [
-                        submission
-                        for submission in (assignment.submissions or [])
-                        if submission.validation_status == HiringSubmissionValidationStatusEnum.VALIDATED
-                    ]
-                ),
-                rejected_count=len(
-                    [
-                        submission
-                        for submission in (assignment.submissions or [])
-                        if submission.validation_status == HiringSubmissionValidationStatusEnum.REJECTED
-                    ]
-                ),
-                item_count=len(self._assignment_items(assignment)),
-                time_spent_seconds=self._time_spent_seconds(assignment),
+        items = []
+        for index, (assignment, reference_summary) in enumerate(ranking_inputs, start=1):
+            items.append(
+                HiringRankingItem(
+                    rank=index,
+                    assignment_id=assignment.id,
+                    candidate_id=assignment.candidate_id,
+                    candidate_name=self._candidate_name_for_admin(assignment),
+                    candidate_email=self._candidate_email_for_admin(assignment),
+                    candidate_label=self._candidate_label(assignment),
+                    candidate_identity_hidden=bool(assessment.blind_review_enabled),
+                    status=assignment.status,
+                    decision=assignment.decision,
+                    submitted_at=assignment.submitted_at,
+                    evaluated_at=assignment.evaluated_at,
+                    total_score=_score_to_float(assignment.total_score),
+                    average_word_error_rate=reference_summary["average_word_error_rate"],
+                    transcript_accuracy_percent=reference_summary["transcript_accuracy_percent"],
+                    reference_item_count=reference_summary["reference_item_count"],
+                    progress_percent=self._progress_percent(assignment),
+                    validated_count=len(
+                        [
+                            submission
+                            for submission in (assignment.submissions or [])
+                            if submission.validation_status == HiringSubmissionValidationStatusEnum.VALIDATED
+                        ]
+                    ),
+                    rejected_count=len(
+                        [
+                            submission
+                            for submission in (assignment.submissions or [])
+                            if submission.validation_status == HiringSubmissionValidationStatusEnum.REJECTED
+                        ]
+                    ),
+                    item_count=len(self._assignment_items(assignment)),
+                    time_spent_seconds=self._time_spent_seconds(assignment),
+                )
             )
-            for index, assignment in enumerate(assignments, start=1)
-        ]
         return HiringRankingResponse(items=items)
 
     def assignment_audit_events(self, assignment_id: str) -> HiringAuditEventListResponse:
@@ -1522,6 +1610,31 @@ class HiringService:
             submitted_at=submission.submitted_at,
             reference_metrics=self._reference_metrics(submission) if include_reference_metrics else None,
         )
+
+    def _assignment_reference_summary(self, assignment: HiringAssignment) -> dict[str, float | int | None]:
+        total_distance = 0
+        total_reference_words = 0
+        reference_item_count = 0
+        for submission in self._sorted_assignment_submissions(assignment):
+            reference_words = self._words(submission.item.reference_transcript or "")
+            if not reference_words:
+                continue
+            reference_item_count += 1
+            total_reference_words += len(reference_words)
+            total_distance += self._levenshtein(reference_words, self._words(submission.final_transcript))
+
+        if total_reference_words == 0:
+            return {
+                "average_word_error_rate": None,
+                "transcript_accuracy_percent": None,
+                "reference_item_count": 0,
+            }
+        word_error_rate = round(total_distance / total_reference_words, 4)
+        return {
+            "average_word_error_rate": word_error_rate,
+            "transcript_accuracy_percent": round(max(0.0, 1.0 - min(word_error_rate, 1.0)) * 100, 1),
+            "reference_item_count": reference_item_count,
+        }
 
     def _reference_metrics(self, submission: HiringSubmission) -> HiringReferenceMetrics:
         reference = submission.item.reference_transcript or ""

@@ -152,6 +152,18 @@ class HiringAssessmentItemReferenceUpdateRequest(BaseModel):
     reference_metadata: dict[str, Any] | None = None
 
 
+class HiringDeepgramReferenceRequest(BaseModel):
+    overwrite_existing: bool = False
+
+
+class HiringDeepgramReferenceResult(BaseModel):
+    assessment_id: str
+    processed_items: int
+    transcribed_items: int
+    skipped_items: int
+    errors: list[str] = Field(default_factory=list)
+
+
 class HiringImportResponse(BaseModel):
     imported_items: int
     skipped_items: int = 0
@@ -343,6 +355,9 @@ class HiringRankingItem(BaseModel):
     submitted_at: datetime | None
     evaluated_at: datetime | None
     total_score: float | None
+    average_word_error_rate: float | None = None
+    transcript_accuracy_percent: float | None = None
+    reference_item_count: int = 0
     progress_percent: float
     validated_count: int
     rejected_count: int

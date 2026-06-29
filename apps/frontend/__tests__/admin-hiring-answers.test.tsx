@@ -14,6 +14,7 @@ const {
   deleteHiringAssessment,
   deleteHiringAssignment,
   deleteUser,
+  enqueueHiringDeepgramReferences,
   fetchHiringAssignmentAuditEvents,
   fetchHiringAssessment,
   fetchHiringAssessmentAssignments,
@@ -21,10 +22,12 @@ const {
   fetchHiringAssessmentRanking,
   fetchHiringAssessments,
   fetchHiringAudioBuckets,
+  fetchJob,
   fetchUsers,
   importHiringAssignmentFolder,
   importHiringFolder,
   importHiringManifest,
+  parseHiringDeepgramReferenceResult,
   updateHiringAssessment,
   updateHiringAssignmentAccess,
   updateHiringItemReference,
@@ -41,6 +44,7 @@ const {
   deleteHiringAssessment: vi.fn(),
   deleteHiringAssignment: vi.fn(),
   deleteUser: vi.fn(),
+  enqueueHiringDeepgramReferences: vi.fn(),
   fetchHiringAssignmentAuditEvents: vi.fn(),
   fetchHiringAssessment: vi.fn(),
   fetchHiringAssessmentAssignments: vi.fn(),
@@ -48,10 +52,12 @@ const {
   fetchHiringAssessmentRanking: vi.fn(),
   fetchHiringAssessments: vi.fn(),
   fetchHiringAudioBuckets: vi.fn(),
+  fetchJob: vi.fn(),
   fetchUsers: vi.fn(),
   importHiringAssignmentFolder: vi.fn(),
   importHiringFolder: vi.fn(),
   importHiringManifest: vi.fn(),
+  parseHiringDeepgramReferenceResult: vi.fn((result) => result),
   updateHiringAssessment: vi.fn(),
   updateHiringAssignmentAccess: vi.fn(),
   updateHiringItemReference: vi.fn(),
@@ -219,6 +225,7 @@ vi.mock("@/lib/api", () => ({
   deleteHiringAssessment: (...args: unknown[]) => deleteHiringAssessment(...args),
   deleteHiringAssignment: (...args: unknown[]) => deleteHiringAssignment(...args),
   deleteUser: (...args: unknown[]) => deleteUser(...args),
+  enqueueHiringDeepgramReferences: (...args: unknown[]) => enqueueHiringDeepgramReferences(...args),
   fetchHiringAssignmentAuditEvents: (...args: unknown[]) => fetchHiringAssignmentAuditEvents(...args),
   fetchHiringAssessment: (...args: unknown[]) => fetchHiringAssessment(...args),
   fetchHiringAssessmentAssignments: (...args: unknown[]) => fetchHiringAssessmentAssignments(...args),
@@ -226,10 +233,12 @@ vi.mock("@/lib/api", () => ({
   fetchHiringAssessmentRanking: (...args: unknown[]) => fetchHiringAssessmentRanking(...args),
   fetchHiringAssessments: (...args: unknown[]) => fetchHiringAssessments(...args),
   fetchHiringAudioBuckets: (...args: unknown[]) => fetchHiringAudioBuckets(...args),
+  fetchJob: (...args: unknown[]) => fetchJob(...args),
   fetchUsers: (...args: unknown[]) => fetchUsers(...args),
   importHiringAssignmentFolder: (...args: unknown[]) => importHiringAssignmentFolder(...args),
   importHiringFolder: (...args: unknown[]) => importHiringFolder(...args),
   importHiringManifest: (...args: unknown[]) => importHiringManifest(...args),
+  parseHiringDeepgramReferenceResult: (...args: unknown[]) => parseHiringDeepgramReferenceResult(...args),
   updateHiringAssessment: (...args: unknown[]) => updateHiringAssessment(...args),
   updateHiringAssignmentAccess: (...args: unknown[]) => updateHiringAssignmentAccess(...args),
   updateHiringItemReference: (...args: unknown[]) => updateHiringItemReference(...args),
@@ -328,5 +337,41 @@ describe("AdminHiringPage candidate answers", () => {
         ]),
       })
     );
+  });
+
+  it("starts Deepgram reference generation from audio references", async () => {
+    enqueueHiringDeepgramReferences.mockResolvedValue({ job_id: "deepgram-job-1", status: "COMPLETED" });
+    fetchJob.mockResolvedValue({
+      id: "deepgram-job-1",
+      job_id: "deepgram-job-1",
+      job_type: "hiring_deepgram_references",
+      status: "COMPLETED",
+      payload: {},
+      result: {
+        assessment_id: "assessment-1",
+        processed_items: 1,
+        transcribed_items: 1,
+        skipped_items: 0,
+        errors: [],
+      },
+      error_message: null,
+      output_available: false,
+      created_at: now,
+      updated_at: now,
+      started_at: now,
+      completed_at: now,
+    });
+
+    render(<AdminHiringPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Audio & References" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generate with Deepgram" }));
+
+    await waitFor(() =>
+      expect(enqueueHiringDeepgramReferences).toHaveBeenCalledWith("admin-token", "assessment-1", {
+        overwrite_existing: false,
+      })
+    );
+    expect(await screen.findByText("Deepgram generated 1 reference transcript")).toBeInTheDocument();
   });
 });

@@ -23,6 +23,7 @@ from app.schemas.hiring import (
     HiringAssessmentDeleteResponse,
     HiringAuditEventListResponse,
     HiringCandidateAssignmentDetailResponse,
+    HiringDeepgramReferenceRequest,
     HiringFolderImportRequest,
     HiringImportResponse,
     HiringRankingResponse,
@@ -31,9 +32,11 @@ from app.schemas.hiring import (
     HiringSubmissionUpdateRequest,
     HiringSubmissionValidationRequest,
 )
+from app.schemas.job import JobCreateResponse
 from app.schemas.task import DetectPIIRequest, DetectPIIResponse
 from app.services.errors import ServiceError
 from app.services.hiring_service import HiringService
+from app.services.job_service import JobService
 from app.services.pii_detection_service import detect_pii_ensemble
 from app.services.security_audit_service import SecurityAuditService
 
@@ -133,6 +136,24 @@ def update_item_reference(
             payload=payload,
             actor=current_user,
         )
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/assessments/{assessment_id}/reference-transcripts/deepgram/jobs", response_model=JobCreateResponse)
+def enqueue_deepgram_reference_job(
+    assessment_id: str,
+    payload: HiringDeepgramReferenceRequest,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    try:
+        job = JobService(db).enqueue_hiring_deepgram_reference_job(
+            assessment_id=assessment_id,
+            payload=payload,
+            actor=current_user,
+        )
+        return JobCreateResponse(job_id=job.id, status=job.status)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 

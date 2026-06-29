@@ -16,6 +16,7 @@ import type {
   HiringAssignmentSummary,
   HiringAuditEventListResponse,
   HiringCandidateAssignmentDetail,
+  HiringDeepgramReferenceResult,
   HiringDecision,
   HiringImportResponse,
   HiringMetadataField,
@@ -731,6 +732,31 @@ export async function importHiringManifest(
     { method: "POST", body: formData },
     token
   );
+}
+
+export async function enqueueHiringDeepgramReferences(
+  token: string,
+  assessmentId: string,
+  payload: { overwrite_existing: boolean }
+): Promise<{ job_id: string; status: string }> {
+  return request(
+    `/hiring/assessments/${assessmentId}/reference-transcripts/deepgram/jobs`,
+    { method: "POST", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export function parseHiringDeepgramReferenceResult(result: unknown): HiringDeepgramReferenceResult | null {
+  if (!result || typeof result !== "object") return null;
+  const candidate = result as Partial<HiringDeepgramReferenceResult>;
+  if (typeof candidate.assessment_id !== "string") return null;
+  return {
+    assessment_id: candidate.assessment_id,
+    processed_items: Number(candidate.processed_items ?? 0),
+    transcribed_items: Number(candidate.transcribed_items ?? 0),
+    skipped_items: Number(candidate.skipped_items ?? 0),
+    errors: Array.isArray(candidate.errors) ? candidate.errors.map(String) : [],
+  };
 }
 
 export async function assignHiringCandidates(

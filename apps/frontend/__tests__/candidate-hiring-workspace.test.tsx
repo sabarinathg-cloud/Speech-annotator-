@@ -241,7 +241,8 @@ describe("CandidateHiringAssignmentPage", () => {
   it("streams audio in-app without candidate download controls", async () => {
     render(<CandidateHiringAssignmentPage />);
 
-    const player = await screen.findByTestId("audio-player");
+    await screen.findByText("Audio ready");
+    const player = screen.getByTestId("audio-player");
     expect(player).toHaveTextContent("Audio ready");
     expect(player).toHaveAttribute("data-download-controls", "disabled");
     expect(streamCandidateHiringAudio).toHaveBeenCalledWith("test-token", "assignment-1", "item-1");
