@@ -8,6 +8,7 @@ from app.models.enums import HiringAssignmentStatusEnum, RoleEnum
 from app.models.hiring import HiringAssessment, HiringAssessmentItem, HiringAssignment, HiringSubmission
 from app.models.user import User
 from app.services.deepgram_transcription_service import DeepgramTranscript
+from app.services.errors import ServiceError
 from app.services import hiring_service as hiring_service_module
 
 
@@ -772,6 +773,64 @@ def test_admin_can_generate_deepgram_references_and_rank_by_wer(
         assert ranking[1]["candidate_id"] == candidate_two.id
         assert ranking[1]["average_word_error_rate"] == 0.25
         assert ranking[1]["transcript_accuracy_percent"] == 75.0
+    finally:
+        settings.hiring_audio_import_roots = original_roots
+        settings.deepgram_api_key = original_deepgram_key
+
+
+def test_deepgram_reference_generation_records_item_errors(
+    client,
+    auth_headers,
+    db_session,
+    tmp_path,
+    monkeypatch,
+):
+    settings = get_settings()
+    original_roots = settings.hiring_audio_import_roots
+    original_deepgram_key = settings.deepgram_api_key
+    settings.hiring_audio_import_roots = str(tmp_path)
+    settings.deepgram_api_key = "test-deepgram-key"
+
+    transcribe_calls = 0
+
+    def fake_transcribe(_self, path):
+        nonlocal transcribe_calls
+        transcribe_calls += 1
+        if transcribe_calls == 1:
+            raise ServiceError("Deepgram request timed out", status_code=502)
+        return DeepgramTranscript(
+            transcript="working reference",
+            confidence=0.93,
+            request_id=f"request-{Path(path).stem}",
+            model="nova-3",
+            raw={},
+        )
+
+    monkeypatch.setattr(
+        hiring_service_module.DeepgramTranscriptionService,
+        "transcribe_wav",
+        fake_transcribe,
+    )
+    try:
+        assessment = _create_assessment(client, auth_headers)
+        audio_folder = tmp_path / "deepgram-errors"
+        audio_folder.mkdir()
+        _write_wav(audio_folder / "failed.wav")
+        _write_wav(audio_folder / "working.wav")
+        import_response = client.post(
+            f"/api/v1/hiring/assessments/{assessment['id']}/items/folder",
+            headers=auth_headers["admin"],
+            json={"folder_path": str(audio_folder), "recursive": False},
+        )
+        assert import_response.status_code == 200
+
+        result = hiring_service_module.HiringService(db_session).generate_deepgram_reference_transcripts(
+            assessment_id=assessment["id"],
+            overwrite_existing=False,
+        )
+        assert result.processed_items == 2
+        assert result.transcribed_items == 1
+        assert result.errors == ["failed.wav: Deepgram request timed out"]
     finally:
         settings.hiring_audio_import_roots = original_roots
         settings.deepgram_api_key = original_deepgram_key

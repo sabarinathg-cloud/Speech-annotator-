@@ -262,10 +262,10 @@ class HiringService:
             try:
                 transcript = transcriber.transcribe_wav(Path(item.stored_path))
             except ServiceError as exc:
-                self._append_import_error(errors, f"{item.original_filename}: {exc.message}")
+                self._append_import_message(errors, f"{item.original_filename}: {exc.message}")
                 continue
             if not transcript.transcript:
-                self._append_import_error(errors, f"{item.original_filename}: Deepgram returned an empty transcript")
+                self._append_import_message(errors, f"{item.original_filename}: Deepgram returned an empty transcript")
                 continue
 
             item.reference_transcript = transcript.transcript
