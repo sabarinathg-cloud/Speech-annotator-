@@ -719,12 +719,13 @@ def test_admin_can_generate_deepgram_references_and_rank_by_wer(
             json={"overwrite_existing": False},
         )
         assert job_response.status_code == 200
-        assert job_response.json()["status"] == "COMPLETED"
+        assert job_response.json()["status"] == "QUEUED"
         job_status = client.get(
             f"/api/v1/jobs/{job_response.json()['job_id']}",
             headers=auth_headers["admin"],
         )
         assert job_status.status_code == 200
+        assert job_status.json()["status"] == "COMPLETED"
         assert job_status.json()["result"]["transcribed_items"] == 1
 
         item = db_session.query(HiringAssessmentItem).filter_by(assessment_id=assessment["id"]).one()

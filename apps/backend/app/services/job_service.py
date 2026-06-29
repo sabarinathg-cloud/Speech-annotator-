@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
@@ -56,6 +56,7 @@ class JobService:
         assessment_id: str,
         payload: HiringDeepgramReferenceRequest,
         actor: User,
+        dispatch: bool = True,
     ) -> BackgroundJob:
         job = self._create_job(
             job_type="hiring_deepgram_references",
@@ -65,8 +66,9 @@ class JobService:
             },
             actor=actor,
         )
-        self._dispatch(job)
-        self.db.refresh(job)
+        if dispatch:
+            self._dispatch(job)
+            self.db.refresh(job)
         return job
 
     def get_job(self, job_id: str) -> BackgroundJob:
@@ -204,6 +206,15 @@ class JobService:
 
 def run_queued_job(job_id: str) -> None:
     db = SessionLocal()
+    try:
+        JobService(db).run_job(job_id)
+    finally:
+        db.close()
+
+
+def run_queued_job_with_bind(job_id: str, bind: Any) -> None:
+    session_local = sessionmaker(autocommit=False, autoflush=False, bind=bind, class_=Session)
+    db = session_local()
     try:
         JobService(db).run_job(job_id)
     finally:

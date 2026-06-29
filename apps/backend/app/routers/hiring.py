@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.dependencies import get_db_session, require_confidentiality_ack, require_roles
 from app.models.enums import RoleEnum
 from app.models.user import User
@@ -36,7 +37,7 @@ from app.schemas.job import JobCreateResponse
 from app.schemas.task import DetectPIIRequest, DetectPIIResponse
 from app.services.errors import ServiceError
 from app.services.hiring_service import HiringService
-from app.services.job_service import JobService
+from app.services.job_service import JobService, run_queued_job_with_bind
 from app.services.pii_detection_service import detect_pii_ensemble
 from app.services.security_audit_service import SecurityAuditService
 
@@ -144,15 +145,20 @@ def update_item_reference(
 def enqueue_deepgram_reference_job(
     assessment_id: str,
     payload: HiringDeepgramReferenceRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
 ):
     try:
+        run_after_response = get_settings().jobs_inline
         job = JobService(db).enqueue_hiring_deepgram_reference_job(
             assessment_id=assessment_id,
             payload=payload,
             actor=current_user,
+            dispatch=not run_after_response,
         )
+        if run_after_response:
+            background_tasks.add_task(run_queued_job_with_bind, job.id, db.get_bind())
         return JobCreateResponse(job_id=job.id, status=job.status)
     except ServiceError as exc:
         raise _http_error(exc) from exc
