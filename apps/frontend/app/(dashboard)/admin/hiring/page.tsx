@@ -20,6 +20,7 @@ import type {
 } from "@outcomes/shared-types";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
+import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { useAuth } from "@/components/auth-provider";
 import {
   APIError,
@@ -45,6 +46,7 @@ import {
   importHiringFolder,
   importHiringManifest,
   parseHiringDeepgramReferenceResult,
+  streamAdminHiringAudio,
   updateHiringAssessment,
   updateHiringAssignmentAccess,
   updateHiringItemReference,
@@ -330,6 +332,8 @@ export default function AdminHiringPage() {
   const [answerViewerOpen, setAnswerViewerOpen] = useState(false);
   const [answerSearch, setAnswerSearch] = useState("");
   const [selectedAnswerSubmissionId, setSelectedAnswerSubmissionId] = useState<string | null>(null);
+  const [answerAudioUrl, setAnswerAudioUrl] = useState<string | null>(null);
+  const [answerAudioBusy, setAnswerAudioBusy] = useState(false);
   const [referenceSearch, setReferenceSearch] = useState("");
   const [selectedReferenceItemId, setSelectedReferenceItemId] = useState<string | null>(null);
   const [assignmentSort, setAssignmentSort] = useState<AssignmentSortKey>("submitted_first");
@@ -457,6 +461,8 @@ export default function AdminHiringPage() {
     [filteredAnswerSubmissions, review?.submissions, selectedAnswerSubmissionId]
   );
   const selectedAnswerItem = selectedAnswerSubmission ? reviewItemsById.get(selectedAnswerSubmission.item_id) ?? null : null;
+  const selectedAnswerAssignmentId = review?.id ?? null;
+  const selectedAnswerItemId = selectedAnswerItem?.id ?? null;
   const deepgramResult = useMemo<HiringDeepgramReferenceResult | null>(
     () => parseHiringDeepgramReferenceResult(deepgramJob?.result),
     [deepgramJob?.result]
@@ -474,6 +480,39 @@ export default function AdminHiringPage() {
         : review.submissions[0]?.id ?? null
     );
   }, [review]);
+
+  useEffect(() => {
+    setAnswerAudioUrl((previous) => {
+      if (previous) URL.revokeObjectURL(previous);
+      return null;
+    });
+    if (!answerViewerOpen || !accessToken || !selectedAnswerAssignmentId || !selectedAnswerItemId) {
+      setAnswerAudioBusy(false);
+      return;
+    }
+
+    let cancelled = false;
+    setAnswerAudioBusy(true);
+    void streamAdminHiringAudio(accessToken, selectedAnswerAssignmentId, selectedAnswerItemId)
+      .then((response) => {
+        if (cancelled) return;
+        setAnswerAudioUrl(URL.createObjectURL(response.blob));
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof APIError ? err.message : "Admin audio load failed");
+      })
+      .finally(() => {
+        if (!cancelled) setAnswerAudioBusy(false);
+      });
+
+    return () => {
+      cancelled = true;
+      setAnswerAudioUrl((previous) => {
+        if (previous) URL.revokeObjectURL(previous);
+        return null;
+      });
+    };
+  }, [accessToken, answerViewerOpen, selectedAnswerAssignmentId, selectedAnswerItemId]);
 
   useEffect(() => {
     if (!accessToken || !detail || !deepgramJob || !["QUEUED", "RUNNING"].includes(deepgramJob.status)) return;
@@ -2227,6 +2266,16 @@ export default function AdminHiringPage() {
                         <button type="button" onClick={() => void validateSubmission(selectedAnswerSubmission.id, "REJECTED")} className="oa-btn-secondary px-3 py-1.5 text-xs">Reject</button>
                       </div>
                     </div>
+
+                    <section className="rounded-xl border border-[#e5dbf1] bg-white p-3">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#7a7395]">Audio playback</p>
+                        <p className="text-xs text-[#5f5b79]">
+                          {answerAudioBusy ? "Loading audio..." : answerAudioUrl ? "Ready to play" : "Audio not loaded"}
+                        </p>
+                      </div>
+                      <AudioWaveformPlayer audioUrl={answerAudioUrl} />
+                    </section>
 
                     <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
                       <section className="rounded-xl border border-[#e5dbf1] bg-[#fbf8ff] p-3">

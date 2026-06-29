@@ -895,6 +895,16 @@ class HiringService:
             raise ServiceError("Hiring audio file not found", status_code=404)
         return path, item.original_filename
 
+    def admin_audio_path(self, *, assignment_id: str, item_id: str) -> tuple[Path, str]:
+        assignment = self._get_assignment_or_404(assignment_id)
+        item = next((candidate for candidate in self._assignment_items(assignment) if candidate.id == item_id), None)
+        if not item:
+            raise ServiceError("Hiring assessment item not found", status_code=404)
+        path = Path(item.stored_path)
+        if not path.is_file():
+            raise ServiceError("Hiring audio file not found", status_code=404)
+        return path, item.original_filename
+
     def reject_candidate_audio_download(self, *, assignment_id: str, actor: User) -> None:
         self._get_candidate_assignment_or_404(assignment_id, actor)
         raise ServiceError("Candidate audio downloads are disabled. Use in-app playback.", status_code=403)

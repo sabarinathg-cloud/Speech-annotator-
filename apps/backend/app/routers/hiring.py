@@ -307,6 +307,39 @@ def get_assignment_review(
         raise _http_error(exc) from exc
 
 
+@router.get("/assignments/{assignment_id}/items/{item_id}/stream")
+def stream_admin_assignment_item(
+    assignment_id: str,
+    item_id: str,
+    request: Request,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    try:
+        path, filename = HiringService(db).admin_audio_path(
+            assignment_id=assignment_id,
+            item_id=item_id,
+        )
+        SecurityAuditService(db).log_event(
+            action="STREAM_HIRING_AUDIO_ADMIN",
+            actor=current_user,
+            resource_type="hiring_audio",
+            resource_id=item_id,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            metadata={"assignment_id": assignment_id, "filename": filename},
+        )
+        return FileResponse(
+            path,
+            media_type="audio/wav",
+            filename=filename,
+            content_disposition_type="inline",
+            headers={"Cache-Control": "no-store, max-age=0", "X-Content-Type-Options": "nosniff"},
+        )
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
 @router.patch("/assignments/{assignment_id}/access", response_model=HiringAssignmentSummaryResponse)
 def update_assignment_access(
     assignment_id: str,

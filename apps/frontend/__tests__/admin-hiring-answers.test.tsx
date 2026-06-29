@@ -28,6 +28,7 @@ const {
   importHiringFolder,
   importHiringManifest,
   parseHiringDeepgramReferenceResult,
+  streamAdminHiringAudio,
   updateHiringAssessment,
   updateHiringAssignmentAccess,
   updateHiringItemReference,
@@ -58,6 +59,7 @@ const {
   importHiringFolder: vi.fn(),
   importHiringManifest: vi.fn(),
   parseHiringDeepgramReferenceResult: vi.fn((result) => result),
+  streamAdminHiringAudio: vi.fn(),
   updateHiringAssessment: vi.fn(),
   updateHiringAssignmentAccess: vi.fn(),
   updateHiringItemReference: vi.fn(),
@@ -207,6 +209,12 @@ vi.mock("@/components/auth-provider", () => ({
   }),
 }));
 
+vi.mock("@/components/audio-waveform-player", () => ({
+  AudioWaveformPlayer: ({ audioUrl }: { audioUrl: string | null }) => (
+    <div data-testid="admin-audio-player">{audioUrl ? "Audio ready" : "Audio not available"}</div>
+  ),
+}));
+
 vi.mock("@/lib/api", () => ({
   APIError: class APIError extends Error {
     status: number;
@@ -239,6 +247,7 @@ vi.mock("@/lib/api", () => ({
   importHiringFolder: (...args: unknown[]) => importHiringFolder(...args),
   importHiringManifest: (...args: unknown[]) => importHiringManifest(...args),
   parseHiringDeepgramReferenceResult: (...args: unknown[]) => parseHiringDeepgramReferenceResult(...args),
+  streamAdminHiringAudio: (...args: unknown[]) => streamAdminHiringAudio(...args),
   updateHiringAssessment: (...args: unknown[]) => updateHiringAssessment(...args),
   updateHiringAssignmentAccess: (...args: unknown[]) => updateHiringAssignmentAccess(...args),
   updateHiringItemReference: (...args: unknown[]) => updateHiringItemReference(...args),
@@ -258,6 +267,18 @@ describe("AdminHiringPage candidate answers", () => {
     fetchHiringAssignmentReview.mockResolvedValue(reviewResponse);
     fetchHiringAssignmentAuditEvents.mockResolvedValue({ items: [] });
     createHiringAssessment.mockResolvedValue({ ...assessmentSummary, id: "assessment-new" });
+    streamAdminHiringAudio.mockResolvedValue({
+      blob: new Blob(["audio"], { type: "audio/wav" }),
+      filename: "sample.wav",
+    });
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:admin-audio"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
   });
 
   afterEach(() => {
@@ -277,6 +298,8 @@ describe("AdminHiringPage candidate answers", () => {
     expect(within(drawer).getByText("PHONE: 555 0100")).toBeInTheDocument();
     expect(within(drawer).getByText("Clean audio")).toBeInTheDocument();
     expect(within(drawer).getByText("Clear speech")).toBeInTheDocument();
+    expect(await within(drawer).findByText("Audio ready")).toBeInTheDocument();
+    expect(streamAdminHiringAudio).toHaveBeenCalledWith("admin-token", "assignment-1", "item-1");
   });
 
   it("sorts candidate progress by submitted time", async () => {

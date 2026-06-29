@@ -815,6 +815,18 @@ export async function fetchHiringAssignmentReview(
   );
 }
 
+export async function streamAdminHiringAudio(
+  token: string,
+  assignmentId: string,
+  itemId: string
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await requestBlob(
+    `/hiring/assignments/${assignmentId}/items/${itemId}/stream`,
+    token
+  );
+  return { blob: response.blob, filename: response.filename ?? "hiring-audio.wav" };
+}
+
 export async function updateHiringAssignmentAccess(
   token: string,
   assignmentId: string,

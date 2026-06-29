@@ -439,6 +439,13 @@ def test_hiring_candidate_submit_download_and_admin_scorecard(client, auth_heade
         assert stream_response.status_code == 200
         assert stream_response.headers["content-disposition"].startswith("inline")
 
+        admin_stream_response = client.get(
+            f"/api/v1/hiring/assignments/{assignment_id}/items/{item_id}/stream",
+            headers=auth_headers["admin"],
+        )
+        assert admin_stream_response.status_code == 200
+        assert admin_stream_response.headers["content-disposition"].startswith("inline")
+
         download_response = client.get(
             f"/api/v1/hiring/candidate/assignments/{assignment_id}/items/{item_id}/download",
             headers=auth_headers["candidate"],
