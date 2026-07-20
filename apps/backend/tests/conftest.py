@@ -15,7 +15,9 @@ from app.core.security import get_password_hash
 from app.main import app
 from app.models.base import Base
 from app.models.enums import RoleEnum
+from app.models.organization import OrganizationMembership
 from app.models.user import User
+from app.services.organization_service import OrganizationService
 
 
 @pytest.fixture(scope="session")
@@ -104,6 +106,14 @@ def seed_users(db_session: Session) -> dict[str, User]:
         confidentiality_acknowledged_version="2026-05-sensitive-data-v1",
     )
     db_session.add_all([admin, annotator, reviewer, candidate])
+    db_session.flush()
+    organization = OrganizationService(db_session).ensure_default_organization()
+    db_session.add_all(
+        [
+            OrganizationMembership(user_id=user.id, organization_id=organization.id, is_active=True)
+            for user in [annotator, reviewer, candidate]
+        ]
+    )
     db_session.commit()
     return {"admin": admin, "annotator": annotator, "reviewer": reviewer, "candidate": candidate}
 

@@ -13,6 +13,7 @@ from app.models.user import User
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import TokenResponse, UserResponse
 from app.services.errors import ServiceError
+from app.services.organization_service import OrganizationService
 from app.services.rate_limit_service import LoginRateLimiter
 from app.services.security_audit_service import CONFIDENTIALITY_ACKNOWLEDGEMENT_VERSION, SecurityAuditService
 
@@ -94,8 +95,14 @@ class AuthService:
     def _build_token_response(self, user: User) -> TokenResponse:
         access_token = create_access_token(user.id, user.role.value, session_id=user.active_session_id)
         refresh_token = create_refresh_token(user.id, user.role.value, session_id=user.active_session_id)
+        organizations = OrganizationService(self.db).organization_access_for_user(user)
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,
-            user=UserResponse.model_validate(user),
+            user=UserResponse.model_validate(user).model_copy(
+                update={
+                    "organizations": organizations,
+                    "default_organization_id": organizations[0].id if organizations else None,
+                }
+            ),
         )

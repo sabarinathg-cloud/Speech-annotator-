@@ -30,6 +30,7 @@ class JobStatusResponse(BaseModel):
     result: dict[str, Any] | None = None
     error_message: str | None = None
     output_available: bool = False
+    organization_id: str | None = None
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None = None

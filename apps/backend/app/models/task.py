@@ -29,6 +29,7 @@ class AnnotationTask(Base, TimestampMixin):
     __tablename__ = "annotation_tasks"
     __table_args__ = (
         UniqueConstraint("upload_job_id", "external_id", name="uq_annotation_tasks_upload_external"),
+        Index("ix_annotation_tasks_organization_id", "organization_id"),
         Index("ix_annotation_tasks_status", "status"),
         Index("ix_annotation_tasks_assignee_id", "assignee_id"),
         Index("ix_annotation_tasks_last_tagger_id", "last_tagger_id"),
@@ -37,6 +38,12 @@ class AnnotationTask(Base, TimestampMixin):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        default="00000000-0000-0000-0000-000000000001",
+        nullable=False,
+    )
     external_id: Mapped[str] = mapped_column(String(255), nullable=False)
     upload_job_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("upload_jobs.id", ondelete="CASCADE"), nullable=False, index=True
@@ -81,6 +88,7 @@ class AnnotationTask(Base, TimestampMixin):
     version: Mapped[int] = mapped_column(default=1, nullable=False)
     last_saved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    organization = relationship("Organization")
     upload_job = relationship("UploadJob", back_populates="tasks")
     assignee = relationship("User", back_populates="assigned_tasks", foreign_keys=[assignee_id])
     last_tagger = relationship("User", foreign_keys=[last_tagger_id])

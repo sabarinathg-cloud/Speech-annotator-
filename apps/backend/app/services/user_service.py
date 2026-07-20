@@ -2,10 +2,12 @@ from sqlalchemy.orm import Session
 
 from app.core.security import get_password_hash
 from app.models.enums import RoleEnum
+from app.models.organization import Organization
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 from app.schemas.user import UserAdminResponse, UserListResponse
 from app.services.errors import ServiceError
+from app.services.organization_service import OrganizationService
 
 
 class UserService:
@@ -19,9 +21,20 @@ class UserService:
         search: str | None = None,
         role: RoleEnum | None = None,
         is_active: bool | None = None,
+        organization: Organization | None = None,
+        include_all_organizations: bool = False,
     ) -> UserListResponse:
-        users = self.user_repo.list_users(search=search, role=role, is_active=is_active)
-        counts_by_user = self.user_repo.assignment_counts_by_user([user.id for user in users])
+        organization_id = None if include_all_organizations else organization.id if organization else None
+        users = self.user_repo.list_users(
+            search=search,
+            role=role,
+            is_active=is_active,
+            organization_id=organization_id,
+        )
+        counts_by_user = self.user_repo.assignment_counts_by_user(
+            [user.id for user in users],
+            organization_id=organization_id,
+        )
         return UserListResponse(
             items=[
                 self._build_admin_response(user, counts_by_user.get(user.id))
@@ -37,6 +50,8 @@ class UserService:
         password: str,
         role: RoleEnum,
         is_active: bool,
+        organization_ids: list[str] | None = None,
+        default_organization_id: str | None = None,
     ) -> UserAdminResponse:
         existing = self.user_repo.get_by_email(email)
         if existing:
@@ -49,6 +64,7 @@ class UserService:
             role=role,
         )
         user.is_active = is_active
+        self._sync_memberships(user, organization_ids=organization_ids, default_organization_id=default_organization_id)
         self.db.commit()
         self.db.refresh(user)
         return self._build_admin_response(user)
@@ -62,6 +78,7 @@ class UserService:
         password: str | None,
         role: RoleEnum | None,
         is_active: bool | None,
+        organization_ids: list[str] | None = None,
     ) -> UserAdminResponse:
         user = self.user_repo.get_by_id(user_id)
         if not user:
@@ -84,6 +101,8 @@ class UserService:
             if not is_active:
                 user.active_session_id = None
                 user.confidentiality_acknowledged_session_id = None
+        if organization_ids is not None:
+            self._sync_memberships(user, organization_ids=organization_ids, default_organization_id=None)
 
         self.db.commit()
         self.db.refresh(user)
@@ -140,8 +159,23 @@ class UserService:
             update={
                 **counts,
                 "assignment_load": load,
+                "organizations": OrganizationService(self.db).organization_access_for_user(user),
             }
         )
+
+    def _sync_memberships(
+        self,
+        user: User,
+        *,
+        organization_ids: list[str] | None,
+        default_organization_id: str | None,
+    ) -> None:
+        effective_ids = organization_ids
+        if effective_ids is None and default_organization_id:
+            effective_ids = [default_organization_id]
+        if effective_ids is None:
+            return
+        OrganizationService(self.db).ensure_memberships(user.id, effective_ids)
 
     def _guard_self_admin_update(
         self,

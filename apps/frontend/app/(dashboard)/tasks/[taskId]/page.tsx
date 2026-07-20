@@ -473,7 +473,7 @@ function parseLocalDraft(rawValue: string | null): LocalTaskDraft | null {
 }
 
 export default function TaskWorkspacePage() {
-  const { accessToken, user } = useAuth();
+  const { accessToken, user, activeOrganization } = useAuth();
   const params = useParams<{ taskId: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -573,14 +573,52 @@ export default function TaskWorkspacePage() {
   const [reviewComment, setReviewComment] = useState("");
   const [reviewBusy, setReviewBusy] = useState(false);
 
-  const hasUnsavedChanges = transcriptDirty || metadataDirty || notesDirty || statusDirty || piiDirty;
-  const allSectionsVerified = (Object.keys(verificationSectionLabels) as VerificationSectionKey[]).every(
+  const metadataEnabled = activeOrganization?.settings.metadata_enabled !== false;
+  const piiEnabled = activeOrganization?.settings.pii_enabled !== false;
+  const audioMaskingEnabled = piiEnabled && activeOrganization?.settings.audio_masking_enabled !== false;
+  const enabledVerificationSections = useMemo<VerificationSectionKey[]>(
+    () => [
+      "transcript",
+      ...(piiEnabled ? (["pii"] as VerificationSectionKey[]) : []),
+      ...(audioMaskingEnabled ? (["masking"] as VerificationSectionKey[]) : []),
+      ...(metadataEnabled ? (["metadata"] as VerificationSectionKey[]) : []),
+    ],
+    [audioMaskingEnabled, metadataEnabled, piiEnabled]
+  );
+  const transcriptDependentSections = useMemo<VerificationSectionKey[]>(
+    () => ["transcript", ...(piiEnabled ? (["pii"] as VerificationSectionKey[]) : []), ...(audioMaskingEnabled ? (["masking"] as VerificationSectionKey[]) : [])],
+    [audioMaskingEnabled, piiEnabled]
+  );
+  const visibleInspectorTabs = useMemo(
+    () =>
+      inspectorTabs.filter((tab) => {
+        if (tab.key === "metadata") return metadataEnabled;
+        if (tab.key === "pii") return piiEnabled;
+        return true;
+      }),
+    [metadataEnabled, piiEnabled]
+  );
+  const visibleTourSteps = useMemo(
+    () =>
+      annotatorTourSteps.filter((step) => {
+        if (step.inspectorPanel === "metadata" || step.id === "metadata") return metadataEnabled;
+        if (step.inspectorPanel === "pii" || step.id.startsWith("pii-")) return piiEnabled;
+        if (step.id.startsWith("mask-") || step.targetId === "audio-mask-controls") return audioMaskingEnabled;
+        return true;
+      }),
+    [audioMaskingEnabled, metadataEnabled, piiEnabled]
+  );
+  const hasUnsavedChanges =
+    transcriptDirty || notesDirty || statusDirty || (metadataEnabled && metadataDirty) || (piiEnabled && piiDirty);
+  const allSectionsVerified = enabledVerificationSections.every(
     (key) => verifiedSections[key]
   );
-  const maskingApprovalBlocked = piiAnnotations.length > 0 && (!maskedAudioUrl || maskIntervalsDirty);
+  const maskingApprovalBlocked = audioMaskingEnabled && piiAnnotations.length > 0 && (!maskedAudioUrl || maskIntervalsDirty);
   const draftStorageKey = taskId ? buildDraftKey(taskId, user?.id) : null;
   const backendBase = useMemo(() => resolveBackendOrigin(), []);
-  const saveSectionStatuses = (Object.entries(saveSectionLabels) as Array<[SaveSectionKey, string]>).map(
+  const saveSectionStatuses = (Object.entries(saveSectionLabels) as Array<[SaveSectionKey, string]>).filter(
+    ([key]) => (key === "metadata" ? metadataEnabled : key === "pii" ? piiEnabled : true)
+  ).map(
     ([key, label]) => {
       const isDirty =
         key === "transcript"
@@ -618,6 +656,7 @@ export default function TaskWorkspacePage() {
           id: "pii-detect",
           label: "PII reviewed",
           complete:
+            !piiEnabled ||
             workflowAlreadyComplete ||
             verifiedSections.pii ||
             (Boolean(finalTranscript.trim()) && piiDetectionReviewedTranscript === finalTranscript),
@@ -625,7 +664,11 @@ export default function TaskWorkspacePage() {
         {
           id: "mask-controls",
           label: "Masked audio checked",
-          complete: workflowAlreadyComplete || piiAnnotations.length === 0 || Boolean(maskedAudioUrl && !maskIntervalsDirty),
+          complete:
+            !audioMaskingEnabled ||
+            workflowAlreadyComplete ||
+            piiAnnotations.length === 0 ||
+            Boolean(maskedAudioUrl && !maskIntervalsDirty),
         },
         {
           id: "save-sections",
@@ -646,8 +689,10 @@ export default function TaskWorkspacePage() {
       maskedAudioUrl,
       piiAnnotations.length,
       piiDetectionReviewedTranscript,
+      piiEnabled,
       status,
       task,
+      audioMaskingEnabled,
       verifiedSections.pii,
       verifiedSections.transcript,
     ]
@@ -658,11 +703,15 @@ export default function TaskWorkspacePage() {
       const transcriptHasContent = Boolean(finalTranscript.trim());
       const transcriptReady = workflowAlreadyComplete || verifiedSections.transcript || transcriptHasContent;
       const piiDetectionReady =
+        !piiEnabled ||
         workflowAlreadyComplete ||
         verifiedSections.pii ||
         (transcriptHasContent && piiDetectionReviewedTranscript === finalTranscript);
       const maskedAudioReady =
-        workflowAlreadyComplete || piiAnnotations.length === 0 || Boolean(maskedAudioUrl && !maskIntervalsDirty);
+        !audioMaskingEnabled ||
+        workflowAlreadyComplete ||
+        piiAnnotations.length === 0 ||
+        Boolean(maskedAudioUrl && !maskIntervalsDirty);
       const checkpointsReady = workflowAlreadyComplete || allSectionsVerified;
 
       return {
@@ -696,7 +745,7 @@ export default function TaskWorkspacePage() {
           disabled: saveState === "saving" || autoMaskingBusy,
           hint: checkpointsReady
             ? "All required checkpoint cards are saved."
-            : "Save Transcript, PII, Audio Masking, and Metadata before completing.",
+            : `Save ${enabledVerificationSections.map((section) => verificationSectionLabels[section]).join(", ")} before completing.`,
         },
         "ready-to-complete": {
           complete: checkpointsReady,
@@ -710,7 +759,9 @@ export default function TaskWorkspacePage() {
     [
       alignmentBusy,
       allSectionsVerified,
+      audioMaskingEnabled,
       autoMaskingBusy,
+      enabledVerificationSections,
       finalTranscript,
       maskIntervalsDirty,
       maskedAudioUrl,
@@ -718,6 +769,7 @@ export default function TaskWorkspacePage() {
       piiAnnotations.length,
       piiDetectionBusy,
       piiDetectionReviewedTranscript,
+      piiEnabled,
       saveState,
       status,
       verifiedSections.pii,
@@ -738,7 +790,7 @@ export default function TaskWorkspacePage() {
           fetchTask(token, resolvedTaskId),
           fetchAudioURL(token, resolvedTaskId),
         ]);
-        const labelsResponse = await fetchPIILabels(token).catch(() => ({ items: [] }));
+        const labelsResponse = piiEnabled ? await fetchPIILabels(token).catch(() => ({ items: [] })) : { items: [] };
         if (cancelled) return;
         let activeTask = fetchedTask;
         let startError: string | null = null;
@@ -752,7 +804,7 @@ export default function TaskWorkspacePage() {
           if (cancelled) return;
         }
         applyTaskState(activeTask);
-        setPiiLabelOptions(toPIILabelOptions(labelsResponse.items));
+        setPiiLabelOptions(piiEnabled ? toPIILabelOptions(labelsResponse.items) : []);
         retryAttemptRef.current = 0;
         clearRetryTimer();
 
@@ -795,7 +847,13 @@ export default function TaskWorkspacePage() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, taskId, backendBase, draftStorageKey, user?.role]);
+  }, [accessToken, taskId, backendBase, draftStorageKey, piiEnabled, user?.role]);
+
+  useEffect(() => {
+    if (!visibleInspectorTabs.some((tab) => tab.key === activeInspectorPanel)) {
+      setActiveInspectorPanel("compare");
+    }
+  }, [activeInspectorPanel, visibleInspectorTabs]);
 
   useEffect(() => {
     if (!hasUnsavedChanges || !taskId) return;
@@ -859,16 +917,24 @@ export default function TaskWorkspacePage() {
   }, [status, originalStatus]);
 
   useEffect(() => {
+    if (!piiEnabled) {
+      setPiiDirty(false);
+      return;
+    }
     const normalizedCurrent = sanitizePIIAnnotations(finalTranscript, piiAnnotations);
     const normalizedOriginal = sanitizePIIAnnotations(finalTranscript, originalPIIAnnotations);
     setPiiDirty(JSON.stringify(normalizedCurrent) !== JSON.stringify(normalizedOriginal));
-  }, [finalTranscript, piiAnnotations, originalPIIAnnotations]);
+  }, [finalTranscript, originalPIIAnnotations, piiAnnotations, piiEnabled]);
 
   useEffect(() => {
     piiAnnotationsRef.current = piiAnnotations;
   }, [piiAnnotations]);
 
   useEffect(() => {
+    if (!metadataEnabled) {
+      setMetadataDirty(false);
+      return;
+    }
     const coreChanged =
       metadata.speaker_gender !== originalMetadata.speaker_gender ||
       metadata.speaker_role !== originalMetadata.speaker_role ||
@@ -887,7 +953,7 @@ export default function TaskWorkspacePage() {
       }
     });
     setMetadataDirty(coreChanged || customChanged);
-  }, [customMetadata, metadata, originalCustomMetadata, originalMetadata]);
+  }, [customMetadata, metadata, metadataEnabled, originalCustomMetadata, originalMetadata]);
 
   useEffect(() => {
     if (!task || !draftStorageKey) return;
@@ -989,7 +1055,7 @@ export default function TaskWorkspacePage() {
         return;
       }
 
-      if (event.altKey && key === "m" && (!editableTarget || transcriptTarget)) {
+      if (piiEnabled && event.altKey && key === "m" && (!editableTarget || transcriptTarget)) {
         event.preventDefault();
         handleAddPIIFromSelection(selectionLabel);
         return;
@@ -1048,8 +1114,11 @@ export default function TaskWorkspacePage() {
     );
     const nextTranscript = nextTask.final_transcript ?? "";
     const persistedPII = sanitizePIIAnnotations(nextTranscript, nextTask.pii_annotations ?? []);
-    const nextPIIAnnotations =
-      persistedPII.length > 0 ? persistedPII : detectPIIAnnotations(nextTranscript);
+    const nextPIIAnnotations = piiEnabled
+      ? persistedPII.length > 0
+        ? persistedPII
+        : detectPIIAnnotations(nextTranscript)
+      : [];
 
     setFinalTranscript(nextTranscript);
     setNotes(nextTask.notes ?? "");
@@ -1226,7 +1295,7 @@ export default function TaskWorkspacePage() {
         dirtySections.push("transcript");
       }
 
-      if (metadataDirty) {
+      if (metadataEnabled && metadataDirty) {
         const parsedDuration = metadata.duration_seconds.trim() ? Number(metadata.duration_seconds) : null;
         payload.speaker_gender = metadata.speaker_gender || null;
         payload.speaker_role = metadata.speaker_role || null;
@@ -1247,7 +1316,7 @@ export default function TaskWorkspacePage() {
         dirtySections.push("status");
       }
 
-      if (piiDirty) {
+      if (piiEnabled && piiDirty) {
         payload.pii_annotations = sanitizedPIIAnnotations;
         dirtySections.push("pii");
       }
@@ -1289,7 +1358,15 @@ export default function TaskWorkspacePage() {
         setError(message);
         setSectionErrors(
           Object.fromEntries(
-            (dirtySections.length ? dirtySections : ["transcript", "metadata", "notes", "status", "pii"]).map(
+            (dirtySections.length
+              ? dirtySections
+              : [
+                  "transcript",
+                  ...(metadataEnabled ? ["metadata"] : []),
+                  "notes",
+                  "status",
+                  ...(piiEnabled ? ["pii"] : []),
+                ]).map(
               (section) => [section, message]
             )
           )
@@ -1403,6 +1480,10 @@ export default function TaskWorkspacePage() {
   }
 
   async function runPIIDetection(options: { includeMl?: boolean; mergeExisting?: boolean; auto?: boolean } = {}) {
+    if (!piiEnabled) {
+      setPiiDetectionMessage("PII review is disabled for this organization.");
+      return;
+    }
     const transcript = finalTranscript;
     if (!transcript.trim()) {
       setPiiDetectionMessage("Add transcript text before running PII detection.");
@@ -1482,6 +1563,7 @@ export default function TaskWorkspacePage() {
   }
 
   function handleInspectorTabClick(tabKey: InspectorPanelKey) {
+    if (!visibleInspectorTabs.some((tab) => tab.key === tabKey)) return;
     setActiveInspectorPanel(tabKey);
     if (tabKey === "pii") {
       void runPIIDetection({ includeMl: true, mergeExisting: true, auto: true });
@@ -1490,7 +1572,7 @@ export default function TaskWorkspacePage() {
 
   function handleTourStepChange(step: AnnotatorGuidedTourStep) {
     const targetPanel = step.inspectorPanel;
-    if (!targetPanel || !inspectorTabs.some((tab) => tab.key === targetPanel)) {
+    if (!targetPanel || !visibleInspectorTabs.some((tab) => tab.key === targetPanel)) {
       return;
     }
     handleInspectorTabClick(targetPanel as InspectorPanelKey);
@@ -1503,10 +1585,12 @@ export default function TaskWorkspacePage() {
         transcriptTextareaRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
         return true;
       case "run-pii-detection":
+        if (!piiEnabled) return true;
         setActiveInspectorPanel("pii");
         await handleDetectPII();
         return true;
       case "create-masked-audio":
+        if (!audioMaskingEnabled) return true;
         if (piiAnnotations.length === 0) {
           return true;
         }
@@ -1524,8 +1608,7 @@ export default function TaskWorkspacePage() {
   }
 
   async function handleSavePendingGuidedSections() {
-    const sections: VerificationSectionKey[] = ["transcript", "pii", "masking", "metadata"];
-    for (const section of sections) {
+    for (const section of enabledVerificationSections) {
       if (!verifiedSections[section]) {
         await handleSaveSection(section);
       }
@@ -1549,6 +1632,7 @@ export default function TaskWorkspacePage() {
   }
 
   function handleAddPIIFromSelection(label: string = selectionLabel) {
+    if (!piiEnabled) return;
     const activeSelection =
       transcriptSelection ??
       (() => {
@@ -1608,6 +1692,7 @@ export default function TaskWorkspacePage() {
   }
 
   function handleChangePII(annotations: PIIAnnotation[]) {
+    if (!piiEnabled) return;
     const sanitized = sanitizePIIAnnotations(finalTranscript, annotations);
     setPiiAnnotations(sanitized);
     setMaskedAudioUrl(null);
@@ -1648,6 +1733,7 @@ export default function TaskWorkspacePage() {
   }
 
   function handleAudioMaskModeChange(mode: AudioMaskMode) {
+    if (!audioMaskingEnabled) return;
     setAudioMaskMode(mode);
     if (maskedAudioUrl && maskedAudioMode !== mode) {
       setMaskedAudioUrl(null);
@@ -1660,6 +1746,7 @@ export default function TaskWorkspacePage() {
   }
 
   function handleMaskIntervalsChange(nextIntervals: AudioMaskInterval[]) {
+    if (!audioMaskingEnabled) return;
     setMaskedIntervals(nextIntervals);
     setMaskIntervalsDirty(true);
     setMaskedAudioUrl(null);
@@ -1697,6 +1784,10 @@ export default function TaskWorkspacePage() {
 
   async function handleMaskPIIAudio(force = false, options: { skipSave?: boolean } = {}) {
     if (!accessToken || !taskId) return false;
+    if (!audioMaskingEnabled) {
+      setError("Audio masking is disabled for this organization.");
+      return false;
+    }
     const customMaskIntervals = maskedIntervals.length > 0 ? maskedIntervals : null;
     if (piiAnnotations.length === 0 && !customMaskIntervals) {
       setError("Add at least one PII annotation before masking audio.");
@@ -1795,6 +1886,10 @@ export default function TaskWorkspacePage() {
   }
 
   async function handleSaveSection(section: VerificationSectionKey) {
+    if (!enabledVerificationSections.includes(section)) {
+      setVerifiedSections((prev) => ({ ...prev, [section]: true }));
+      return;
+    }
     if (section === "masking" && maskingApprovalBlocked) {
       setError("Generate and check masked audio before saving audio masking.");
       return;
@@ -1805,7 +1900,7 @@ export default function TaskWorkspacePage() {
     setVerifiedSections((prev) => ({ ...prev, [section]: true }));
     setError(null);
 
-    if (section === "pii" && piiAnnotations.length > 0) {
+    if (section === "pii" && audioMaskingEnabled && piiAnnotations.length > 0) {
       setAutoMaskingBusy(true);
       setAlignmentMessage("Aligning and masking...");
       setVerifiedSections((prev) => ({ ...prev, masking: false }));
@@ -1951,7 +2046,7 @@ export default function TaskWorkspacePage() {
             <div data-tour-id="top-actions" className="flex flex-wrap items-center justify-end gap-2">
               {user?.role === "ANNOTATOR" ? (
                 <AnnotatorGuidedTour
-                  steps={annotatorTourSteps}
+                  steps={visibleTourSteps}
                   milestones={guidedTourMilestones}
                   actionStatus={guidedTourActionStatus}
                   forceStartKey={requestedTour ? `${taskId}:tour` : null}
@@ -1987,18 +2082,22 @@ export default function TaskWorkspacePage() {
             <span className="rounded-full border border-[#e2e8f0] bg-white px-3 py-1 text-xs font-medium text-[#374151]">
               {task.transcript_variants.length} ASR source{task.transcript_variants.length === 1 ? "" : "s"}
             </span>
-            <span className="rounded-full border border-[#e2e8f0] bg-white px-3 py-1 text-xs font-medium text-[#374151]">
-              {piiAnnotations.length} PII label{piiAnnotations.length === 1 ? "" : "s"}
-            </span>
+            {piiEnabled ? (
+              <span className="rounded-full border border-[#e2e8f0] bg-white px-3 py-1 text-xs font-medium text-[#374151]">
+                {piiAnnotations.length} PII label{piiAnnotations.length === 1 ? "" : "s"}
+              </span>
+            ) : null}
             <span className="rounded-full border border-[#e2e8f0] bg-white px-3 py-1 text-xs font-medium text-[#374151]">
               {task.assignee_name ? `Assignee: ${task.assignee_name}` : "Unassigned"}
             </span>
             <span className="rounded-full border border-[#e2e8f0] bg-white px-3 py-1 text-xs font-medium text-[#374151]">
               {task.last_tagger_name ? `Last Tagger: ${task.last_tagger_name}` : "Last Tagger: —"}
             </span>
-            <span className="rounded-full border border-[#e2e8f0] bg-white px-3 py-1 text-xs font-medium text-[#374151]">
-              Duration {formatDurationLabel(metadata.duration_seconds)}
-            </span>
+            {metadataEnabled ? (
+              <span className="rounded-full border border-[#e2e8f0] bg-white px-3 py-1 text-xs font-medium text-[#374151]">
+                Duration {formatDurationLabel(metadata.duration_seconds)}
+              </span>
+            ) : null}
           </div>
 
           <div
@@ -2047,8 +2146,9 @@ export default function TaskWorkspacePage() {
             aria-label="Section save status"
             className="mt-3 grid gap-2 md:grid-cols-4"
           >
-            {(Object.entries(verificationSectionLabels) as Array<[VerificationSectionKey, string]>).map(
-              ([key, label]) => {
+            {enabledVerificationSections.map(
+              (key) => {
+                const label = verificationSectionLabels[key];
                 const verified = verifiedSections[key];
                 const runningAutomation = key === "pii" && autoMaskingBusy;
                 const disabled = autoMaskingBusy || (key === "masking" && maskingApprovalBlocked);
@@ -2143,7 +2243,7 @@ export default function TaskWorkspacePage() {
             <ShortcutHint keys="J / L" label="Rewind or forward 5s" />
             <ShortcutHint keys="Ctrl + S" label="Save current edits" />
             <ShortcutHint keys="Ctrl + Enter" label="Save and next" />
-            <ShortcutHint keys="Alt + M" label="Tag selected PII" />
+            {piiEnabled ? <ShortcutHint keys="Alt + M" label="Tag selected PII" /> : null}
             <ShortcutHint keys="Alt + ← / →" label="Move between tasks" />
           </div>
         </div>
@@ -2159,8 +2259,10 @@ export default function TaskWorkspacePage() {
             </div>
             <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-[#4b5563]">
               <ReviewCheck label="Corrected transcript" ready={Boolean(finalTranscript.trim())} />
-              <ReviewCheck label="PII tags" ready={piiAnnotations.length > 0} />
-              <ReviewCheck label="Masked audio" ready={piiAnnotations.length === 0 || Boolean(maskedAudioUrl || maskedIntervals.length)} />
+              {piiEnabled ? <ReviewCheck label="PII tags" ready={piiAnnotations.length > 0} /> : null}
+              {audioMaskingEnabled ? (
+                <ReviewCheck label="Masked audio" ready={piiAnnotations.length === 0 || Boolean(maskedAudioUrl || maskedIntervals.length)} />
+              ) : null}
             </div>
             <label className="mt-3 block text-xs font-medium text-[#4b5563]">
               Review rejection reason
@@ -2200,54 +2302,56 @@ export default function TaskWorkspacePage() {
           <div data-tour-id="audio-workspace" className="oa-card p-4">
             <div className="mb-3 flex items-center justify-between gap-2">
               <h3 className="oa-title text-sm font-semibold uppercase tracking-[0.1em] text-[#4b5563]">Audio</h3>
-              <div data-tour-id="audio-mask-controls" className="flex flex-wrap items-center gap-2">
-                <div
-                  role="radiogroup"
-                  aria-label="PII Mask Audio Mode"
-                  className="inline-flex rounded-xl border border-[#d9d2ef] bg-[#fbf8ff] p-0.5"
-                >
-                  {audioMaskModeOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      role="radio"
-                      aria-checked={audioMaskMode === option.value}
-                      disabled={alignmentBusy || maskingBusy || autoMaskingBusy}
-                      onClick={() => handleAudioMaskModeChange(option.value)}
-                      onKeyDown={(event) => handleAudioMaskModeKeyDown(event, option.value)}
-                      className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6cb0] ${
-                        audioMaskMode === option.value
-                          ? "bg-white text-[#21194d] shadow-[0_8px_18px_-14px_rgba(15,23,42,0.8)]"
-                          : "text-[#6b6384] hover:bg-white/70"
-                      } ${alignmentBusy || maskingBusy || autoMaskingBusy ? "cursor-not-allowed opacity-60" : ""}`}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
+              {audioMaskingEnabled ? (
+                <div data-tour-id="audio-mask-controls" className="flex flex-wrap items-center gap-2">
+                  <div
+                    role="radiogroup"
+                    aria-label="PII Mask Audio Mode"
+                    className="inline-flex rounded-xl border border-[#d9d2ef] bg-[#fbf8ff] p-0.5"
+                  >
+                    {audioMaskModeOptions.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={audioMaskMode === option.value}
+                        disabled={alignmentBusy || maskingBusy || autoMaskingBusy}
+                        onClick={() => handleAudioMaskModeChange(option.value)}
+                        onKeyDown={(event) => handleAudioMaskModeKeyDown(event, option.value)}
+                        className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7c6cb0] ${
+                          audioMaskMode === option.value
+                            ? "bg-white text-[#21194d] shadow-[0_8px_18px_-14px_rgba(15,23,42,0.8)]"
+                            : "text-[#6b6384] hover:bg-white/70"
+                        } ${alignmentBusy || maskingBusy || autoMaskingBusy ? "cursor-not-allowed opacity-60" : ""}`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleGenerateAlignment(false)}
+                    disabled={alignmentBusy || maskingBusy || autoMaskingBusy || !finalTranscript.trim()}
+                    className="oa-btn-secondary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {alignmentBusy ? "Aligning..." : "Align Words"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleMaskPIIAudio(false)}
+                    disabled={alignmentBusy || maskingBusy || autoMaskingBusy || (piiAnnotations.length === 0 && maskedIntervals.length === 0)}
+                    className="oa-btn-primary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {maskingBusy ? "Masking..." : maskIntervalsDirty ? "Update Mask" : "Mask PII"}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void handleGenerateAlignment(false)}
-                  disabled={alignmentBusy || maskingBusy || autoMaskingBusy || !finalTranscript.trim()}
-                  className="oa-btn-secondary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {alignmentBusy ? "Aligning..." : "Align Words"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleMaskPIIAudio(false)}
-                  disabled={alignmentBusy || maskingBusy || autoMaskingBusy || (piiAnnotations.length === 0 && maskedIntervals.length === 0)}
-                  className="oa-btn-primary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {maskingBusy ? "Masking..." : maskIntervalsDirty ? "Update Mask" : "Mask PII"}
-                </button>
-              </div>
+              ) : null}
             </div>
             <AudioWaveformPlayer
               audioUrl={audioUrl}
-              highlightIntervals={maskedIntervals}
-              referenceIntervals={alignmentMaskIntervals}
-              editableIntervals={maskedIntervals.length > 0}
+              highlightIntervals={audioMaskingEnabled ? maskedIntervals : []}
+              referenceIntervals={audioMaskingEnabled ? alignmentMaskIntervals : []}
+              editableIntervals={audioMaskingEnabled && maskedIntervals.length > 0}
               onIntervalsChange={handleMaskIntervalsChange}
             />
             {alignmentMessage ? (
@@ -2255,7 +2359,7 @@ export default function TaskWorkspacePage() {
                 {alignmentMessage}
               </p>
             ) : null}
-            {maskedIntervals.length > 0 ? (
+            {audioMaskingEnabled && maskedIntervals.length > 0 ? (
               <div className="mt-3 rounded-xl border border-[#fed7aa] bg-[#fff7ed] p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#9a3412]">PII Mask Windows</p>
@@ -2314,7 +2418,7 @@ export default function TaskWorkspacePage() {
                 </div>
               </div>
             ) : null}
-            {maskedAudioUrl ? (
+            {audioMaskingEnabled && maskedAudioUrl ? (
               <div className="mt-3 rounded-xl border border-[#d7eadf] bg-[#f1fbf5] p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
@@ -2364,7 +2468,7 @@ export default function TaskWorkspacePage() {
               onChange={(event) => {
                 setFinalTranscript(event.target.value);
                 setTranscriptSelection(null);
-                markSectionsUnverified(["transcript", "pii", "masking"]);
+                markSectionsUnverified(transcriptDependentSections);
                 setSaveState("unsaved");
               }}
               onSelect={syncTranscriptSelection}
@@ -2430,8 +2534,11 @@ export default function TaskWorkspacePage() {
 
         <aside data-tour-id="inspector-panel" className="oa-card p-3 sm:p-4">
           <div data-tour-id="inspector-tabs" className="rounded-xl border border-[#e5e7eb] bg-[#f8fafc] p-1">
-            <div className="grid grid-cols-4 gap-1">
-              {inspectorTabs.map((tab) => (
+            <div
+              className="grid gap-1"
+              style={{ gridTemplateColumns: `repeat(${visibleInspectorTabs.length}, minmax(0, 1fr))` }}
+            >
+              {visibleInspectorTabs.map((tab) => (
                 <button
                   key={tab.key}
                   type="button"
@@ -2457,14 +2564,14 @@ export default function TaskWorkspacePage() {
                   onCopy={(text) => {
                     setFinalTranscript(text);
                     setTranscriptSelection(null);
-                    markSectionsUnverified(["transcript", "pii", "masking"]);
+                    markSectionsUnverified(transcriptDependentSections);
                     setSaveState("unsaved");
                   }}
                 />
               </div>
             ) : null}
 
-            {activeInspectorPanel === "metadata" ? (
+            {metadataEnabled && activeInspectorPanel === "metadata" ? (
               <div data-tour-id="inspector-metadata">
                 <h3 className="oa-title mb-2 text-sm font-semibold">Metadata</h3>
                 <MetadataEditor
@@ -2486,7 +2593,7 @@ export default function TaskWorkspacePage() {
               </div>
             ) : null}
 
-            {activeInspectorPanel === "pii" ? (
+            {piiEnabled && activeInspectorPanel === "pii" ? (
               <div data-tour-id="inspector-pii">
                 <PIIAnnotator
                   transcript={finalTranscript}

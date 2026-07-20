@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr
 
 from app.models.enums import RoleEnum
+from app.schemas.organization import UserOrganizationAccess
 
 
 class LoginRequest(BaseModel):
@@ -24,6 +25,8 @@ class UserResponse(BaseModel):
     confidentiality_acknowledged_at: datetime | None = None
     confidentiality_acknowledged_version: str | None = None
     confidentiality_acknowledged_for_session: bool = False
+    organizations: list[UserOrganizationAccess] = []
+    default_organization_id: str | None = None
 
 
 class TokenResponse(BaseModel):

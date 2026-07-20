@@ -79,6 +79,7 @@ class SecurityAuditService:
         resource_type: str,
         resource_id: str | None = None,
         task_id: str | None = None,
+        organization_id: str | None = None,
         ip_address: str | None = None,
         user_agent: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -86,6 +87,7 @@ class SecurityAuditService:
         commit: bool = True,
     ) -> SecurityAuditEvent:
         event = SecurityAuditEvent(
+            organization_id=organization_id,
             actor_user_id=actor.id if actor else None,
             actor_email=actor.email if actor else None,
             actor_role=actor.role.value if actor else None,
@@ -112,6 +114,7 @@ class SecurityAuditService:
         risk_level: str | None,
         actor_user_id: str | None,
         task_id: str | None,
+        organization_id: str | None,
         page: int,
         page_size: int,
     ) -> SecurityAuditEventListResponse:
@@ -126,6 +129,8 @@ class SecurityAuditService:
             filters.append(SecurityAuditEvent.actor_user_id == actor_user_id)
         if task_id:
             filters.append(SecurityAuditEvent.task_id == task_id)
+        if organization_id:
+            filters.append(SecurityAuditEvent.organization_id == organization_id)
         if filters:
             stmt = stmt.where(and_(*filters))
             count_stmt = count_stmt.where(and_(*filters))
@@ -146,6 +151,7 @@ class SecurityAuditService:
     def _to_response(self, event: SecurityAuditEvent) -> SecurityAuditEventResponse:
         return SecurityAuditEventResponse(
             id=event.id,
+            organization_id=event.organization_id,
             actor_user_id=event.actor_user_id,
             actor_email=event.actor_email,
             actor_role=event.actor_role,

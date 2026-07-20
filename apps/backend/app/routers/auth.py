@@ -7,6 +7,7 @@ from app.models.user import User
 from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse, UserResponse
 from app.services.auth_service import AuthService
 from app.services.errors import ServiceError
+from app.services.organization_service import OrganizationService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -38,8 +39,14 @@ def refresh(payload: RefreshRequest, request: Request, db: Session = Depends(get
 
 
 @router.get("/me", response_model=UserResponse)
-def me(current_user: User = Depends(get_current_user)):
-    return current_user
+def me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db_session)):
+    organizations = OrganizationService(db).organization_access_for_user(current_user)
+    return UserResponse.model_validate(current_user).model_copy(
+        update={
+            "organizations": organizations,
+            "default_organization_id": organizations[0].id if organizations else None,
+        }
+    )
 
 
 @router.post("/confidentiality-acknowledgement", response_model=TokenResponse)

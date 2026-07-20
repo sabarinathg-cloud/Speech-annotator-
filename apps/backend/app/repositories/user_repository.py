@@ -1,7 +1,8 @@
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.enums import RoleEnum, TaskStatusEnum
+from app.models.organization import OrganizationMembership
 from app.models.task import AnnotationTask
 from app.models.user import User
 
@@ -23,8 +24,19 @@ class UserRepository:
         search: str | None = None,
         role: RoleEnum | None = None,
         is_active: bool | None = None,
+        organization_id: str | None = None,
     ) -> list[User]:
         stmt = select(User).order_by(User.full_name.asc())
+        if organization_id:
+            stmt = (
+                stmt.outerjoin(
+                    OrganizationMembership,
+                    (OrganizationMembership.user_id == User.id)
+                    & (OrganizationMembership.organization_id == organization_id)
+                    & (OrganizationMembership.is_active.is_(True)),
+                )
+                .where(or_(User.role == RoleEnum.ADMIN, OrganizationMembership.id.is_not(None)))
+            )
         if search:
             pattern = f"%{search.lower()}%"
             stmt = stmt.where((User.email.ilike(pattern)) | (User.full_name.ilike(pattern)))
@@ -34,12 +46,19 @@ class UserRepository:
             stmt = stmt.where(User.is_active == is_active)
         return list(self.db.execute(stmt).scalars().all())
 
-    def assignment_counts_by_user(self, user_ids: list[str]) -> dict[str, dict[str, int]]:
+    def assignment_counts_by_user(
+        self,
+        user_ids: list[str],
+        *,
+        organization_id: str | None = None,
+    ) -> dict[str, dict[str, int]]:
         if not user_ids:
             return {}
         stmt = select(AnnotationTask.assignee_id, AnnotationTask.status).where(
             AnnotationTask.assignee_id.in_(user_ids)
         )
+        if organization_id:
+            stmt = stmt.where(AnnotationTask.organization_id == organization_id)
         counts = {
             user_id: {
                 "assigned_task_count": 0,

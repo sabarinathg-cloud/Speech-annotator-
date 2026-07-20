@@ -4,8 +4,9 @@ from typing import Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session, require_confidentiality_ack, require_roles
+from app.core.dependencies import get_current_organization, get_db_session, require_confidentiality_ack, require_roles
 from app.models.enums import RoleEnum, TaskStatusEnum
+from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.task import (
     AudioURLResponse,
@@ -62,6 +63,7 @@ def list_tasks(
     page_size: int = Query(default=25, ge=1, le=200),
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     return service.list_tasks(
@@ -75,6 +77,7 @@ def list_tasks(
         page=page,
         page_size=page_size,
         current_user=current_user,
+        organization=organization,
     )
 
 
@@ -82,19 +85,21 @@ def list_tasks(
 def get_next_task(
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
-    return TaskNextResponse(task_id=service.get_next_task(actor=current_user))
+    return TaskNextResponse(task_id=service.get_next_task(actor=current_user, organization=organization))
 
 
 @router.post("/next/claim", response_model=TaskPatchResponse)
 def claim_next_task(
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ANNOTATOR, RoleEnum.REVIEWER)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
-        response = service.claim_next_task(actor=current_user)
+        response = service.claim_next_task(actor=current_user, organization=organization)
         if not response:
             raise HTTPException(status_code=404, detail={"message": "No unassigned tasks available"})
         return response
@@ -107,10 +112,11 @@ def bulk_update_assignees(
     payload: BulkAssigneeRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
-        return service.bulk_update_assignees(assignments=payload.assignments, actor=current_user)
+        return service.bulk_update_assignees(assignments=payload.assignments, actor=current_user, organization=organization)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -120,10 +126,15 @@ def bulk_create_assignment_copies(
     payload: BulkAssignmentCopyRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
-        return service.bulk_create_assignment_copies(assignments=payload.assignments, actor=current_user)
+        return service.bulk_create_assignment_copies(
+            assignments=payload.assignments,
+            actor=current_user,
+            organization=organization,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -133,10 +144,11 @@ def bulk_update_due_dates(
     payload: BulkDueDateRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
-        return service.bulk_update_due_dates(updates=payload.updates, actor=current_user)
+        return service.bulk_update_due_dates(updates=payload.updates, actor=current_user, organization=organization)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -146,6 +158,7 @@ def bulk_update_statuses(
     payload: BulkStatusRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
@@ -154,6 +167,7 @@ def bulk_update_statuses(
             new_status=payload.status,
             comment=payload.comment,
             actor=current_user,
+            organization=organization,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -163,9 +177,12 @@ def bulk_update_statuses(
 def detect_pii(
     payload: DetectPIIRequest,
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     if current_user.role == RoleEnum.CANDIDATE:
         raise HTTPException(status_code=403, detail={"message": "Candidates cannot access annotation task APIs"})
+    if not organization.pii_enabled:
+        raise HTTPException(status_code=403, detail={"message": "PII detection is disabled for this organization"})
     return DetectPIIResponse(
         pii_annotations=detect_pii_ensemble(payload.transcript, include_ml=payload.include_ml)
     )
@@ -177,16 +194,18 @@ def get_task(
     request: Request,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
-        response = service.get_task_detail(task_id, actor=current_user)
+        response = service.get_task_detail(task_id, actor=current_user, organization=organization)
         SecurityAuditService(db).log_event(
             action="VIEW_TASK",
             actor=current_user,
             resource_type="task",
             resource_id=task_id,
             task_id=task_id,
+            organization_id=organization.id,
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
             metadata={"external_id": response.external_id, "status": response.status.value},
@@ -202,6 +221,7 @@ def update_task(
     payload: CombinedTaskUpdateRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
@@ -210,6 +230,7 @@ def update_task(
             payload=payload,
             provided_fields=set(payload.model_fields_set),
             actor=current_user,
+            organization=organization,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -220,10 +241,11 @@ def claim_task(
     task_id: str,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ANNOTATOR, RoleEnum.REVIEWER)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
-        return service.claim_task(task_id=task_id, actor=current_user)
+        return service.claim_task(task_id=task_id, actor=current_user, organization=organization)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -233,10 +255,11 @@ def start_task(
     task_id: str,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ANNOTATOR, RoleEnum.REVIEWER)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
-        return service.start_task(task_id=task_id, actor=current_user)
+        return service.start_task(task_id=task_id, actor=current_user, organization=organization)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -246,10 +269,11 @@ def get_task_activity(
     task_id: str,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
-        return service.get_activity(task_id, actor=current_user)
+        return service.get_activity(task_id, actor=current_user, organization=organization)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -261,16 +285,18 @@ def generate_task_alignment(
     force: bool = Query(default=False),
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
-        response = service.generate_alignment(task_id, actor=current_user, force=force)
+        response = service.generate_alignment(task_id, actor=current_user, organization=organization, force=force)
         SecurityAuditService(db).log_event(
             action="GENERATE_ALIGNMENT",
             actor=current_user,
             resource_type="task",
             resource_id=task_id,
             task_id=task_id,
+            organization_id=organization.id,
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
             metadata={"force": force, "word_count": len(response.words)},
@@ -289,12 +315,14 @@ def mask_task_pii_audio(
     mask_mode: Literal["silence", "beep"] = Query(default="silence"),
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
         response = service.generate_masked_pii_audio(
             task_id,
             actor=current_user,
+            organization=organization,
             force=force,
             mask_mode=mask_mode,
             custom_intervals=payload.mask_intervals if payload else None,
@@ -305,6 +333,7 @@ def mask_task_pii_audio(
             resource_type="audio",
             resource_id=task_id,
             task_id=task_id,
+            organization_id=organization.id,
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
             metadata={
@@ -325,6 +354,7 @@ def update_transcript(
     payload: UpdateTranscriptRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
@@ -333,6 +363,7 @@ def update_transcript(
             version=payload.version,
             final_transcript=payload.final_transcript,
             actor=current_user,
+            organization=organization,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -344,6 +375,7 @@ def update_metadata(
     payload: UpdateMetadataRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
@@ -358,6 +390,7 @@ def update_metadata(
             custom_metadata=payload.custom_metadata,
             provided_fields=set(payload.model_fields_set) - {"version"},
             actor=current_user,
+            organization=organization,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -369,6 +402,7 @@ def update_notes(
     payload: UpdateNotesRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
@@ -377,6 +411,7 @@ def update_notes(
             version=payload.version,
             notes=payload.notes,
             actor=current_user,
+            organization=organization,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -388,6 +423,7 @@ def update_status(
     payload: UpdateStatusRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
@@ -396,6 +432,7 @@ def update_status(
             version=payload.version,
             new_status=payload.status,
             actor=current_user,
+            organization=organization,
             comment=payload.comment,
         )
     except ServiceError as exc:
@@ -408,6 +445,7 @@ def update_pii(
     payload: UpdatePIIAnnotationsRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
@@ -416,6 +454,7 @@ def update_pii(
             version=payload.version,
             pii_annotations=payload.pii_annotations,
             actor=current_user,
+            organization=organization,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -427,6 +466,7 @@ def update_assignee(
     payload: UpdateAssigneeRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
@@ -435,6 +475,7 @@ def update_assignee(
             version=payload.version,
             assignee_id=payload.assignee_id,
             actor=current_user,
+            organization=organization,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -446,6 +487,7 @@ def create_assignment_copy(
     payload: CreateAssignmentCopyRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
@@ -454,6 +496,7 @@ def create_assignment_copy(
             version=payload.version,
             assignee_id=payload.assignee_id,
             actor=current_user,
+            organization=organization,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -465,16 +508,18 @@ def get_audio_url(
     request: Request,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = TaskService(db)
     try:
-        url, expires = service.generate_audio_url(task_id, actor=current_user)
+        url, expires = service.generate_audio_url(task_id, actor=current_user, organization=organization)
         SecurityAuditService(db).log_event(
             action="GENERATE_AUDIO_URL",
             actor=current_user,
             resource_type="audio",
             resource_id=task_id,
             task_id=task_id,
+            organization_id=organization.id,
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
             metadata={"expires_in_seconds": expires},

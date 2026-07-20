@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models.enums import TaskStatusEnum, UploadJobStatusEnum
+from app.models.organization import Organization
 from app.models.user import User
 from app.repositories.task_repository import TaskRepository
 from app.repositories.upload_repository import UploadRepository
@@ -64,7 +65,7 @@ class UploadService:
         self.task_repo = TaskRepository(db)
         self.audio_resolver = AudioResolver()
 
-    def upload_excel(self, file: UploadFile, current_user: User) -> UploadFileResponse:
+    def upload_excel(self, file: UploadFile, current_user: User, organization: Organization) -> UploadFileResponse:
         if not file.filename:
             raise ServiceError("File name is required")
         suffix = Path(file.filename).suffix.lower()
@@ -80,12 +81,14 @@ class UploadService:
         destination.write_bytes(content)
 
         upload_file = self.upload_repo.create_upload_file(
+            organization_id=organization.id,
             original_filename=file.filename,
             stored_path=str(destination),
             content_type=file.content_type,
             uploaded_by_id=current_user.id,
         )
         upload_job = self.upload_repo.create_upload_job(
+            organization_id=organization.id,
             upload_file_id=upload_file.id,
             created_by_id=current_user.id,
         )
@@ -93,12 +96,13 @@ class UploadService:
         return UploadFileResponse(
             id=upload_file.id,
             upload_job_id=upload_job.id,
+            organization_id=organization.id,
             filename=upload_file.original_filename,
             status=upload_job.status,
         )
 
-    def preview_upload(self, upload_job_id: str) -> PreviewResponse:
-        job = self.upload_repo.get_upload_job(upload_job_id)
+    def preview_upload(self, upload_job_id: str, *, organization: Organization) -> PreviewResponse:
+        job = self.upload_repo.get_upload_job(upload_job_id, organization_id=organization.id)
         if not job:
             raise ServiceError("Upload job not found", status_code=404)
         df = self._load_job_dataframe(job)
@@ -107,6 +111,7 @@ class UploadService:
         self.db.commit()
         return PreviewResponse(
             upload_job_id=upload_job_id,
+            organization_id=organization.id,
             columns=columns,
             sample_rows=sample_rows,
             row_count=row_count,
@@ -116,10 +121,13 @@ class UploadService:
         self,
         upload_job_id: str,
         mapping: ColumnMappingRequest,
+        *,
+        organization: Organization,
     ) -> UploadValidationResult:
-        job = self.upload_repo.get_upload_job(upload_job_id)
+        job = self.upload_repo.get_upload_job(upload_job_id, organization_id=organization.id)
         if not job:
             raise ServiceError("Upload job not found", status_code=404)
+        self._validate_mapping_features(mapping, organization)
         df = self._load_job_dataframe(job)
         validation = self._validate_dataframe(df, mapping)
 
@@ -140,6 +148,7 @@ class UploadService:
         self.db.commit()
         return UploadValidationResult(
             upload_job_id=upload_job_id,
+            organization_id=organization.id,
             status=status,
             valid_rows=len(validation.valid_row_indexes),
             invalid_rows=len({error["row_number"] for error in validation.errors}),
@@ -151,14 +160,21 @@ class UploadService:
             errors=[RowValidationError(**error) for error in validation.errors],
         )
 
-    def import_upload(self, upload_job_id: str, mapping: ColumnMappingRequest | None = None) -> UploadImportResult:
-        job = self.upload_repo.get_upload_job(upload_job_id)
+    def import_upload(
+        self,
+        upload_job_id: str,
+        mapping: ColumnMappingRequest | None = None,
+        *,
+        organization: Organization,
+    ) -> UploadImportResult:
+        job = self.upload_repo.get_upload_job(upload_job_id, organization_id=organization.id)
         if not job:
             raise ServiceError("Upload job not found", status_code=404)
         if not mapping:
             if not job.mapping_json:
                 raise ServiceError("Mapping is required before import", status_code=422)
             mapping = ColumnMappingRequest.model_validate(job.mapping_json)
+        self._validate_mapping_features(mapping, organization)
 
         df = self._load_job_dataframe(job)
         validation = self._validate_dataframe(df, mapping)
@@ -205,7 +221,14 @@ class UploadService:
             row_number = idx + 2
             try:
                 with self.db.begin_nested():
-                    self._import_single_row(upload_job_id, row, mapping, actor_user_id=job.created_by_id)
+                    self._import_single_row(
+                        upload_job_id,
+                        row,
+                        mapping,
+                        actor_user_id=job.created_by_id,
+                        organization_id=job.organization_id,
+                        metadata_enabled=organization.metadata_enabled,
+                    )
                 imported += 1
             except IntegrityError:
                 skipped += 1
@@ -241,13 +264,14 @@ class UploadService:
         self.db.commit()
         return UploadImportResult(
             upload_job_id=upload_job_id,
+            organization_id=organization.id,
             imported_tasks=imported,
             skipped_rows=len({error["row_number"] for error in all_errors}),
             status=status,
         )
 
-    def list_upload_errors(self, upload_job_id: str) -> list[RowValidationError]:
-        job = self.upload_repo.get_upload_job(upload_job_id)
+    def list_upload_errors(self, upload_job_id: str, *, organization: Organization) -> list[RowValidationError]:
+        job = self.upload_repo.get_upload_job(upload_job_id, organization_id=organization.id)
         if not job:
             raise ServiceError("Upload job not found", status_code=404)
         errors = self.upload_repo.list_job_errors(upload_job_id)
@@ -411,6 +435,11 @@ class UploadService:
             gates=gates,
             import_allowed=import_allowed,
         )
+
+    def _validate_mapping_features(self, mapping: ColumnMappingRequest, organization: Organization) -> None:
+        uses_metadata = bool(mapping.core_metadata_columns) or bool(mapping.custom_metadata_columns)
+        if uses_metadata and not organization.metadata_enabled:
+            raise ServiceError("Metadata import is disabled for this organization", status_code=403)
 
     def _evaluate_quick_validation_gates(
         self,
@@ -700,6 +729,8 @@ class UploadService:
         row: dict[str, Any],
         mapping: ColumnMappingRequest,
         actor_user_id: str,
+        organization_id: str,
+        metadata_enabled: bool,
     ) -> None:
         external_id = str(normalize_cell(row.get(mapping.id_column, ""))).strip()
         file_location = str(normalize_cell(row.get(mapping.file_location_column, ""))).strip()
@@ -731,7 +762,9 @@ class UploadService:
         mapped_columns.update(c for c in optional if c)
 
         custom_columns = mapping.custom_metadata_columns
-        if custom_columns is None:
+        if not metadata_enabled:
+            custom_columns = []
+        elif custom_columns is None:
             custom_columns = [str(k) for k in row.keys() if str(k) not in mapped_columns]
 
         custom_metadata = {
@@ -742,6 +775,7 @@ class UploadService:
         original_row = {str(k): normalize_cell(v) for k, v in row.items()}
 
         task = self.task_repo.create_task(
+            organization_id=organization_id,
             upload_job_id=upload_job_id,
             external_id=external_id,
             file_location=file_location,

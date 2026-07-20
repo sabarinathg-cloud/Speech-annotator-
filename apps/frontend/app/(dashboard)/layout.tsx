@@ -10,7 +10,16 @@ import { useAuth } from "@/components/auth-provider";
 import { SecurityActivityGuard } from "@/components/security-activity-guard";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { user, accessToken, isLoading, logout, acknowledgeConfidentiality } = useAuth();
+  const {
+    user,
+    accessToken,
+    activeOrganization,
+    activeOrganizationId,
+    isLoading,
+    logout,
+    acknowledgeConfidentiality,
+    setActiveOrganizationId,
+  } = useAuth();
   const [ackChecked, setAckChecked] = useState(false);
   const [ackBusy, setAckBusy] = useState(false);
   const [ackError, setAckError] = useState<string | null>(null);
@@ -68,6 +77,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     );
   }
 
+  const organizationOptions = (user?.organizations ?? []).filter((organization) => organization.is_active);
+  const showOrganizationSelector = organizationOptions.length > 1 || user?.role === "ADMIN";
+  const orgSettings = activeOrganization?.settings;
   const links =
     user?.role === "CANDIDATE"
       ? [{ href: "/hiring", label: "Hiring Test" }]
@@ -75,10 +87,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           { href: "/tasks", label: "Tasks" },
           ...(user?.role === "ADMIN"
             ? [
-                { href: "/admin/hiring", label: "Hiring" },
+                ...(orgSettings?.hiring_enabled === false ? [] : [{ href: "/admin/hiring", label: "Hiring" }]),
                 { href: "/admin/upload", label: "Admin Upload" },
                 { href: "/admin/metrics", label: "Metrics" },
                 { href: "/admin/security", label: "Security" },
+                { href: "/admin/organizations", label: "Organizations" },
               ]
             : [])
         ];
@@ -86,7 +99,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const strictSecurityGuardEnabled = Boolean(user && user.role !== "ADMIN" && user.role !== "CANDIDATE");
   const confidentialityBody =
     user?.role === "CANDIDATE"
-      ? "This hiring workspace contains sensitive assessment audio. You may download your assigned files, prepare your answers, and submit them here. Do not share the audio, transcripts, or assessment content outside the approved hiring workflow."
+      ? "This hiring workspace contains sensitive assessment audio. Use the in-app player, prepare your answers, and submit them here. Do not share the audio, transcripts, or assessment content outside the approved hiring workflow."
       : user?.role === "ADMIN"
         ? "This workspace contains sensitive call and hiring assessment data. Admin access is for approved setup, review, evaluation, user management, and audit workflows only."
         : "This workspace contains sensitive call data. Access is for assigned annotation work only. Do not copy, share, photograph, or discuss customer data outside approved workflows.";
@@ -141,6 +154,31 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </div>
 
             <div className="flex items-center gap-3">
+              {showOrganizationSelector ? (
+                <label className="flex min-w-[220px] items-center gap-2 rounded-xl border border-[#e5daf4] bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-[#756d92]">
+                  Org
+                  <select
+                    value={activeOrganizationId ?? ""}
+                    onChange={(event) => {
+                      if (!event.target.value) return;
+                      setActiveOrganizationId(event.target.value);
+                      router.refresh();
+                    }}
+                    className="min-w-0 flex-1 bg-transparent text-sm font-semibold normal-case tracking-normal text-[#241f43] outline-none"
+                    aria-label="Active organization"
+                  >
+                    {organizationOptions.map((organization) => (
+                      <option key={organization.id} value={organization.id}>
+                        {organization.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : activeOrganization ? (
+                <div className="hidden rounded-xl border border-[#e5daf4] bg-white px-3 py-2 text-sm font-semibold text-[#4f476e] sm:block">
+                  {activeOrganization.name}
+                </div>
+              ) : null}
               <AccountSummary user={user} />
               <button
                 type="button"

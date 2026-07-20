@@ -1,5 +1,6 @@
 from app.models.job import BackgroundJob
 from app.models.hiring import HiringAssessment, HiringAssessmentItem, HiringAssignment, HiringSubmission
+from app.models.organization import Organization, OrganizationMembership
 from app.models.pii_label import PIILabel
 from app.models.security import SecurityAuditEvent
 from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory, TaskTranscriptVariant
@@ -13,6 +14,8 @@ __all__ = [
     "HiringAssessmentItem",
     "HiringAssignment",
     "HiringSubmission",
+    "Organization",
+    "OrganizationMembership",
     "PIILabel",
     "SecurityAuditEvent",
     "UploadFile",

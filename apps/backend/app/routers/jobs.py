@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session, require_roles
+from app.core.dependencies import get_current_organization, get_db_session, require_roles
 from app.models.enums import RoleEnum
 from app.models.job import BackgroundJob
+from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.job import JobStatusResponse
 from app.services.errors import ServiceError
@@ -30,6 +31,7 @@ def _to_response(job: BackgroundJob) -> JobStatusResponse:
         result=job.result,
         error_message=job.error_message,
         output_available=bool(job.output_path and job.status == "COMPLETED"),
+        organization_id=job.organization_id,
         created_at=job.created_at,
         updated_at=job.updated_at,
         started_at=job.started_at,
@@ -42,10 +44,11 @@ def get_job(
     job_id: str,
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = JobService(db)
     try:
-        return _to_response(service.get_job(job_id))
+        return _to_response(service.get_job(job_id, organization_id=organization.id))
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -56,10 +59,11 @@ def download_job(
     request: Request,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = JobService(db)
     try:
-        content, content_type, filename = service.download_job_output(job_id)
+        content, content_type, filename = service.download_job_output(job_id, organization_id=organization.id)
     except ServiceError as exc:
         raise _http_error(exc) from exc
     SecurityAuditService(db).log_event(
@@ -67,6 +71,7 @@ def download_job(
         actor=current_user,
         resource_type="job",
         resource_id=job_id,
+        organization_id=organization.id,
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
         metadata={"filename": filename, "content_type": content_type},

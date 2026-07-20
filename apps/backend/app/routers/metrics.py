@@ -3,8 +3,9 @@ from datetime import date
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session, require_roles
+from app.core.dependencies import get_current_organization, get_db_session, require_roles
 from app.models.enums import RoleEnum, TaskStatusEnum
+from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.metrics import AdminMetricsResponse
 from app.services.metrics_service import MetricsService
@@ -22,6 +23,7 @@ def get_admin_metrics(
     date_to: date | None = Query(default=None),
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = MetricsService(db)
     return service.get_admin_metrics(
@@ -31,4 +33,5 @@ def get_admin_metrics(
         language=language,
         date_from=date_from,
         date_to=date_to,
+        organization_id=organization.id,
     )

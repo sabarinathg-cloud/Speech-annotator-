@@ -32,12 +32,14 @@ class ColumnMappingRequest(BaseModel):
 class UploadFileResponse(BaseModel):
     id: str
     upload_job_id: str
+    organization_id: str | None = None
     filename: str
     status: UploadJobStatusEnum
 
 
 class PreviewResponse(BaseModel):
     upload_job_id: str
+    organization_id: str | None = None
     columns: list[str]
     sample_rows: list[dict[str, Any]]
     row_count: int
@@ -60,6 +62,7 @@ class ValidationGateResult(BaseModel):
 
 class UploadValidationResult(BaseModel):
     upload_job_id: str
+    organization_id: str | None = None
     status: UploadJobStatusEnum
     valid_rows: int
     invalid_rows: int
@@ -73,6 +76,7 @@ class UploadValidationResult(BaseModel):
 
 class UploadImportResult(BaseModel):
     upload_job_id: str
+    organization_id: str | None = None
     imported_tasks: int
     skipped_rows: int
     status: UploadJobStatusEnum

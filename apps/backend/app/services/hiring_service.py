@@ -25,6 +25,7 @@ from app.models.enums import (
     RoleEnum,
 )
 from app.models.hiring import HiringAssessment, HiringAssessmentItem, HiringAssignment, HiringSubmission
+from app.models.organization import Organization
 from app.models.security import SecurityAuditEvent
 from app.models.user import User
 from app.schemas.hiring import (
@@ -63,6 +64,7 @@ from app.schemas.hiring import (
 from app.services.deepgram_transcription_service import DeepgramTranscriptionService
 from app.schemas.task import PIIAnnotation
 from app.services.errors import ServiceError
+from app.services.organization_service import OrganizationService
 from app.services.security_audit_service import SecurityAuditService
 from app.storage.audio_resolver import AudioResolver
 from app.utils.excel import load_excel_as_dataframe, normalize_cell
@@ -96,11 +98,12 @@ class HiringService:
         self.db = db
         self.audio_resolver = AudioResolver()
 
-    def list_assessments(self) -> HiringAssessmentListResponse:
+    def list_assessments(self, *, organization_id: str) -> HiringAssessmentListResponse:
         assessments = list(
             self.db.execute(
                 select(HiringAssessment)
                 .options(selectinload(HiringAssessment.items), selectinload(HiringAssessment.assignments))
+                .where(HiringAssessment.organization_id == organization_id)
                 .order_by(HiringAssessment.created_at.desc())
             )
             .unique()
@@ -122,8 +125,15 @@ class HiringService:
         pii_label_keys: list[str],
         rubric_schema: list[HiringRubricField],
         actor: User,
+        organization: Organization,
     ) -> HiringAssessmentDetailResponse:
+        self._guard_assessment_features(
+            organization,
+            metadata_schema=metadata_schema,
+            pii_label_keys=pii_label_keys,
+        )
         assessment = HiringAssessment(
+            organization_id=organization.id,
             title=title.strip(),
             instructions=instructions or "",
             due_date=due_date or (_as_utc(due_at).date() if due_at else None),
@@ -138,7 +148,7 @@ class HiringService:
         self.db.add(assessment)
         self.db.commit()
         self.db.refresh(assessment)
-        return self.get_assessment(assessment.id)
+        return self.get_assessment(assessment.id, organization_id=organization.id)
 
     def update_assessment(
         self,
@@ -146,8 +156,24 @@ class HiringService:
         assessment_id: str,
         payload,
         provided_fields: set[str],
+        organization: Organization,
     ) -> HiringAssessmentDetailResponse:
-        assessment = self._get_assessment_or_404(assessment_id)
+        assessment = self._get_assessment_or_404(assessment_id, organization_id=organization.id)
+        if "metadata_schema" in provided_fields and payload.metadata_schema is not None:
+            self._guard_assessment_features(
+                organization,
+                metadata_schema=payload.metadata_schema,
+                pii_label_keys=assessment.pii_label_keys or [],
+            )
+        if "pii_label_keys" in provided_fields and payload.pii_label_keys is not None:
+            self._guard_assessment_features(
+                organization,
+                metadata_schema=[
+                    HiringMetadataField.model_validate(field)
+                    for field in (assessment.metadata_schema or [])
+                ],
+                pii_label_keys=payload.pii_label_keys,
+            )
         if "title" in provided_fields and payload.title is not None:
             assessment.title = payload.title.strip()
         if "instructions" in provided_fields:
@@ -171,10 +197,10 @@ class HiringService:
         if "rubric_schema" in provided_fields and payload.rubric_schema is not None:
             assessment.rubric_schema = [field.model_dump() for field in payload.rubric_schema]
         self.db.commit()
-        return self.get_assessment(assessment.id)
+        return self.get_assessment(assessment.id, organization_id=organization.id)
 
-    def delete_assessment(self, *, assessment_id: str, actor: User) -> HiringAssessmentDeleteResponse:
-        assessment = self._get_assessment_or_404(assessment_id)
+    def delete_assessment(self, *, assessment_id: str, actor: User, organization_id: str) -> HiringAssessmentDeleteResponse:
+        assessment = self._get_assessment_or_404(assessment_id, organization_id=organization_id)
         deleted_items = len(assessment.items or [])
         deleted_assignments = len(assessment.assignments or [])
         stored_paths = [Path(item.stored_path) for item in (assessment.items or []) if item.stored_path]
@@ -188,6 +214,7 @@ class HiringService:
                 "deleted_items": deleted_items,
                 "deleted_assignments": deleted_assignments,
             },
+            organization_id=assessment.organization_id,
             commit=False,
         )
         self.db.delete(assessment)
@@ -206,8 +233,9 @@ class HiringService:
         item_id: str,
         payload: HiringAssessmentItemReferenceUpdateRequest,
         actor: User,
+        organization_id: str,
     ) -> HiringAssessmentDetailResponse:
-        assessment = self._get_assessment_or_404(assessment_id)
+        assessment = self._get_assessment_or_404(assessment_id, organization_id=organization_id)
         item = next((candidate for candidate in assessment.items if candidate.id == item_id), None)
         if not item:
             raise ServiceError("Hiring assessment item not found", status_code=404)
@@ -226,19 +254,21 @@ class HiringService:
                 "reference_transcript_set": bool(item.reference_transcript),
                 "reference_pii_count": len(item.reference_pii_entries or []),
             },
+            organization_id=assessment.organization_id,
             commit=False,
         )
         self.db.commit()
-        return self.get_assessment(assessment.id)
+        return self.get_assessment(assessment.id, organization_id=organization_id)
 
     def generate_deepgram_reference_transcripts(
         self,
         *,
         assessment_id: str,
         overwrite_existing: bool,
+        organization_id: str | None = None,
         actor: User | None = None,
     ) -> HiringDeepgramReferenceResult:
-        assessment = self._get_assessment_or_404(assessment_id)
+        assessment = self._get_assessment_or_404(assessment_id, organization_id=organization_id)
         total_items = len(assessment.items or [])
         candidates = [
             item
@@ -296,6 +326,7 @@ class HiringService:
                     "skipped_items": total_items - transcribed,
                     "overwrite_existing": overwrite_existing,
                 },
+                organization_id=assessment.organization_id,
                 commit=False,
             )
         self.db.commit()
@@ -307,15 +338,15 @@ class HiringService:
             errors=errors,
         )
 
-    def get_assessment(self, assessment_id: str) -> HiringAssessmentDetailResponse:
-        assessment = self._get_assessment_or_404(assessment_id)
+    def get_assessment(self, assessment_id: str, *, organization_id: str) -> HiringAssessmentDetailResponse:
+        assessment = self._get_assessment_or_404(assessment_id, organization_id=organization_id)
         return HiringAssessmentDetailResponse(
             **self._assessment_summary(assessment).model_dump(),
             items=[self._item_response(item, include_reference=True) for item in self._sorted_items(assessment.items)],
         )
 
-    def import_uploaded_audio(self, *, assessment_id: str, files: list[UploadFile]) -> HiringImportResponse:
-        assessment = self._get_assessment_or_404(assessment_id)
+    def import_uploaded_audio(self, *, assessment_id: str, files: list[UploadFile], organization_id: str) -> HiringImportResponse:
+        assessment = self._get_assessment_or_404(assessment_id, organization_id=organization_id)
         imported = 0
         errors: list[str] = []
         for upload in files:
@@ -339,8 +370,8 @@ class HiringService:
         self.db.commit()
         return HiringImportResponse(imported_items=imported, skipped_items=len(errors), errors=errors)
 
-    def import_folder(self, *, assessment_id: str, folder_path: str, recursive: bool) -> HiringImportResponse:
-        assessment = self._get_assessment_or_404(assessment_id)
+    def import_folder(self, *, assessment_id: str, folder_path: str, recursive: bool, organization_id: str) -> HiringImportResponse:
+        assessment = self._get_assessment_or_404(assessment_id, organization_id=organization_id)
         return self._import_folder_items(assessment=assessment, folder_path=folder_path, recursive=recursive)
 
     def list_audio_buckets(self, *, root_path: str, recursive: bool) -> HiringAudioBucketListResponse:
@@ -367,8 +398,15 @@ class HiringService:
         ]
         return HiringAudioBucketListResponse(root_path=str(root), buckets=buckets)
 
-    def import_assignment_folder(self, *, assignment_id: str, folder_path: str, recursive: bool) -> HiringImportResponse:
-        assignment = self._get_assignment_or_404(assignment_id)
+    def import_assignment_folder(
+        self,
+        *,
+        assignment_id: str,
+        folder_path: str,
+        recursive: bool,
+        organization_id: str,
+    ) -> HiringImportResponse:
+        assignment = self._get_assignment_or_404(assignment_id, organization_id=organization_id)
         if assignment.status in {HiringAssignmentStatusEnum.SUBMITTED, HiringAssignmentStatusEnum.EVALUATED}:
             raise ServiceError("Submitted hiring assignments cannot receive new audio", status_code=409)
         return self._import_folder_items(
@@ -444,8 +482,8 @@ class HiringService:
         self.db.commit()
         return HiringImportResponse(imported_items=imported, skipped_items=skipped, errors=errors)
 
-    def import_manifest(self, *, assessment_id: str, file: UploadFile) -> HiringImportResponse:
-        assessment = self._get_assessment_or_404(assessment_id)
+    def import_manifest(self, *, assessment_id: str, file: UploadFile, organization_id: str) -> HiringImportResponse:
+        assessment = self._get_assessment_or_404(assessment_id, organization_id=organization_id)
         filename = file.filename or ""
         suffix = Path(filename).suffix.lower()
         if suffix not in {".xlsx", ".xls"}:
@@ -484,15 +522,19 @@ class HiringService:
         assessment_id: str,
         candidate_ids: list[str],
         actor: User,
+        organization_id: str,
     ) -> HiringAssignmentListResponse:
-        assessment = self._get_assessment_or_404(assessment_id)
+        assessment = self._get_assessment_or_404(assessment_id, organization_id=organization_id)
         created_or_existing: list[HiringAssignment] = []
+        organization_service = OrganizationService(self.db)
         for candidate_id in candidate_ids:
             candidate = self.db.get(User, candidate_id)
             if not candidate or not candidate.is_active:
                 raise ServiceError("Candidate user not found", status_code=404)
             if candidate.role != RoleEnum.CANDIDATE:
                 raise ServiceError("Hiring assignments can only be given to candidate users", status_code=422)
+            if not organization_service.user_has_access(candidate, assessment.organization_id):
+                raise ServiceError("Candidate does not have access to this organization", status_code=403)
             existing = self.db.execute(
                 select(HiringAssignment).where(
                     HiringAssignment.assessment_id == assessment.id,
@@ -520,8 +562,8 @@ class HiringService:
         self.db.commit()
         return HiringAssignmentListResponse(items=[self._assignment_summary(item) for item in created_or_existing])
 
-    def list_assessment_assignments(self, assessment_id: str) -> HiringAssignmentListResponse:
-        self._get_assessment_or_404(assessment_id)
+    def list_assessment_assignments(self, assessment_id: str, *, organization_id: str) -> HiringAssignmentListResponse:
+        self._get_assessment_or_404(assessment_id, organization_id=organization_id)
         assignments = list(
             self.db.execute(
                 select(HiringAssignment)
@@ -545,8 +587,9 @@ class HiringService:
         assignment_id: str,
         payload: HiringAssignmentAccessUpdateRequest,
         actor: User,
+        organization_id: str,
     ) -> HiringAssignmentSummaryResponse:
-        assignment = self._get_assignment_or_404(assignment_id)
+        assignment = self._get_assignment_or_404(assignment_id, organization_id=organization_id)
         assignment.access_revoked = payload.access_revoked
         if payload.access_revoked:
             assignment.invite_token = None
@@ -563,8 +606,8 @@ class HiringService:
         self.db.commit()
         return self._assignment_summary(assignment)
 
-    def clear_assignment_audio(self, *, assignment_id: str, actor: User) -> HiringAssignmentSummaryResponse:
-        assignment = self._get_assignment_or_404(assignment_id)
+    def clear_assignment_audio(self, *, assignment_id: str, actor: User, organization_id: str) -> HiringAssignmentSummaryResponse:
+        assignment = self._get_assignment_or_404(assignment_id, organization_id=organization_id)
         self._ensure_assignment_can_be_reworked(assignment)
         candidate_items = [item for item in (assignment.assessment.items or []) if item.assignment_id == assignment.id]
         stored_paths = [Path(item.stored_path) for item in candidate_items if item.stored_path]
@@ -583,8 +626,8 @@ class HiringService:
         self._remove_managed_audio_files(stored_paths)
         return self._assignment_summary(assignment)
 
-    def delete_assignment(self, *, assignment_id: str, actor: User) -> HiringAssignmentDeleteResponse:
-        assignment = self._get_assignment_or_404(assignment_id)
+    def delete_assignment(self, *, assignment_id: str, actor: User, organization_id: str) -> HiringAssignmentDeleteResponse:
+        assignment = self._get_assignment_or_404(assignment_id, organization_id=organization_id)
         self._ensure_assignment_can_be_reworked(assignment)
         stored_paths = [
             Path(item.stored_path)
@@ -604,7 +647,7 @@ class HiringService:
         self._remove_managed_audio_files(stored_paths)
         return HiringAssignmentDeleteResponse(deleted_assignment_id=assignment_id)
 
-    def list_candidate_assignments(self, *, actor: User) -> HiringAssignmentListResponse:
+    def list_candidate_assignments(self, *, actor: User, organization_id: str) -> HiringAssignmentListResponse:
         assignments = list(
             self.db.execute(
                 select(HiringAssignment)
@@ -614,6 +657,8 @@ class HiringService:
                     selectinload(HiringAssignment.submissions).selectinload(HiringSubmission.item),
                 )
                 .where(HiringAssignment.candidate_id == actor.id)
+                .join(HiringAssessment, HiringAssessment.id == HiringAssignment.assessment_id)
+                .where(HiringAssessment.organization_id == organization_id)
                 .where(HiringAssignment.access_revoked.is_(False))
                 .order_by(HiringAssignment.assigned_at.desc())
             )
@@ -623,13 +668,19 @@ class HiringService:
         )
         return HiringAssignmentListResponse(items=[self._assignment_summary(item) for item in assignments])
 
-    def get_candidate_assignment(self, *, assignment_id: str, actor: User) -> HiringCandidateAssignmentDetailResponse:
-        assignment = self._get_candidate_assignment_or_404(assignment_id, actor)
+    def get_candidate_assignment(
+        self,
+        *,
+        assignment_id: str,
+        actor: User,
+        organization_id: str,
+    ) -> HiringCandidateAssignmentDetailResponse:
+        assignment = self._get_candidate_assignment_or_404(assignment_id, actor, organization_id=organization_id)
         self._mark_assignment_opened(assignment, actor=actor)
         return self._candidate_assignment_detail(assignment, include_reference=False)
 
-    def get_admin_assignment_review(self, assignment_id: str) -> HiringAdminAssignmentReviewResponse:
-        assignment = self._get_assignment_or_404(assignment_id)
+    def get_admin_assignment_review(self, assignment_id: str, *, organization_id: str) -> HiringAdminAssignmentReviewResponse:
+        assignment = self._get_assignment_or_404(assignment_id, organization_id=organization_id)
         detail = self._candidate_assignment_detail(assignment, include_reference=True)
         return HiringAdminAssignmentReviewResponse(
             **detail.model_dump(),
@@ -651,12 +702,14 @@ class HiringService:
         payload: HiringSubmissionUpdateRequest,
         provided_fields: set[str],
         actor: User,
+        organization_id: str,
     ) -> HiringCandidateAssignmentDetailResponse:
-        submission = self._get_candidate_submission_or_404(submission_id, actor)
+        submission = self._get_candidate_submission_or_404(submission_id, actor, organization_id=organization_id)
         assignment = submission.assignment
         self._ensure_assignment_editable(assignment)
         if submission.version != payload.version:
             raise ServiceError("Submission was updated elsewhere. Reload and try again.", status_code=409)
+        self._guard_submission_update_features(assignment.assessment, payload=payload, provided_fields=provided_fields)
 
         if "final_transcript" in provided_fields and payload.final_transcript is not None:
             submission.final_transcript = payload.final_transcript
@@ -692,10 +745,10 @@ class HiringService:
             metadata={"item_id": submission.item_id, "changed_fields": sorted(provided_fields - {"version"})},
         )
         self.db.commit()
-        return self.get_candidate_assignment(assignment_id=assignment.id, actor=actor)
+        return self.get_candidate_assignment(assignment_id=assignment.id, actor=actor, organization_id=organization_id)
 
-    def submit_assignment(self, *, assignment_id: str, actor: User) -> HiringCandidateAssignmentDetailResponse:
-        assignment = self._get_candidate_assignment_or_404(assignment_id, actor)
+    def submit_assignment(self, *, assignment_id: str, actor: User, organization_id: str) -> HiringCandidateAssignmentDetailResponse:
+        assignment = self._get_candidate_assignment_or_404(assignment_id, actor, organization_id=organization_id)
         self._ensure_assignment_editable(assignment)
         missing = self._submission_readiness_errors(assignment)
         if missing:
@@ -716,7 +769,7 @@ class HiringService:
             metadata={"submitted_items": len(assignment.submissions or [])},
         )
         self.db.commit()
-        return self.get_candidate_assignment(assignment_id=assignment.id, actor=actor)
+        return self.get_candidate_assignment(assignment_id=assignment.id, actor=actor, organization_id=organization_id)
 
     def update_submission_validation(
         self,
@@ -724,8 +777,9 @@ class HiringService:
         submission_id: str,
         payload: HiringSubmissionValidationRequest,
         actor: User,
+        organization_id: str,
     ) -> HiringSubmissionResponse:
-        submission = self._get_submission_or_404(submission_id)
+        submission = self._get_submission_or_404(submission_id, organization_id=organization_id)
         submission.validation_status = payload.validation_status
         submission.validation_feedback = payload.validation_feedback
         submission.version += 1
@@ -746,8 +800,9 @@ class HiringService:
         assignment_id: str,
         payload: HiringScorecardUpdateRequest,
         actor: User,
+        organization_id: str,
     ) -> HiringAdminAssignmentReviewResponse:
-        assignment = self._get_assignment_or_404(assignment_id)
+        assignment = self._get_assignment_or_404(assignment_id, organization_id=organization_id)
         rubric_scores = self._validate_rubric_scores(assignment.assessment, payload.rubric_scores)
         assignment.transcript_score = _safe_decimal(payload.transcript_score)
         assignment.pii_score = _safe_decimal(payload.pii_score)
@@ -771,7 +826,7 @@ class HiringService:
             metadata={"decision": payload.decision.value, "total_score": total_score},
         )
         self.db.commit()
-        return self.get_admin_assignment_review(assignment.id)
+        return self.get_admin_assignment_review(assignment.id, organization_id=organization_id)
 
     def create_assignment_invite(
         self,
@@ -779,9 +834,10 @@ class HiringService:
         assignment_id: str,
         actor: User,
         public_base_url: str,
+        organization_id: str,
         expires_in_days: int = 14,
     ) -> HiringAssignmentInviteResponse:
-        assignment = self._get_assignment_or_404(assignment_id)
+        assignment = self._get_assignment_or_404(assignment_id, organization_id=organization_id)
         if assignment.access_revoked:
             raise ServiceError("Restore assignment access before creating an invite", status_code=409)
         temporary_password = self._generate_temporary_password()
@@ -810,8 +866,8 @@ class HiringService:
             invite_expires_at=assignment.invite_expires_at,
         )
 
-    def assessment_ranking(self, assessment_id: str) -> HiringRankingResponse:
-        assessment = self._get_assessment_or_404(assessment_id)
+    def assessment_ranking(self, assessment_id: str, *, organization_id: str) -> HiringRankingResponse:
+        assessment = self._get_assessment_or_404(assessment_id, organization_id=organization_id)
         ranking_inputs = [
             (assignment, self._assignment_reference_summary(assignment))
             for assignment in (assessment.assignments or [])
@@ -866,12 +922,13 @@ class HiringService:
             )
         return HiringRankingResponse(items=items)
 
-    def assignment_audit_events(self, assignment_id: str) -> HiringAuditEventListResponse:
-        self._get_assignment_or_404(assignment_id)
+    def assignment_audit_events(self, assignment_id: str, *, organization_id: str) -> HiringAuditEventListResponse:
+        self._get_assignment_or_404(assignment_id, organization_id=organization_id)
         events = list(
             self.db.execute(
                 select(SecurityAuditEvent)
                 .where(SecurityAuditEvent.resource_type.in_(["hiring_assignment", "hiring_submission", "hiring_audio"]))
+                .where(SecurityAuditEvent.organization_id == organization_id)
                 .order_by(SecurityAuditEvent.created_at.desc())
                 .limit(500)
             )
@@ -884,8 +941,8 @@ class HiringService:
         ]
         return HiringAuditEventListResponse(items=[self._audit_event_response(event) for event in filtered])
 
-    def candidate_audio_path(self, *, assignment_id: str, item_id: str, actor: User) -> tuple[Path, str]:
-        assignment = self._get_candidate_assignment_or_404(assignment_id, actor)
+    def candidate_audio_path(self, *, assignment_id: str, item_id: str, actor: User, organization_id: str) -> tuple[Path, str]:
+        assignment = self._get_candidate_assignment_or_404(assignment_id, actor, organization_id=organization_id)
         self._ensure_playback_allowed(assignment)
         item = next((candidate for candidate in self._assignment_items(assignment) if candidate.id == item_id), None)
         if not item:
@@ -895,8 +952,8 @@ class HiringService:
             raise ServiceError("Hiring audio file not found", status_code=404)
         return path, item.original_filename
 
-    def admin_audio_path(self, *, assignment_id: str, item_id: str) -> tuple[Path, str]:
-        assignment = self._get_assignment_or_404(assignment_id)
+    def admin_audio_path(self, *, assignment_id: str, item_id: str, organization_id: str) -> tuple[Path, str]:
+        assignment = self._get_assignment_or_404(assignment_id, organization_id=organization_id)
         item = next((candidate for candidate in self._assignment_items(assignment) if candidate.id == item_id), None)
         if not item:
             raise ServiceError("Hiring assessment item not found", status_code=404)
@@ -905,11 +962,14 @@ class HiringService:
             raise ServiceError("Hiring audio file not found", status_code=404)
         return path, item.original_filename
 
-    def reject_candidate_audio_download(self, *, assignment_id: str, actor: User) -> None:
-        self._get_candidate_assignment_or_404(assignment_id, actor)
+    def reject_candidate_audio_download(self, *, assignment_id: str, actor: User, organization_id: str) -> None:
+        self._get_candidate_assignment_or_404(assignment_id, actor, organization_id=organization_id)
         raise ServiceError("Candidate audio downloads are disabled. Use in-app playback.", status_code=403)
 
-    def _get_assessment_or_404(self, assessment_id: str) -> HiringAssessment:
+    def _get_assessment_or_404(self, assessment_id: str, *, organization_id: str | None = None) -> HiringAssessment:
+        filters = [HiringAssessment.id == assessment_id]
+        if organization_id:
+            filters.append(HiringAssessment.organization_id == organization_id)
         assessment = (
             self.db.execute(
                 select(HiringAssessment)
@@ -920,7 +980,7 @@ class HiringService:
                     .selectinload(HiringSubmission.item),
                     selectinload(HiringAssessment.assignments).selectinload(HiringAssignment.candidate),
                 )
-                .where(HiringAssessment.id == assessment_id)
+                .where(*filters)
             )
             .unique()
             .scalar_one_or_none()
@@ -929,7 +989,7 @@ class HiringService:
             raise ServiceError("Hiring assessment not found", status_code=404)
         return assessment
 
-    def _get_assignment_or_404(self, assignment_id: str) -> HiringAssignment:
+    def _get_assignment_or_404(self, assignment_id: str, *, organization_id: str | None = None) -> HiringAssignment:
         assignment = (
             self.db.execute(
                 select(HiringAssignment)
@@ -943,19 +1003,25 @@ class HiringService:
             .unique()
             .scalar_one_or_none()
         )
-        if not assignment:
+        if not assignment or (organization_id and assignment.assessment.organization_id != organization_id):
             raise ServiceError("Hiring assignment not found", status_code=404)
         return assignment
 
-    def _get_candidate_assignment_or_404(self, assignment_id: str, actor: User) -> HiringAssignment:
-        assignment = self._get_assignment_or_404(assignment_id)
+    def _get_candidate_assignment_or_404(
+        self,
+        assignment_id: str,
+        actor: User,
+        *,
+        organization_id: str | None = None,
+    ) -> HiringAssignment:
+        assignment = self._get_assignment_or_404(assignment_id, organization_id=organization_id)
         if actor.role != RoleEnum.CANDIDATE or assignment.candidate_id != actor.id:
             raise ServiceError("Hiring assignment is not assigned to you", status_code=403)
         if assignment.access_revoked:
             raise ServiceError("Hiring assignment access has been revoked", status_code=403)
         return assignment
 
-    def _get_submission_or_404(self, submission_id: str) -> HiringSubmission:
+    def _get_submission_or_404(self, submission_id: str, *, organization_id: str | None = None) -> HiringSubmission:
         submission = (
             self.db.execute(
                 select(HiringSubmission)
@@ -971,12 +1037,18 @@ class HiringService:
             .unique()
             .scalar_one_or_none()
         )
-        if not submission:
+        if not submission or (organization_id and submission.assignment.assessment.organization_id != organization_id):
             raise ServiceError("Hiring submission not found", status_code=404)
         return submission
 
-    def _get_candidate_submission_or_404(self, submission_id: str, actor: User) -> HiringSubmission:
-        submission = self._get_submission_or_404(submission_id)
+    def _get_candidate_submission_or_404(
+        self,
+        submission_id: str,
+        actor: User,
+        *,
+        organization_id: str | None = None,
+    ) -> HiringSubmission:
+        submission = self._get_submission_or_404(submission_id, organization_id=organization_id)
         if actor.role != RoleEnum.CANDIDATE or submission.assignment.candidate_id != actor.id:
             raise ServiceError("Hiring submission is not assigned to you", status_code=403)
         if submission.assignment.access_revoked:
@@ -1086,13 +1158,15 @@ class HiringService:
                 submission
                 for submission in (assignment.submissions or [])
                 if submission.final_transcript.strip()
-                and submission.pii_reviewed
+                and (not self._assessment_pii_enabled(assignment.assessment) or submission.pii_reviewed)
                 and not self._metadata_has_missing_required(assignment.assessment, submission.metadata_values)
             ]
         )
         return round((ready / item_count) * 100, 1)
 
     def _metadata_has_missing_required(self, assessment: HiringAssessment, values: dict | None) -> bool:
+        if not self._assessment_metadata_enabled(assessment):
+            return False
         values = values or {}
         fields = [HiringMetadataField.model_validate(field) for field in (assessment.metadata_schema or [])]
         return any(field.required and str(values.get(field.key) or "").strip() == "" for field in fields)
@@ -1132,6 +1206,7 @@ class HiringService:
             actor=actor,
             resource_type=resource_type,
             resource_id=resource_id,
+            organization_id=assignment.assessment.organization_id,
             metadata={
                 "assessment_id": assignment.assessment_id,
                 "assignment_id": assignment.id,
@@ -1164,7 +1239,7 @@ class HiringService:
                 continue
             if not submission.final_transcript.strip():
                 errors.append(f"{item.original_filename}: transcript is required")
-            if not submission.pii_reviewed:
+            if self._assessment_pii_enabled(assignment.assessment) and not submission.pii_reviewed:
                 errors.append(f"{item.original_filename}: PII review is required")
             try:
                 self._validate_metadata_values(assignment.assessment, submission.metadata_values, require_all=True)
@@ -1298,6 +1373,10 @@ class HiringService:
         *,
         require_all: bool,
     ) -> None:
+        if not self._assessment_metadata_enabled(assessment):
+            if values:
+                raise ServiceError("Metadata is disabled for this organization", status_code=403)
+            return
         fields = [HiringMetadataField.model_validate(field) for field in (assessment.metadata_schema or [])]
         fields_by_key = {field.key: field for field in fields}
         for key in values.keys():
@@ -1321,6 +1400,39 @@ class HiringService:
                     raise ServiceError(f"{field.label} must be a date", status_code=422) from exc
             if field.type == "select" and str(value) not in field.options:
                 raise ServiceError(f"{field.label} must be one of: {', '.join(field.options)}", status_code=422)
+
+    def _guard_assessment_features(
+        self,
+        organization: Organization,
+        *,
+        metadata_schema: list[HiringMetadataField],
+        pii_label_keys: list[str],
+    ) -> None:
+        if metadata_schema and not organization.metadata_enabled:
+            raise ServiceError("Hiring metadata fields are disabled for this organization", status_code=403)
+        if pii_label_keys and not organization.pii_enabled:
+            raise ServiceError("Hiring PII review is disabled for this organization", status_code=403)
+
+    def _guard_submission_update_features(
+        self,
+        assessment: HiringAssessment,
+        *,
+        payload: HiringSubmissionUpdateRequest,
+        provided_fields: set[str],
+    ) -> None:
+        if not self._assessment_metadata_enabled(assessment) and "metadata_values" in provided_fields and payload.metadata_values:
+            raise ServiceError("Metadata is disabled for this organization", status_code=403)
+        pii_fields = {"pii_annotations", "pii_text", "pii_entries", "pii_reviewed"}
+        if self._assessment_pii_enabled(assessment) or not (provided_fields & pii_fields):
+            return
+        if payload.pii_annotations or payload.pii_text or payload.pii_entries or payload.pii_reviewed:
+            raise ServiceError("PII review is disabled for this organization", status_code=403)
+
+    def _assessment_metadata_enabled(self, assessment: HiringAssessment) -> bool:
+        return bool(assessment.organization.metadata_enabled)
+
+    def _assessment_pii_enabled(self, assessment: HiringAssessment) -> bool:
+        return bool(assessment.organization.pii_enabled)
 
     def _normalize_pii_annotations(self, annotations: list[PIIAnnotation], *, transcript: str) -> list[dict]:
         normalized = []

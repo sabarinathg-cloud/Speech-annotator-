@@ -4,10 +4,11 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.enums import TaskStatusEnum
+from app.models.organization import OrganizationMembership
 from app.models.security import SecurityAuditEvent
 from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory
 from app.models.user import User
@@ -27,6 +28,7 @@ from app.schemas.metrics import (
     UserProductivityMetric,
     WorstTaskMetric,
 )
+from app.services.organization_service import DEFAULT_ORGANIZATION_ID
 
 LOW_CONFIDENCE_THRESHOLD = 0.8
 
@@ -326,6 +328,7 @@ class MetricsService:
         language: str | None,
         date_from: date | None,
         date_to: date | None,
+        organization_id: str,
     ) -> AdminMetricsResponse:
         filters = self._build_filters(
             status=status,
@@ -334,6 +337,7 @@ class MetricsService:
             language=language,
             date_from=date_from,
             date_to=date_to,
+            organization_id=organization_id,
         )
         tasks = self._load_tasks(filters)
         status_counts = Counter(task.status.value for task in tasks)
@@ -475,7 +479,7 @@ class MetricsService:
         pii_metrics = self._build_pii_metrics(tasks)
         masking_metrics, worst_masking_tasks, masking_interval_drilldowns = self._build_masking_metrics(tasks)
         tagger_metrics = self._build_tagger_metrics(tasks)
-        user_metrics = self._build_user_metrics(tasks)
+        user_metrics = self._build_user_metrics(tasks, organization_id=organization_id)
         model_metrics = [
             ModelTranscriptMetric(
                 source_key=item["source_key"],
@@ -558,8 +562,11 @@ class MetricsService:
         language: str | None,
         date_from: date | None,
         date_to: date | None,
+        organization_id: str | None,
     ) -> list[Any]:
         filters: list[Any] = []
+        if organization_id:
+            filters.append(AnnotationTask.organization_id == organization_id)
         if status:
             filters.append(AnnotationTask.status == status)
         if assignee_id:
@@ -823,8 +830,18 @@ class MetricsService:
         metrics.sort(key=lambda item: item.tasks_touched, reverse=True)
         return metrics
 
-    def _build_user_metrics(self, tasks: list[AnnotationTask]) -> list[UserProductivityMetric]:
-        users = list(self.db.execute(select(User).order_by(User.full_name.asc())).scalars().all())
+    def _build_user_metrics(self, tasks: list[AnnotationTask], *, organization_id: str) -> list[UserProductivityMetric]:
+        users = list(
+            self.db.execute(
+                select(User)
+                .join(OrganizationMembership, OrganizationMembership.user_id == User.id)
+                .where(OrganizationMembership.organization_id == organization_id)
+                .where(OrganizationMembership.is_active.is_(True))
+                .order_by(User.full_name.asc())
+            )
+            .scalars()
+            .all()
+        )
         task_ids = [task.id for task in tasks]
         user_ids = [user.id for user in users]
         now = datetime.now(timezone.utc)
@@ -917,9 +934,14 @@ class MetricsService:
 
         security_events: list[SecurityAuditEvent] = []
         if user_ids:
+            organization_filter = SecurityAuditEvent.organization_id == organization_id
+            if organization_id == DEFAULT_ORGANIZATION_ID:
+                organization_filter = or_(organization_filter, SecurityAuditEvent.organization_id.is_(None))
             security_events = list(
                 self.db.execute(
-                    select(SecurityAuditEvent).where(SecurityAuditEvent.actor_user_id.in_(user_ids))
+                    select(SecurityAuditEvent)
+                    .where(SecurityAuditEvent.actor_user_id.in_(user_ids))
+                    .where(organization_filter)
                 ).scalars().all()
             )
         security_event_counts: Counter[str] = Counter()

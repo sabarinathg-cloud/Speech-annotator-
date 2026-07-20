@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.job import BackgroundJob
+from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.hiring import HiringDeepgramReferenceRequest
 from app.schemas.job import ExportJobRequest
@@ -14,6 +15,7 @@ from app.schemas.upload import ColumnMappingRequest
 from app.services.errors import ServiceError
 from app.services.export_service import ExportService
 from app.services.hiring_service import HiringService
+from app.services.organization_service import DEFAULT_ORGANIZATION_ID
 from app.services.upload_service import UploadService
 
 
@@ -21,11 +23,12 @@ class JobService:
     def __init__(self, db: Session):
         self.db = db
 
-    def enqueue_export_job(self, payload: ExportJobRequest, actor: User) -> BackgroundJob:
+    def enqueue_export_job(self, payload: ExportJobRequest, actor: User, organization: Organization) -> BackgroundJob:
         job = self._create_job(
             job_type="export",
             payload=payload.model_dump(mode="json"),
             actor=actor,
+            organization_id=organization.id,
         )
         self._dispatch(job)
         self.db.refresh(job)
@@ -37,6 +40,7 @@ class JobService:
         upload_job_id: str,
         mapping: ColumnMappingRequest | None,
         actor: User,
+        organization: Organization,
     ) -> BackgroundJob:
         job = self._create_job(
             job_type="import",
@@ -45,6 +49,7 @@ class JobService:
                 "mapping": mapping.model_dump(mode="json") if mapping else None,
             },
             actor=actor,
+            organization_id=organization.id,
         )
         self._dispatch(job)
         self.db.refresh(job)
@@ -56,6 +61,7 @@ class JobService:
         assessment_id: str,
         payload: HiringDeepgramReferenceRequest,
         actor: User,
+        organization: Organization,
         dispatch: bool = True,
     ) -> BackgroundJob:
         job = self._create_job(
@@ -65,20 +71,25 @@ class JobService:
                 "overwrite_existing": payload.overwrite_existing,
             },
             actor=actor,
+            organization_id=organization.id,
         )
         if dispatch:
             self._dispatch(job)
             self.db.refresh(job)
         return job
 
-    def get_job(self, job_id: str) -> BackgroundJob:
+    def get_job(self, job_id: str, *, organization_id: str | None = None) -> BackgroundJob:
         job = self.db.get(BackgroundJob, job_id)
         if not job:
             raise ServiceError("Background job not found", status_code=404)
+        if organization_id and job.organization_id not in {organization_id, None}:
+            raise ServiceError("Background job not found", status_code=404)
+        if organization_id != DEFAULT_ORGANIZATION_ID and job.organization_id is None:
+            raise ServiceError("Background job not found", status_code=404)
         return job
 
-    def download_job_output(self, job_id: str) -> tuple[bytes, str, str]:
-        job = self.get_job(job_id)
+    def download_job_output(self, job_id: str, *, organization_id: str | None = None) -> tuple[bytes, str, str]:
+        job = self.get_job(job_id, organization_id=organization_id)
         if job.status != "COMPLETED":
             raise ServiceError("Background job is not complete", status_code=409)
         if not job.output_path:
@@ -114,8 +125,11 @@ class JobService:
             job.completed_at = datetime.now(timezone.utc)
             self.db.commit()
 
-    def _create_job(self, *, job_type: str, payload: dict[str, Any], actor: User) -> BackgroundJob:
+    def _create_job(
+        self, *, job_type: str, payload: dict[str, Any], actor: User, organization_id: str | None
+    ) -> BackgroundJob:
         job = BackgroundJob(
+            organization_id=organization_id,
             job_type=job_type,
             status="QUEUED",
             payload=payload,
@@ -155,6 +169,11 @@ class JobService:
     def _execute_export(self, job: BackgroundJob) -> dict[str, Any]:
         payload = ExportJobRequest.model_validate(job.payload)
         export_format = payload.format
+        if not job.organization_id:
+            raise ServiceError("Export job is missing organization_id", status_code=422)
+        from app.services.organization_service import OrganizationService
+
+        organization = OrganizationService(self.db).get_organization_or_404(job.organization_id)
         content, content_type = ExportService(self.db).export_tasks(
             job_id=payload.job_id,
             export_format=export_format,
@@ -163,6 +182,8 @@ class JobService:
             language=payload.language,
             date_from=payload.date_from,
             date_to=payload.date_to,
+            organization_id=job.organization_id,
+            transcript_redaction_enabled=organization.transcript_redaction_enabled,
         )
 
         output_dir = get_settings().upload_path / "exports"
@@ -188,18 +209,30 @@ class JobService:
 
         raw_mapping = job.payload.get("mapping")
         mapping = ColumnMappingRequest.model_validate(raw_mapping) if raw_mapping else None
-        result = UploadService(self.db).import_upload(upload_job_id, mapping)
+        organization = job.organization_id
+        if not organization:
+            raise ServiceError("Import job is missing organization_id", status_code=422)
+        from app.services.organization_service import OrganizationService
+
+        result = UploadService(self.db).import_upload(
+            upload_job_id,
+            mapping,
+            organization=OrganizationService(self.db).get_organization_or_404(organization),
+        )
         return result.model_dump(mode="json")
 
     def _execute_hiring_deepgram_references(self, job: BackgroundJob) -> dict[str, Any]:
         assessment_id = str(job.payload.get("assessment_id") or "")
         if not assessment_id:
             raise ServiceError("Deepgram reference job is missing assessment_id", status_code=422)
+        if not job.organization_id:
+            raise ServiceError("Deepgram reference job is missing organization_id", status_code=422)
         actor = self.db.get(User, job.created_by_id)
         result = HiringService(self.db).generate_deepgram_reference_transcripts(
             assessment_id=assessment_id,
             overwrite_existing=bool(job.payload.get("overwrite_existing")),
             actor=actor,
+            organization_id=job.organization_id,
         )
         return result.model_dump(mode="json")
 

@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.models.enums import RoleEnum
+from app.schemas.organization import UserOrganizationAccess
 
 
 class UserAdminResponse(BaseModel):
@@ -21,6 +22,7 @@ class UserAdminResponse(BaseModel):
     completed_task_count: int = 0
     approved_task_count: int = 0
     assignment_load: Literal["none", "light", "normal", "heavy"] = "none"
+    organizations: list[UserOrganizationAccess] = []
     created_at: datetime
     updated_at: datetime
 
@@ -35,6 +37,7 @@ class CreateUserRequest(BaseModel):
     role: RoleEnum
     password: str = Field(min_length=8, max_length=128)
     is_active: bool = True
+    organization_ids: list[str] | None = None
 
 
 class UpdateUserRequest(BaseModel):
@@ -42,6 +45,7 @@ class UpdateUserRequest(BaseModel):
     role: RoleEnum | None = None
     password: str | None = Field(default=None, min_length=8, max_length=128)
     is_active: bool | None = None
+    organization_ids: list[str] | None = None
 
     @model_validator(mode="after")
     def validate_non_empty_update(self) -> "UpdateUserRequest":
@@ -50,6 +54,7 @@ class UpdateUserRequest(BaseModel):
             and self.role is None
             and self.password is None
             and self.is_active is None
+            and self.organization_ids is None
         ):
             raise ValueError("At least one field must be provided")
         return self

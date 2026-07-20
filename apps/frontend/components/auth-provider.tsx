@@ -1,6 +1,6 @@
 "use client";
 
-import type { User } from "@outcomes/shared-types";
+import type { User, UserOrganizationAccess } from "@outcomes/shared-types";
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 import {
@@ -8,7 +8,13 @@ import {
   fetchCurrentUser,
   login as loginRequest,
 } from "@/lib/api";
-import { SESSION_CHANGED_EVENT, clearSession, readSession, writeSession } from "@/lib/session";
+import {
+  SESSION_CHANGED_EVENT,
+  clearSession,
+  readSession,
+  writeActiveOrganizationId,
+  writeSession,
+} from "@/lib/session";
 
 export const SESSION_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 export const SESSION_DEVICE_CHECK_INTERVAL_MS = 10 * 1000;
@@ -16,7 +22,10 @@ export const SESSION_DEVICE_CHECK_INTERVAL_MS = 10 * 1000;
 interface AuthContextValue {
   user: User | null;
   accessToken: string | null;
+  activeOrganizationId: string | null;
+  activeOrganization: UserOrganizationAccess | null;
   isLoading: boolean;
+  setActiveOrganizationId: (organizationId: string) => void;
   login: (email: string, password: string) => Promise<User>;
   acknowledgeConfidentiality: () => Promise<void>;
   logout: () => void;
@@ -28,12 +37,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [activeOrganizationId, setActiveOrganizationIdState] = useState<string | null>(null);
 
   useEffect(() => {
     function syncSession() {
       const session = readSession();
       setUser(session.user);
       setAccessToken(session.accessToken);
+      setActiveOrganizationIdState(resolveActiveOrganizationId(session.user, session.activeOrganizationId));
     }
     syncSession();
     setIsLoading(false);
@@ -85,7 +96,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (checkInFlight) return;
       checkInFlight = true;
       try {
-        await fetchCurrentUser(accessToken);
+        const currentUser = await fetchCurrentUser(accessToken);
+        if (!cancelled) {
+          setUser(currentUser);
+          setActiveOrganizationIdState((current) => resolveActiveOrganizationId(currentUser, current));
+        }
       } catch (error) {
         if (!cancelled && typeof error === "object" && error !== null && "status" in error && error.status === 401) {
           endReplacedSession();
@@ -113,16 +128,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [accessToken]);
 
+  const activeOrganization = useMemo<UserOrganizationAccess | null>(() => {
+    if (!user || !activeOrganizationId) return null;
+    return (user.organizations ?? []).find((organization) => organization.id === activeOrganizationId) ?? null;
+  }, [activeOrganizationId, user]);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
       accessToken,
+      activeOrganizationId,
+      activeOrganization,
       isLoading,
+      setActiveOrganizationId: (organizationId: string) => {
+        writeActiveOrganizationId(organizationId);
+        setActiveOrganizationIdState(organizationId);
+      },
       login: async (email: string, password: string) => {
         const data = await loginRequest(email, password);
         writeSession(data.access_token, data.refresh_token, data.user);
         setUser(data.user);
         setAccessToken(data.access_token);
+        setActiveOrganizationIdState(resolveActiveOrganizationId(data.user, null));
         return data.user;
       },
       acknowledgeConfidentiality: async () => {
@@ -131,17 +158,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         writeSession(data.access_token, data.refresh_token, data.user);
         setUser(data.user);
         setAccessToken(data.access_token);
+        setActiveOrganizationIdState((current) => resolveActiveOrganizationId(data.user, current));
       },
       logout: () => {
         clearSession();
         setUser(null);
         setAccessToken(null);
+        setActiveOrganizationIdState(null);
       }
     }),
-    [user, accessToken, isLoading]
+    [user, accessToken, activeOrganization, activeOrganizationId, isLoading]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+function resolveActiveOrganizationId(user: User | null, current: string | null): string | null {
+  const activeOrganizations = (user?.organizations ?? []).filter((organization) => organization.is_active);
+  if (activeOrganizations.length === 0) return null;
+  if (current && activeOrganizations.some((organization) => organization.id === current)) return current;
+  return user?.default_organization_id && activeOrganizations.some((organization) => organization.id === user.default_organization_id)
+    ? user.default_organization_id
+    : activeOrganizations[0].id;
 }
 
 export function useAuth() {

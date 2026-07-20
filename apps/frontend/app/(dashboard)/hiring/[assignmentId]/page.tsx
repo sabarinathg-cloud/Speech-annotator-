@@ -79,21 +79,23 @@ function draftSignature(draft: CandidateSubmissionDraft) {
 function submissionReady(
   submission: HiringSubmission | null | undefined,
   fields: HiringMetadataField[],
-  draft?: { transcript: string; piiReviewed: boolean; metadata: Record<string, unknown> }
+  draft?: { transcript: string; piiReviewed: boolean; metadata: Record<string, unknown> },
+  options: { piiEnabled?: boolean } = {}
 ) {
+  const piiEnabled = options.piiEnabled !== false;
   const transcript = draft?.transcript ?? submission?.final_transcript ?? "";
   const piiReviewed = draft?.piiReviewed ?? submission?.pii_reviewed ?? false;
   const metadata = draft?.metadata ?? submission?.metadata_values ?? {};
   return {
     transcript: Boolean(transcript.trim()),
-    pii: piiReviewed,
+    pii: piiEnabled ? piiReviewed : true,
     metadata: metadataReady(fields, metadata),
   };
 }
 
 export default function CandidateHiringAssignmentPage() {
   const { assignmentId } = useParams<{ assignmentId: string }>();
-  const { accessToken, user } = useAuth();
+  const { accessToken, user, activeOrganization } = useAuth();
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof fetchCandidateHiringAssignment>> | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [draftTranscript, setDraftTranscript] = useState("");
@@ -119,6 +121,9 @@ export default function CandidateHiringAssignmentPage() {
   const queuedAutoSaveRef = useRef(false);
   const saveSubmissionRef = useRef<(manual?: boolean) => Promise<boolean>>(async () => false);
   const latestDraftSignatureRef = useRef("");
+  const metadataEnabled = activeOrganization?.settings.metadata_enabled !== false;
+  const piiEnabled = activeOrganization?.settings.pii_enabled !== false;
+  const hasSideRequirements = metadataEnabled || piiEnabled;
 
   useEffect(() => {
     if (!accessToken || !assignmentId) return;
@@ -139,7 +144,7 @@ export default function CandidateHiringAssignmentPage() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, assignmentId]);
+  }, [accessToken, activeOrganization?.id, assignmentId]);
 
   const selectedItem = useMemo(
     () => detail?.items.find((item) => item.id === selectedItemId) ?? null,
@@ -184,16 +189,18 @@ export default function CandidateHiringAssignmentPage() {
     return currentIndex >= 0 ? queue[currentIndex + 1] ?? null : null;
   }, [detail, filteredItems, selectedItemId]);
   function readinessForSubmission(submission: HiringSubmission) {
+    const metadataFields = metadataEnabled ? detail?.assessment.metadata_schema ?? [] : [];
     return submissionReady(
       submission,
-      detail?.assessment.metadata_schema ?? [],
+      metadataFields,
       submission.id === selectedSubmission?.id
         ? {
             transcript: draftTranscript,
             piiReviewed,
             metadata: draftMetadata,
           }
-        : undefined
+        : undefined,
+      { piiEnabled }
     );
   }
 
@@ -209,11 +216,17 @@ export default function CandidateHiringAssignmentPage() {
         return readiness.transcript && readiness.pii && readiness.metadata;
       })
   );
-  const currentReadiness = submissionReady(selectedSubmission, detail?.assessment.metadata_schema ?? [], {
-    transcript: draftTranscript,
-    piiReviewed,
-    metadata: draftMetadata,
-  });
+  const activeMetadataSchema = metadataEnabled ? detail?.assessment.metadata_schema ?? [] : [];
+  const currentReadiness = submissionReady(
+    selectedSubmission,
+    activeMetadataSchema,
+    {
+      transcript: draftTranscript,
+      piiReviewed,
+      metadata: draftMetadata,
+    },
+    { piiEnabled }
+  );
   const candidateInstructions = detail ? detail.assessment.instructions.trim() || defaultHiringInstructions : "";
   const reviewedPIIEntries = useMemo(() => cleanPIIEntries(draftPIIEntries), [draftPIIEntries]);
   const piiEntryCount = reviewedPIIEntries.length;
@@ -230,7 +243,9 @@ export default function CandidateHiringAssignmentPage() {
     const submission = submissionsByItemId.get(item.id);
     return {
       item,
-      readiness: submission ? readinessForSubmission(submission) : submissionReady(submission, detail.assessment.metadata_schema),
+      readiness: submission
+        ? readinessForSubmission(submission)
+        : submissionReady(submission, activeMetadataSchema, undefined, { piiEnabled }),
     };
   }) ?? [];
 
@@ -356,10 +371,20 @@ export default function CandidateHiringAssignmentPage() {
     if (manual) setBusy(true);
     setSaveState("saving");
     try {
-      const updated = await patchCandidateHiringSubmission(accessToken, selectedSubmission.id, {
+      const payload: Parameters<typeof patchCandidateHiringSubmission>[2] = {
         version: selectedSubmission.version,
-        ...draftSnapshot,
-      });
+        final_transcript: draftSnapshot.final_transcript,
+        notes: draftSnapshot.notes,
+      };
+      if (piiEnabled) {
+        payload.pii_text = draftSnapshot.pii_text;
+        payload.pii_entries = draftSnapshot.pii_entries;
+        payload.pii_reviewed = draftSnapshot.pii_reviewed;
+      }
+      if (metadataEnabled) {
+        payload.metadata_values = draftSnapshot.metadata_values;
+      }
+      const updated = await patchCandidateHiringSubmission(accessToken, selectedSubmission.id, payload);
       const nextSubmission = updated.submissions.find((submission) => submission.id === selectedSubmission.id);
       const hasNewerDraft = latestDraftSignatureRef.current !== savedSignature;
       setDetail(updated);
@@ -550,7 +575,7 @@ export default function CandidateHiringAssignmentPage() {
           <div className="mt-3 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
             {visibleQueueItems.map((item) => {
               const submission = submissionsByItemId.get(item.id);
-              const checklist = submissionReady(submission, detail.assessment.metadata_schema);
+              const checklist = submissionReady(submission, activeMetadataSchema, undefined, { piiEnabled });
               const ready = checklist.transcript && checklist.pii && checklist.metadata;
               return (
                 <button
@@ -568,8 +593,8 @@ export default function CandidateHiringAssignmentPage() {
                     </span>
                     <span className="flex gap-1">
                       <StatusDot ready={checklist.transcript} label="Transcript" />
-                      <StatusDot ready={checklist.pii} label="PII" />
-                      <StatusDot ready={checklist.metadata} label="Metadata" />
+                      {piiEnabled ? <StatusDot ready={checklist.pii} label="PII" /> : null}
+                      {metadataEnabled ? <StatusDot ready={checklist.metadata} label="Metadata" /> : null}
                     </span>
                   </span>
                 </button>
@@ -597,8 +622,8 @@ export default function CandidateHiringAssignmentPage() {
               </div>
               <div className="mb-2 grid gap-2 text-xs text-[#4b5563] sm:grid-cols-3">
                 <ChecklistPill label="Transcript" ready={currentReadiness.transcript} />
-                <ChecklistPill label="PII reviewed" ready={currentReadiness.pii} />
-                <ChecklistPill label="Metadata" ready={currentReadiness.metadata} />
+                {piiEnabled ? <ChecklistPill label="PII reviewed" ready={currentReadiness.pii} /> : null}
+                {metadataEnabled ? <ChecklistPill label="Metadata" ready={currentReadiness.metadata} /> : null}
               </div>
               {candidateBlockedMessage ? (
                 <div className="rounded-xl border border-[#f0c8c8] bg-[#fff8f8] px-3 py-4 text-sm text-[#8a3434]">{candidateBlockedMessage}</div>
@@ -609,7 +634,7 @@ export default function CandidateHiringAssignmentPage() {
               )}
             </div>
 
-            <div className="grid grid-cols-1 gap-3 2xl:grid-cols-[minmax(0,1.25fr)_390px]">
+            <div className={`grid grid-cols-1 gap-3 ${hasSideRequirements ? "2xl:grid-cols-[minmax(0,1.25fr)_390px]" : ""}`}>
               <div className="space-y-3">
                 <div className="oa-card p-3">
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -651,7 +676,9 @@ export default function CandidateHiringAssignmentPage() {
                 </div>
               </div>
 
+              {hasSideRequirements ? (
               <div className="space-y-3">
+                {piiEnabled ? (
                 <div className="oa-card p-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
@@ -781,7 +808,9 @@ export default function CandidateHiringAssignmentPage() {
                     placeholder="Optional: write None or add extra PII notes."
                   />
                 </div>
+                ) : null}
 
+                {metadataEnabled ? (
                 <div className="oa-card p-3">
                   <h3 className="oa-title text-base font-semibold">Metadata</h3>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
@@ -825,7 +854,9 @@ export default function CandidateHiringAssignmentPage() {
                     )}
                   </div>
                 </div>
+                ) : null}
               </div>
+              ) : null}
             </div>
 
             <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#e4dcf0] bg-white/95 px-3 py-2 shadow-[0_-16px_32px_-28px_rgba(18,13,40,0.6)] backdrop-blur">
@@ -880,8 +911,8 @@ export default function CandidateHiringAssignmentPage() {
                   <p className="font-semibold text-[#1f1b3f]">{item.original_filename}</p>
                   <div className="mt-2 grid gap-2 text-xs sm:grid-cols-3">
                     <ChecklistPill label="Transcript" ready={readiness.transcript} />
-                    <ChecklistPill label="PII reviewed" ready={readiness.pii} />
-                    <ChecklistPill label="Metadata" ready={readiness.metadata} />
+                    {piiEnabled ? <ChecklistPill label="PII reviewed" ready={readiness.pii} /> : null}
+                    {metadataEnabled ? <ChecklistPill label="Metadata" ready={readiness.metadata} /> : null}
                   </div>
                 </div>
               ))}

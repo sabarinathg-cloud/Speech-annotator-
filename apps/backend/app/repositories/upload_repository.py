@@ -14,12 +14,14 @@ class UploadRepository:
     def create_upload_file(
         self,
         *,
+        organization_id: str,
         original_filename: str,
         stored_path: str,
         content_type: str | None,
         uploaded_by_id: str,
     ) -> UploadFile:
         upload_file = UploadFile(
+            organization_id=organization_id,
             original_filename=original_filename,
             stored_path=stored_path,
             content_type=content_type,
@@ -29,18 +31,20 @@ class UploadRepository:
         self.db.flush()
         return upload_file
 
-    def create_upload_job(self, *, upload_file_id: str, created_by_id: str) -> UploadJob:
-        job = UploadJob(upload_file_id=upload_file_id, created_by_id=created_by_id)
+    def create_upload_job(self, *, organization_id: str, upload_file_id: str, created_by_id: str) -> UploadJob:
+        job = UploadJob(organization_id=organization_id, upload_file_id=upload_file_id, created_by_id=created_by_id)
         self.db.add(job)
         self.db.flush()
         return job
 
-    def get_upload_job(self, upload_job_id: str) -> UploadJob | None:
+    def get_upload_job(self, upload_job_id: str, *, organization_id: str | None = None) -> UploadJob | None:
         stmt = (
             select(UploadJob)
             .options(joinedload(UploadJob.upload_file))
             .where(UploadJob.id == upload_job_id)
         )
+        if organization_id:
+            stmt = stmt.where(UploadJob.organization_id == organization_id)
         return self.db.execute(stmt).scalar_one_or_none()
 
     def update_upload_job(

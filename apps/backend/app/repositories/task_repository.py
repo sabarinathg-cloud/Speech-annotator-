@@ -72,6 +72,7 @@ class TaskRepository:
     def create_task(
         self,
         *,
+        organization_id: str,
         upload_job_id: str,
         external_id: str,
         file_location: str,
@@ -88,6 +89,7 @@ class TaskRepository:
         due_date: date | None = None,
     ) -> AnnotationTask:
         task = AnnotationTask(
+            organization_id=organization_id,
             upload_job_id=upload_job_id,
             external_id=external_id,
             file_location=file_location,
@@ -121,6 +123,7 @@ class TaskRepository:
         original_row["parallel_assignment_source_external_id"] = source_task.external_id
 
         task = AnnotationTask(
+            organization_id=source_task.organization_id,
             upload_job_id=source_task.upload_job_id,
             external_id=external_id,
             file_location=source_task.file_location,
@@ -164,6 +167,7 @@ class TaskRepository:
         file_location: str,
         assignee_id: str,
         exclude_task_id: str,
+        organization_id: str | None = None,
     ) -> AnnotationTask | None:
         stmt = (
             select(AnnotationTask)
@@ -178,15 +182,19 @@ class TaskRepository:
             .where(AnnotationTask.id != exclude_task_id)
             .limit(1)
         )
+        if organization_id:
+            stmt = stmt.where(AnnotationTask.organization_id == organization_id)
         return self.db.execute(stmt).unique().scalar_one_or_none()
 
-    def external_id_exists(self, *, upload_job_id: str, external_id: str) -> bool:
+    def external_id_exists(self, *, upload_job_id: str, external_id: str, organization_id: str | None = None) -> bool:
         stmt = (
             select(AnnotationTask.id)
             .where(AnnotationTask.upload_job_id == upload_job_id)
             .where(AnnotationTask.external_id == external_id)
             .limit(1)
         )
+        if organization_id:
+            stmt = stmt.where(AnnotationTask.organization_id == organization_id)
         return self.db.execute(stmt).scalar_one_or_none() is not None
 
     def add_transcript_variants(
@@ -216,6 +224,7 @@ class TaskRepository:
         language: str | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
+        organization_id: str | None = None,
         page: int,
         page_size: int,
     ) -> tuple[list[AnnotationTask], int]:
@@ -226,6 +235,8 @@ class TaskRepository:
         count_stmt = select(func.count(AnnotationTask.id))
 
         filters = []
+        if organization_id:
+            filters.append(AnnotationTask.organization_id == organization_id)
         if status:
             filters.append(AnnotationTask.status == status)
         if search:
@@ -260,14 +271,16 @@ class TaskRepository:
         total = self.db.execute(count_stmt).scalar_one()
         return items, int(total)
 
-    def get_status_counts(self, *, assignee_id: str | None = None) -> dict[str, int]:
+    def get_status_counts(self, *, assignee_id: str | None = None, organization_id: str | None = None) -> dict[str, int]:
         stmt = select(AnnotationTask.status, func.count(AnnotationTask.id)).group_by(AnnotationTask.status)
+        if organization_id:
+            stmt = stmt.where(AnnotationTask.organization_id == organization_id)
         if assignee_id:
             stmt = stmt.where(AnnotationTask.assignee_id == assignee_id)
         rows = self.db.execute(stmt).all()
         return {status.value: count for status, count in rows}
 
-    def get_task(self, task_id: str) -> AnnotationTask | None:
+    def get_task(self, task_id: str, *, organization_id: str | None = None) -> AnnotationTask | None:
         stmt = (
             select(AnnotationTask)
             .options(
@@ -277,6 +290,8 @@ class TaskRepository:
             )
             .where(AnnotationTask.id == task_id)
         )
+        if organization_id:
+            stmt = stmt.where(AnnotationTask.organization_id == organization_id)
         return self.db.execute(stmt).unique().scalar_one_or_none()
 
     def get_prev_next_task_ids(
@@ -284,9 +299,13 @@ class TaskRepository:
         task: AnnotationTask,
         *,
         assignee_id: str | None = None,
+        organization_id: str | None = None,
     ) -> tuple[str | None, str | None]:
         prev_filters = [AnnotationTask.created_at < task.created_at]
         next_filters = [AnnotationTask.created_at > task.created_at]
+        if organization_id:
+            prev_filters.append(AnnotationTask.organization_id == organization_id)
+            next_filters.append(AnnotationTask.organization_id == organization_id)
         if assignee_id:
             prev_filters.append(AnnotationTask.assignee_id == assignee_id)
             next_filters.append(AnnotationTask.assignee_id == assignee_id)
@@ -306,7 +325,7 @@ class TaskRepository:
         next_id = self.db.execute(next_stmt).scalar_one_or_none()
         return prev_id, next_id
 
-    def get_next_unfinished_task(self, *, assignee_id: str | None = None) -> str | None:
+    def get_next_unfinished_task(self, *, assignee_id: str | None = None, organization_id: str | None = None) -> str | None:
         stmt = (
             select(AnnotationTask.id)
             .where(AnnotationTask.status != TaskStatusEnum.APPROVED)
@@ -315,9 +334,11 @@ class TaskRepository:
         )
         if assignee_id:
             stmt = stmt.where(AnnotationTask.assignee_id == assignee_id)
+        if organization_id:
+            stmt = stmt.where(AnnotationTask.organization_id == organization_id)
         return self.db.execute(stmt).scalar_one_or_none()
 
-    def get_next_unassigned_task(self) -> AnnotationTask | None:
+    def get_next_unassigned_task(self, *, organization_id: str | None = None) -> AnnotationTask | None:
         stmt = (
             select(AnnotationTask)
             .options(
@@ -330,6 +351,8 @@ class TaskRepository:
             .order_by(AnnotationTask.updated_at.asc())
             .limit(1)
         )
+        if organization_id:
+            stmt = stmt.where(AnnotationTask.organization_id == organization_id)
         return self.db.execute(stmt).unique().scalar_one_or_none()
 
     def list_activity(self, task_id: str) -> list[dict[str, Any]]:

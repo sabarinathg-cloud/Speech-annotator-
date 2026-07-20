@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
-from app.routers import auth, exports, health, hiring, jobs, media, metrics, pii_labels, security, tasks, uploads, users
+from app.routers import auth, exports, health, hiring, jobs, media, metrics, organizations, pii_labels, security, tasks, uploads, users
 from app.services.errors import ServiceError
 from app.services.pii_detection_service import start_pii_model_preload
 
@@ -47,6 +47,7 @@ app.include_router(exports.router, prefix=settings.api_v1_prefix)
 app.include_router(jobs.router, prefix=settings.api_v1_prefix)
 app.include_router(media.router, prefix=settings.api_v1_prefix)
 app.include_router(users.router, prefix=settings.api_v1_prefix)
+app.include_router(organizations.router, prefix=settings.api_v1_prefix)
 app.include_router(pii_labels.router, prefix=settings.api_v1_prefix)
 app.include_router(metrics.router, prefix=settings.api_v1_prefix)
 app.include_router(security.router, prefix=settings.api_v1_prefix)

@@ -24,6 +24,7 @@ class SecurityAuditEventResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    organization_id: str | None = None
     actor_user_id: str | None = None
     actor_email: str | None = None
     actor_role: str | None = None

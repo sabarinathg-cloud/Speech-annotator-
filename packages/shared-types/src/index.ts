@@ -12,6 +12,40 @@ export type TaskStatus =
   | "Approved"
   | "Rejected";
 
+export interface OrganizationSettings {
+  metadata_enabled: boolean;
+  pii_enabled: boolean;
+  transcript_redaction_enabled: boolean;
+  audio_masking_enabled: boolean;
+  hiring_enabled: boolean;
+}
+
+export interface Organization extends OrganizationSettings {
+  id: string;
+  name: string;
+  slug: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserOrganizationAccess {
+  id: string;
+  name: string;
+  slug: string;
+  is_active: boolean;
+  settings: OrganizationSettings;
+}
+
+export interface OrganizationMembership {
+  user_id: string;
+  email: string;
+  full_name: string;
+  role: Role;
+  is_active: boolean;
+  membership_active: boolean;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -20,6 +54,8 @@ export interface User {
   confidentiality_acknowledged_at?: string | null;
   confidentiality_acknowledged_version?: string | null;
   confidentiality_acknowledged_for_session?: boolean;
+  organizations?: UserOrganizationAccess[];
+  default_organization_id?: string | null;
 }
 
 export type ClientSecurityAction =
@@ -83,6 +119,7 @@ export type AudioMaskMode = "silence" | "beep";
 
 export interface PIILabel {
   id: string;
+  organization_id?: string;
   key: string;
   display_name: string;
   color: string;
@@ -112,6 +149,8 @@ export interface PIILabelUpdateRequest {
 
 export interface TaskDetail {
   id: string;
+  organization_id?: string;
+  organization_name?: string | null;
   external_id: string;
   file_location: string;
   final_transcript: string | null;
@@ -152,6 +191,8 @@ export interface TaskDetail {
 
 export interface TaskListItem {
   id: string;
+  organization_id?: string;
+  organization_name?: string | null;
   external_id: string;
   file_location: string;
   status: TaskStatus;
@@ -190,12 +231,14 @@ export interface AdminUser {
   completed_task_count: number;
   approved_task_count: number;
   assignment_load: AssignmentLoad;
+  organizations?: UserOrganizationAccess[];
   created_at: string;
   updated_at: string;
 }
 
 export interface SecurityAuditEvent {
   id: string;
+  organization_id?: string | null;
   actor_user_id: string | null;
   actor_email: string | null;
   actor_role: string | null;
@@ -249,6 +292,7 @@ export interface ValidationGateResult {
 
 export interface UploadValidationResult {
   upload_job_id: string;
+  organization_id?: string;
   status: string;
   valid_rows: number;
   invalid_rows: number;
@@ -262,6 +306,7 @@ export interface UploadValidationResult {
 
 export interface JobStatus {
   id: string;
+  organization_id?: string | null;
   job_id: string;
   job_type: string;
   status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | string;
@@ -530,6 +575,8 @@ export interface HiringPIIEntry {
 
 export interface HiringAssessmentSummary {
   id: string;
+  organization_id?: string;
+  organization_name?: string | null;
   title: string;
   instructions: string;
   status: HiringAssessmentStatus;
@@ -576,6 +623,8 @@ export interface HiringAssessmentDeleteResponse {
 
 export interface HiringAssignmentSummary {
   id: string;
+  organization_id?: string;
+  organization_name?: string | null;
   assessment_id: string;
   assessment_title: string;
   candidate_id: string;
@@ -746,4 +795,12 @@ export interface HiringAudioBucket {
 export interface HiringAudioBucketListResponse {
   root_path: string;
   buckets: HiringAudioBucket[];
+}
+
+export interface OrganizationListResponse {
+  items: Organization[];
+}
+
+export interface OrganizationMemberListResponse {
+  items: OrganizationMembership[];
 }

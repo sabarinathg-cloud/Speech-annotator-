@@ -32,11 +32,18 @@ from app.models.task import enum_values
 class HiringAssessment(Base, TimestampMixin):
     __tablename__ = "hiring_assessments"
     __table_args__ = (
+        Index("ix_hiring_assessments_organization_id", "organization_id"),
         Index("ix_hiring_assessments_status", "status"),
         Index("ix_hiring_assessments_created_by_id", "created_by_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        default="00000000-0000-0000-0000-000000000001",
+        nullable=False,
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     instructions: Mapped[str] = mapped_column(Text, default="", nullable=False)
     status: Mapped[HiringAssessmentStatusEnum] = mapped_column(
@@ -59,6 +66,7 @@ class HiringAssessment(Base, TimestampMixin):
         String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
 
+    organization = relationship("Organization")
     created_by = relationship("User", foreign_keys=[created_by_id])
     items = relationship("HiringAssessmentItem", back_populates="assessment", cascade="all, delete-orphan")
     assignments = relationship("HiringAssignment", back_populates="assessment", cascade="all, delete-orphan")

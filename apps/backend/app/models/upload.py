@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -10,8 +10,15 @@ from app.models.enums import UploadJobStatusEnum
 
 class UploadFile(Base, TimestampMixin):
     __tablename__ = "upload_files"
+    __table_args__ = (Index("ix_upload_files_organization_id", "organization_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        default="00000000-0000-0000-0000-000000000001",
+        nullable=False,
+    )
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
     stored_path: Mapped[str] = mapped_column(String(1000), nullable=False)
     content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -19,13 +26,21 @@ class UploadFile(Base, TimestampMixin):
         String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
 
+    organization = relationship("Organization")
     jobs = relationship("UploadJob", back_populates="upload_file")
 
 
 class UploadJob(Base, TimestampMixin):
     __tablename__ = "upload_jobs"
+    __table_args__ = (Index("ix_upload_jobs_organization_id", "organization_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        default="00000000-0000-0000-0000-000000000001",
+        nullable=False,
+    )
     upload_file_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("upload_files.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -42,6 +57,7 @@ class UploadJob(Base, TimestampMixin):
     validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    organization = relationship("Organization")
     upload_file = relationship("UploadFile", back_populates="jobs")
     errors = relationship("UploadJobError", back_populates="upload_job", cascade="all, delete-orphan")
     tasks = relationship("AnnotationTask", back_populates="upload_job")

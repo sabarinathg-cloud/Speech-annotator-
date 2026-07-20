@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from datetime import datetime, timezone
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
@@ -9,10 +9,13 @@ from app.core.database import get_db
 from app.core.device_policy import require_laptop_or_desktop_device
 from app.core.security import decode_access_token
 from app.models.enums import RoleEnum
+from app.models.organization import Organization
 from app.models.user import User
+from app.services.organization_service import OrganizationService
 from app.services.auth_service import SESSION_REPLACED_MESSAGE
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+ORGANIZATION_HEADER = "X-Organization-ID"
 
 
 def get_db_session() -> Generator[Session, None, None]:
@@ -74,3 +77,36 @@ def require_roles(*roles: RoleEnum):
         return current_user
 
     return role_dependency
+
+
+def get_current_organization(
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_confidentiality_ack),
+    organization_id: str | None = Header(default=None, alias=ORGANIZATION_HEADER),
+) -> Organization:
+    service = OrganizationService(db)
+    if organization_id:
+        organization = service.get_organization_or_404(organization_id)
+        if not organization.is_active:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Organization is inactive")
+        if not service.user_has_access(current_user, organization.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to organization")
+        return organization
+
+    organizations = service.organizations_for_user(current_user)
+    if len(organizations) == 1:
+        return organizations[0]
+    if current_user.role == RoleEnum.ADMIN and organizations:
+        default = next((item for item in organizations if item.slug == "default"), None)
+        return default or organizations[0]
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{ORGANIZATION_HEADER} header is required")
+
+
+def require_org_feature(feature_name: str):
+    def feature_dependency(organization: Organization = Depends(get_current_organization)) -> Organization:
+        if not bool(getattr(organization, feature_name, False)):
+            label = feature_name.replace("_enabled", "").replace("_", " ")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"{label.title()} is disabled for this organization")
+        return organization
+
+    return feature_dependency

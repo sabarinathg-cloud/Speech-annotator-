@@ -10,12 +10,16 @@ from app.models.base import Base, TimestampMixin
 class BackgroundJob(Base, TimestampMixin):
     __tablename__ = "background_jobs"
     __table_args__ = (
+        Index("ix_background_jobs_organization_id", "organization_id"),
         Index("ix_background_jobs_status", "status"),
         Index("ix_background_jobs_created_by_id", "created_by_id"),
         Index("ix_background_jobs_job_type", "job_type"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True
+    )
     job_type: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="QUEUED", nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)

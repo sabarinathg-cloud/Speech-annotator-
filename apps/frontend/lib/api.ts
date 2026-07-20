@@ -25,6 +25,10 @@ import type {
   HiringRubricField,
   HiringSubmissionValidationStatus,
   JobStatus,
+  Organization,
+  OrganizationListResponse,
+  OrganizationMemberListResponse,
+  OrganizationSettings,
   PIIAnnotation,
   PIILabel,
   PIILabelCreateRequest,
@@ -44,7 +48,7 @@ import type {
 } from "@outcomes/shared-types";
 
 import { resolveApiBaseUrl } from "@/lib/api-config";
-import { clearSession, readSession, writeSession } from "@/lib/session";
+import { clearSession, readActiveOrganizationId, readSession, writeSession } from "@/lib/session";
 
 function apiUrl(path: string): string {
   return `${resolveApiBaseUrl()}${path}`;
@@ -88,6 +92,10 @@ async function performRequest(
   }
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
+    const organizationId = activeOrganizationHeaderValue();
+    if (organizationId && !headers.has("X-Organization-ID")) {
+      headers.set("X-Organization-ID", organizationId);
+    }
   }
   const response = await fetch(apiUrl(path), { ...init, headers });
   const text = await response.text();
@@ -110,11 +118,12 @@ async function requestBlob(
   token: string,
   allowRefresh = true
 ): Promise<{ blob: Blob; filename: string | null }> {
-  const response = await fetch(apiUrl(path), {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  const organizationId = activeOrganizationHeaderValue();
+  if (organizationId) {
+    headers["X-Organization-ID"] = organizationId;
+  }
+  const response = await fetch(apiUrl(path), { headers });
   if (!response.ok) {
     if (response.status === 401 && allowRefresh) {
       const refreshed = await refreshStoredSession();
@@ -143,6 +152,17 @@ function filenameFromContentDisposition(value: string | null): string | null {
   if (!value) return null;
   const filenameMatch = value.match(/filename="?([^";]+)"?/i);
   return filenameMatch?.[1] ?? null;
+}
+
+function activeOrganizationHeaderValue(): string | null {
+  const stored = readActiveOrganizationId();
+  if (stored) return stored;
+  const session = readSession();
+  const activeOrganizations = (session.user?.organizations ?? []).filter((organization) => organization.is_active);
+  if (session.user?.default_organization_id && activeOrganizations.some((organization) => organization.id === session.user?.default_organization_id)) {
+    return session.user.default_organization_id;
+  }
+  return activeOrganizations[0]?.id ?? null;
 }
 
 async function refreshStoredSession(): Promise<TokenResponse | null> {
@@ -524,14 +544,70 @@ export async function fetchUsers(
     search?: string | null;
     role?: Role | "all" | null;
     status?: UserStatusFilter | null;
+    scope?: "organization" | "all";
   } = {}
 ): Promise<{ items: AdminUser[] }> {
   const query = new URLSearchParams();
   if (params.search) query.set("search", params.search);
   if (params.role && params.role !== "all") query.set("role", params.role);
   if (params.status && params.status !== "all") query.set("status", params.status);
+  if (params.scope) query.set("scope", params.scope);
   const suffix = query.toString();
   return request<{ items: AdminUser[] }>(`/users${suffix ? `?${suffix}` : ""}`, { method: "GET" }, token);
+}
+
+export async function fetchOrganizations(token: string): Promise<OrganizationListResponse> {
+  return request<OrganizationListResponse>("/organizations", { method: "GET" }, token);
+}
+
+export async function createOrganization(
+  token: string,
+  payload: Partial<OrganizationSettings> & { name: string; slug?: string | null; is_active?: boolean }
+): Promise<Organization> {
+  return request<Organization>("/organizations", { method: "POST", body: JSON.stringify(payload) }, token);
+}
+
+export async function updateOrganization(
+  token: string,
+  organizationId: string,
+  payload: Partial<OrganizationSettings> & { name?: string; slug?: string | null; is_active?: boolean }
+): Promise<Organization> {
+  return request<Organization>(
+    `/organizations/${organizationId}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function fetchOrganizationMembers(
+  token: string,
+  organizationId: string
+): Promise<OrganizationMemberListResponse> {
+  return request<OrganizationMemberListResponse>(`/organizations/${organizationId}/members`, { method: "GET" }, token);
+}
+
+export async function addOrganizationMember(
+  token: string,
+  organizationId: string,
+  userId: string
+): Promise<OrganizationMemberListResponse> {
+  return request<OrganizationMemberListResponse>(
+    `/organizations/${organizationId}/members`,
+    { method: "POST", body: JSON.stringify({ user_id: userId }) },
+    token
+  );
+}
+
+export async function removeOrganizationMember(
+  token: string,
+  organizationId: string,
+  userId: string
+): Promise<OrganizationMemberListResponse> {
+  return request<OrganizationMemberListResponse>(
+    `/organizations/${organizationId}/members/${userId}`,
+    { method: "DELETE" },
+    token
+  );
 }
 
 export async function fetchPIILabels(token: string): Promise<{ items: PIILabel[] }> {
@@ -1006,6 +1082,7 @@ export async function createUser(
     role: Role;
     password: string;
     is_active?: boolean;
+    organization_ids?: string[];
   }
 ): Promise<AdminUser> {
   return request<AdminUser>("/users", { method: "POST", body: JSON.stringify(payload) }, token);
@@ -1019,6 +1096,7 @@ export async function updateUser(
     role?: Role;
     password?: string;
     is_active?: boolean;
+    organization_ids?: string[];
   }
 ): Promise<AdminUser> {
   return request<AdminUser>(`/users/${userId}`, { method: "PATCH", body: JSON.stringify(payload) }, token);
@@ -1108,8 +1186,13 @@ export function jobDownloadUrl(jobId: string): string {
 }
 
 export async function downloadJobOutput(token: string, jobId: string): Promise<Blob> {
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  const organizationId = activeOrganizationHeaderValue();
+  if (organizationId) {
+    headers["X-Organization-ID"] = organizationId;
+  }
   const response = await fetch(jobDownloadUrl(jobId), {
-    headers: { Authorization: `Bearer ${token}` },
+    headers,
   });
   if (!response.ok) {
     const text = await response.text();

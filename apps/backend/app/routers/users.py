@@ -3,8 +3,9 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session, require_roles
+from app.core.dependencies import get_current_organization, get_db_session, require_roles
 from app.models.enums import RoleEnum
+from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.user import (
     CreateUserRequest,
@@ -30,8 +31,10 @@ def list_users(
     search: str | None = Query(default=None, min_length=1, max_length=255),
     role: RoleEnum | None = Query(default=None),
     status: Literal["all", "active", "inactive"] = Query(default="all"),
+    scope: Literal["organization", "all"] = Query(default="organization"),
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = UserService(db)
     is_active = None
@@ -39,7 +42,13 @@ def list_users(
         is_active = True
     elif status == "inactive":
         is_active = False
-    return service.list_users(search=search, role=role, is_active=is_active)
+    return service.list_users(
+        search=search,
+        role=role,
+        is_active=is_active,
+        organization=organization,
+        include_all_organizations=scope == "all",
+    )
 
 
 @router.post("", response_model=UserAdminResponse)
@@ -47,6 +56,7 @@ def create_user(
     payload: CreateUserRequest,
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = UserService(db)
     try:
@@ -56,6 +66,8 @@ def create_user(
             password=payload.password,
             role=payload.role,
             is_active=payload.is_active,
+            organization_ids=payload.organization_ids,
+            default_organization_id=organization.id,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -77,6 +89,7 @@ def update_user(
             password=payload.password,
             role=payload.role,
             is_active=payload.is_active,
+            organization_ids=payload.organization_ids,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc

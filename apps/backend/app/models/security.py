@@ -11,6 +11,7 @@ from app.models.base import Base
 class SecurityAuditEvent(Base):
     __tablename__ = "security_audit_events"
     __table_args__ = (
+        Index("ix_security_audit_events_organization_id", "organization_id"),
         Index("ix_security_audit_events_actor_user_id", "actor_user_id"),
         Index("ix_security_audit_events_action", "action"),
         Index("ix_security_audit_events_risk_level", "risk_level"),
@@ -19,6 +20,11 @@ class SecurityAuditEvent(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     actor_user_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="SET NULL"),

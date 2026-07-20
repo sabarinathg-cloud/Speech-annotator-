@@ -36,6 +36,7 @@ def stream_audio(
             resource_type="audio",
             resource_id=payload.get("task_id"),
             task_id=payload.get("task_id"),
+            organization_id=payload.get("organization_id"),
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
             metadata={"masked": bool(payload.get("masked")), "range": bool(range_header)},

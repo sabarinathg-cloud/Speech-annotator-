@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session, require_roles
+from app.core.dependencies import get_current_organization, get_db_session, require_roles
 from app.models.enums import RoleEnum, TaskStatusEnum
+from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.job import ExportJobRequest, JobCreateResponse
 from app.services.export_service import ExportService
@@ -35,6 +36,7 @@ def export_tasks(
     task_ids: list[str] | None = Query(default=None),
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = ExportService(db)
     try:
@@ -47,6 +49,8 @@ def export_tasks(
             date_from=date_from,
             date_to=date_to,
             task_ids=task_ids,
+            organization_id=organization.id,
+            transcript_redaction_enabled=organization.transcript_redaction_enabled,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -57,6 +61,7 @@ def export_tasks(
         actor=current_user,
         resource_type="export",
         resource_id=job_id,
+        organization_id=organization.id,
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
         metadata={
@@ -86,15 +91,17 @@ def enqueue_export_job(
     request: Request,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
 ):
     service = JobService(db)
     try:
-        job = service.enqueue_export_job(payload, current_user)
+        job = service.enqueue_export_job(payload, current_user, organization)
         SecurityAuditService(db).log_event(
             action="ENQUEUE_EXPORT_JOB",
             actor=current_user,
             resource_type="export_job",
             resource_id=job.id,
+            organization_id=organization.id,
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
             metadata=payload.model_dump(mode="json"),

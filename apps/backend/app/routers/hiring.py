@@ -3,8 +3,9 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.dependencies import get_db_session, require_confidentiality_ack, require_roles
+from app.core.dependencies import get_db_session, require_org_feature, require_roles
 from app.models.enums import RoleEnum
+from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.hiring import (
     HiringAdminAssignmentReviewResponse,
@@ -54,8 +55,9 @@ def _http_error(exc: ServiceError) -> HTTPException:
 def list_assessments(
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
-    return HiringService(db).list_assessments()
+    return HiringService(db).list_assessments(organization_id=organization.id)
 
 
 @router.post("/assessments", response_model=HiringAssessmentDetailResponse)
@@ -63,6 +65,7 @@ def create_assessment(
     payload: HiringAssessmentCreateRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         return HiringService(db).create_assessment(
@@ -76,6 +79,7 @@ def create_assessment(
             pii_label_keys=payload.pii_label_keys,
             rubric_schema=payload.rubric_schema,
             actor=current_user,
+            organization=organization,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -86,9 +90,10 @@ def get_assessment(
     assessment_id: str,
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).get_assessment(assessment_id)
+        return HiringService(db).get_assessment(assessment_id, organization_id=organization.id)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -99,12 +104,14 @@ def update_assessment(
     payload: HiringAssessmentUpdateRequest,
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         return HiringService(db).update_assessment(
             assessment_id=assessment_id,
             payload=payload,
             provided_fields=set(payload.model_fields_set),
+            organization=organization,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -115,9 +122,14 @@ def delete_assessment(
     assessment_id: str,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).delete_assessment(assessment_id=assessment_id, actor=current_user)
+        return HiringService(db).delete_assessment(
+            assessment_id=assessment_id,
+            actor=current_user,
+            organization_id=organization.id,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -129,6 +141,7 @@ def update_item_reference(
     payload: HiringAssessmentItemReferenceUpdateRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         return HiringService(db).update_item_reference(
@@ -136,6 +149,7 @@ def update_item_reference(
             item_id=item_id,
             payload=payload,
             actor=current_user,
+            organization_id=organization.id,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -148,6 +162,7 @@ def enqueue_deepgram_reference_job(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         run_after_response = get_settings().jobs_inline
@@ -155,6 +170,7 @@ def enqueue_deepgram_reference_job(
             assessment_id=assessment_id,
             payload=payload,
             actor=current_user,
+            organization=organization,
             dispatch=not run_after_response,
         )
         if run_after_response:
@@ -170,9 +186,14 @@ def upload_assessment_audio(
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).import_uploaded_audio(assessment_id=assessment_id, files=files)
+        return HiringService(db).import_uploaded_audio(
+            assessment_id=assessment_id,
+            files=files,
+            organization_id=organization.id,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -183,12 +204,14 @@ def import_assessment_folder(
     payload: HiringFolderImportRequest,
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         return HiringService(db).import_folder(
             assessment_id=assessment_id,
             folder_path=payload.folder_path,
             recursive=payload.recursive,
+            organization_id=organization.id,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -199,6 +222,7 @@ def list_audio_buckets(
     payload: HiringAudioBucketListRequest,
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         return HiringService(db).list_audio_buckets(root_path=payload.root_path, recursive=payload.recursive)
@@ -212,12 +236,14 @@ def import_assignment_folder(
     payload: HiringFolderImportRequest,
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         return HiringService(db).import_assignment_folder(
             assignment_id=assignment_id,
             folder_path=payload.folder_path,
             recursive=payload.recursive,
+            organization_id=organization.id,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -229,9 +255,14 @@ def import_assessment_manifest(
     file: UploadFile = File(...),
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).import_manifest(assessment_id=assessment_id, file=file)
+        return HiringService(db).import_manifest(
+            assessment_id=assessment_id,
+            file=file,
+            organization_id=organization.id,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -242,12 +273,14 @@ def assign_candidates(
     payload: HiringAssignmentCreateRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         return HiringService(db).assign_candidates(
             assessment_id=assessment_id,
             candidate_ids=payload.candidate_ids,
             actor=current_user,
+            organization_id=organization.id,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -258,9 +291,10 @@ def list_assessment_assignments(
     assessment_id: str,
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).list_assessment_assignments(assessment_id)
+        return HiringService(db).list_assessment_assignments(assessment_id, organization_id=organization.id)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -270,9 +304,10 @@ def get_assessment_ranking(
     assessment_id: str,
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).assessment_ranking(assessment_id)
+        return HiringService(db).assessment_ranking(assessment_id, organization_id=organization.id)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -283,6 +318,7 @@ def create_assignment_invite(
     request: Request,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     public_base_url = request.headers.get("origin") or str(request.base_url).split("/api/", 1)[0].rstrip("/")
     try:
@@ -290,6 +326,7 @@ def create_assignment_invite(
             assignment_id=assignment_id,
             actor=current_user,
             public_base_url=public_base_url,
+            organization_id=organization.id,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -300,9 +337,10 @@ def get_assignment_review(
     assignment_id: str,
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).get_admin_assignment_review(assignment_id)
+        return HiringService(db).get_admin_assignment_review(assignment_id, organization_id=organization.id)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -314,11 +352,13 @@ def stream_admin_assignment_item(
     request: Request,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         path, filename = HiringService(db).admin_audio_path(
             assignment_id=assignment_id,
             item_id=item_id,
+            organization_id=organization.id,
         )
         SecurityAuditService(db).log_event(
             action="STREAM_HIRING_AUDIO_ADMIN",
@@ -328,6 +368,7 @@ def stream_admin_assignment_item(
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
             metadata={"assignment_id": assignment_id, "filename": filename},
+            organization_id=organization.id,
         )
         return FileResponse(
             path,
@@ -346,12 +387,14 @@ def update_assignment_access(
     payload: HiringAssignmentAccessUpdateRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         return HiringService(db).update_assignment_access(
             assignment_id=assignment_id,
             payload=payload,
             actor=current_user,
+            organization_id=organization.id,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -362,9 +405,14 @@ def clear_assignment_audio(
     assignment_id: str,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).clear_assignment_audio(assignment_id=assignment_id, actor=current_user)
+        return HiringService(db).clear_assignment_audio(
+            assignment_id=assignment_id,
+            actor=current_user,
+            organization_id=organization.id,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -374,9 +422,14 @@ def delete_assignment(
     assignment_id: str,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).delete_assignment(assignment_id=assignment_id, actor=current_user)
+        return HiringService(db).delete_assignment(
+            assignment_id=assignment_id,
+            actor=current_user,
+            organization_id=organization.id,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -386,9 +439,10 @@ def get_assignment_audit_events(
     assignment_id: str,
     db: Session = Depends(get_db_session),
     _: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).assignment_audit_events(assignment_id)
+        return HiringService(db).assignment_audit_events(assignment_id, organization_id=organization.id)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -399,9 +453,15 @@ def update_assignment_scorecard(
     payload: HiringScorecardUpdateRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).update_scorecard(assignment_id=assignment_id, payload=payload, actor=current_user)
+        return HiringService(db).update_scorecard(
+            assignment_id=assignment_id,
+            payload=payload,
+            actor=current_user,
+            organization_id=organization.id,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -412,12 +472,14 @@ def update_submission_validation(
     payload: HiringSubmissionValidationRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         return HiringService(db).update_submission_validation(
             submission_id=submission_id,
             payload=payload,
             actor=current_user,
+            organization_id=organization.id,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -427,8 +489,9 @@ def update_submission_validation(
 def list_candidate_assignments(
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.CANDIDATE)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
-    return HiringService(db).list_candidate_assignments(actor=current_user)
+    return HiringService(db).list_candidate_assignments(actor=current_user, organization_id=organization.id)
 
 
 @router.get("/candidate/assignments/{assignment_id}", response_model=HiringCandidateAssignmentDetailResponse)
@@ -436,9 +499,14 @@ def get_candidate_assignment(
     assignment_id: str,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.CANDIDATE)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).get_candidate_assignment(assignment_id=assignment_id, actor=current_user)
+        return HiringService(db).get_candidate_assignment(
+            assignment_id=assignment_id,
+            actor=current_user,
+            organization_id=organization.id,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -449,6 +517,7 @@ def update_candidate_submission(
     payload: HiringSubmissionUpdateRequest,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.CANDIDATE)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         return HiringService(db).update_submission(
@@ -456,6 +525,7 @@ def update_candidate_submission(
             payload=payload,
             provided_fields=set(payload.model_fields_set),
             actor=current_user,
+            organization_id=organization.id,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc
@@ -466,9 +536,14 @@ def submit_candidate_assignment(
     assignment_id: str,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.CANDIDATE)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        return HiringService(db).submit_assignment(assignment_id=assignment_id, actor=current_user)
+        return HiringService(db).submit_assignment(
+            assignment_id=assignment_id,
+            actor=current_user,
+            organization_id=organization.id,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -477,7 +552,10 @@ def submit_candidate_assignment(
 def detect_candidate_pii(
     payload: DetectPIIRequest,
     _: User = Depends(require_roles(RoleEnum.CANDIDATE)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
+    if not organization.pii_enabled:
+        raise HTTPException(status_code=403, detail="PII detection is disabled for this organization")
     return DetectPIIResponse(
         pii_annotations=detect_pii_ensemble(payload.transcript, include_ml=payload.include_ml)
     )
@@ -490,12 +568,14 @@ def stream_candidate_item(
     request: Request,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.CANDIDATE)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
         path, filename = HiringService(db).candidate_audio_path(
             assignment_id=assignment_id,
             item_id=item_id,
             actor=current_user,
+            organization_id=organization.id,
         )
         SecurityAuditService(db).log_event(
             action="STREAM_HIRING_AUDIO",
@@ -505,6 +585,7 @@ def stream_candidate_item(
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
             metadata={"assignment_id": assignment_id, "filename": filename},
+            organization_id=organization.id,
         )
         return FileResponse(
             path,
@@ -524,9 +605,14 @@ def download_candidate_item(
     _: Request,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.CANDIDATE)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        HiringService(db).reject_candidate_audio_download(assignment_id=assignment_id, actor=current_user)
+        HiringService(db).reject_candidate_audio_download(
+            assignment_id=assignment_id,
+            actor=current_user,
+            organization_id=organization.id,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -537,8 +623,13 @@ def download_candidate_zip(
     _: Request,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(require_roles(RoleEnum.CANDIDATE)),
+    organization: Organization = Depends(require_org_feature("hiring_enabled")),
 ):
     try:
-        HiringService(db).reject_candidate_audio_download(assignment_id=assignment_id, actor=current_user)
+        HiringService(db).reject_candidate_audio_download(
+            assignment_id=assignment_id,
+            actor=current_user,
+            organization_id=organization.id,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc

@@ -44,6 +44,8 @@ class ExportService:
         date_from: date | None = None,
         date_to: date | None = None,
         task_ids: list[str] | None = None,
+        organization_id: str | None = None,
+        transcript_redaction_enabled: bool = False,
     ) -> tuple[bytes, str]:
         stmt = select(AnnotationTask).options(
             joinedload(AnnotationTask.assignee),
@@ -51,6 +53,8 @@ class ExportService:
         )
 
         filters = []
+        if organization_id:
+            filters.append(AnnotationTask.organization_id == organization_id)
         if job_id:
             filters.append(AnnotationTask.upload_job_id == job_id)
         if status:
@@ -74,7 +78,10 @@ class ExportService:
         stmt = stmt.order_by(AnnotationTask.created_at.asc())
         tasks = list(self.db.execute(stmt).unique().scalars().all())
 
-        rows = [self._serialize_task(task) for task in tasks]
+        rows = [
+            self._serialize_task(task, transcript_redaction_enabled=transcript_redaction_enabled)
+            for task in tasks
+        ]
         dataframe = pd.DataFrame(rows, columns=None if rows else DEFAULT_EXPORT_COLUMNS)
 
         if export_format == "xlsx":
@@ -86,9 +93,11 @@ class ExportService:
         output = dataframe.to_csv(index=False).encode("utf-8")
         return output, "text/csv"
 
-    def _serialize_task(self, task: AnnotationTask) -> dict:
+    def _serialize_task(self, task: AnnotationTask, *, transcript_redaction_enabled: bool) -> dict:
         row = dict(task.original_row or {})
         row["final_transcript_corrected"] = task.final_transcript or ""
+        if transcript_redaction_enabled:
+            row["final_transcript_redacted"] = self._redacted_transcript(task)
         row["notes_corrected"] = task.notes or ""
         row["annotation_status"] = task.status.value
         row["corrected_speaker_gender"] = task.speaker_gender or ""
@@ -109,3 +118,30 @@ class ExportService:
         row["task_id"] = task.id
         row["external_id"] = task.external_id
         return row
+
+    def _redacted_transcript(self, task: AnnotationTask) -> str:
+        text = task.final_transcript or ""
+        if not text:
+            return ""
+        spans = sorted(
+            [
+                (int(item.get("start", 0)), int(item.get("end", 0)))
+                for item in (task.pii_annotations or [])
+                if isinstance(item, dict)
+            ],
+            key=lambda item: item[0],
+        )
+        if not spans:
+            return text
+        parts: list[str] = []
+        cursor = 0
+        for start, end in spans:
+            start = max(0, min(start, len(text)))
+            end = max(start, min(end, len(text)))
+            if start < cursor:
+                continue
+            parts.append(text[cursor:start])
+            parts.append("[REDACTED]")
+            cursor = end
+        parts.append(text[cursor:])
+        return "".join(parts)

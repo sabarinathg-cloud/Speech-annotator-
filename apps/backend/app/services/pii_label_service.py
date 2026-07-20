@@ -40,19 +40,22 @@ class PIILabelService:
     def __init__(self, db: Session):
         self.db = db
 
-    def list_active_labels(self) -> list[PIILabelResponse]:
-        self.ensure_default_labels()
+    def list_active_labels(self, *, organization_id: str) -> list[PIILabelResponse]:
+        self.ensure_default_labels(organization_id=organization_id)
         labels = self.db.execute(
             select(PIILabel)
+            .where(PIILabel.organization_id == organization_id)
             .where(PIILabel.is_active.is_(True))
             .order_by(PIILabel.sort_order.asc(), PIILabel.display_name.asc())
         ).scalars().all()
         return [PIILabelResponse.model_validate(label) for label in labels]
 
-    def list_admin_labels(self) -> list[PIILabelResponse]:
-        self.ensure_default_labels()
+    def list_admin_labels(self, *, organization_id: str) -> list[PIILabelResponse]:
+        self.ensure_default_labels(organization_id=organization_id)
         labels = self.db.execute(
-            select(PIILabel).order_by(PIILabel.sort_order.asc(), PIILabel.display_name.asc())
+            select(PIILabel)
+            .where(PIILabel.organization_id == organization_id)
+            .order_by(PIILabel.sort_order.asc(), PIILabel.display_name.asc())
         ).scalars().all()
         return [PIILabelResponse.model_validate(label) for label in labels]
 
@@ -65,19 +68,23 @@ class PIILabelService:
         description: str | None,
         is_active: bool,
         sort_order: int | None,
+        organization_id: str,
     ) -> PIILabelResponse:
-        self.ensure_default_labels()
-        existing = self.db.execute(select(PIILabel).where(PIILabel.key == key)).scalar_one_or_none()
+        self.ensure_default_labels(organization_id=organization_id)
+        existing = self.db.execute(
+            select(PIILabel).where(PIILabel.organization_id == organization_id).where(PIILabel.key == key)
+        ).scalar_one_or_none()
         if existing:
             raise ServiceError("PII label key already exists", status_code=409)
 
         label = PIILabel(
+            organization_id=organization_id,
             key=key,
             display_name=display_name.strip(),
             color=color.strip(),
             description=description.strip() if description else None,
             is_active=is_active,
-            sort_order=sort_order if sort_order is not None else self._next_sort_order(),
+            sort_order=sort_order if sort_order is not None else self._next_sort_order(organization_id=organization_id),
         )
         self.db.add(label)
         self.db.commit()
@@ -94,8 +101,9 @@ class PIILabelService:
         is_active: bool | None,
         sort_order: int | None,
         provided_fields: set[str],
+        organization_id: str,
     ) -> PIILabelResponse:
-        label = self._get_label_or_404(label_id)
+        label = self._get_label_or_404(label_id, organization_id=organization_id)
         if not provided_fields:
             raise ServiceError("No PII label fields provided for update", status_code=422)
 
@@ -115,14 +123,17 @@ class PIILabelService:
         self.db.refresh(label)
         return PIILabelResponse.model_validate(label)
 
-    def ensure_default_labels(self) -> None:
-        existing_keys = set(self.db.execute(select(PIILabel.key)).scalars().all())
+    def ensure_default_labels(self, *, organization_id: str) -> None:
+        existing_keys = set(
+            self.db.execute(select(PIILabel.key).where(PIILabel.organization_id == organization_id)).scalars().all()
+        )
         missing = [item for item in DEFAULT_PII_LABELS if item["key"] not in existing_keys]
         if not missing:
             return
         for item in missing:
             self.db.add(
                 PIILabel(
+                    organization_id=organization_id,
                     key=str(item["key"]),
                     display_name=str(item["display_name"]),
                     color=str(item["color"]),
@@ -132,12 +143,16 @@ class PIILabelService:
             )
         self.db.commit()
 
-    def _get_label_or_404(self, label_id: str) -> PIILabel:
+    def _get_label_or_404(self, label_id: str, *, organization_id: str) -> PIILabel:
         label = self.db.get(PIILabel, label_id)
         if not label:
             raise ServiceError("PII label not found", status_code=404)
+        if label.organization_id != organization_id:
+            raise ServiceError("PII label not found", status_code=404)
         return label
 
-    def _next_sort_order(self) -> int:
-        current = self.db.execute(select(func.max(PIILabel.sort_order))).scalar_one()
+    def _next_sort_order(self, *, organization_id: str) -> int:
+        current = self.db.execute(
+            select(func.max(PIILabel.sort_order)).where(PIILabel.organization_id == organization_id)
+        ).scalar_one()
         return int(current or 0) + 10

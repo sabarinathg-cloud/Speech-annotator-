@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from app.models.enums import RoleEnum, TaskStatusEnum
+from app.models.organization import Organization
 from app.models.task import AnnotationTask
 from app.models.user import User
 from app.repositories.task_repository import TaskRepository
@@ -40,6 +41,7 @@ from app.schemas.task import (
 )
 from app.services.audio_alignment_service import AudioAlignmentService, transcript_hash
 from app.services.errors import ServiceError
+from app.services.organization_service import OrganizationService
 from app.services.text_validation import find_invalid_annotation_text
 
 ALLOWED_STATUS_TRANSITIONS: dict[TaskStatusEnum, set[TaskStatusEnum]] = {
@@ -86,6 +88,7 @@ class TaskService:
         page: int,
         page_size: int,
         current_user: User,
+        organization: Organization,
     ) -> TaskListResponse:
         if current_user.role == RoleEnum.CANDIDATE:
             raise ServiceError("Candidates cannot access annotation tasks", status_code=403)
@@ -100,10 +103,11 @@ class TaskService:
             language=language,
             date_from=date_from,
             date_to=date_to,
+            organization_id=organization.id,
             page=page,
             page_size=page_size,
         )
-        counts = self.task_repo.get_status_counts(assignee_id=effective_assignee_id)
+        counts = self.task_repo.get_status_counts(assignee_id=effective_assignee_id, organization_id=organization.id)
         return TaskListResponse(
             items=[self._to_task_list_item(task, viewer=current_user) for task in items],
             page=page,
@@ -112,15 +116,15 @@ class TaskService:
             status_counts=counts,
         )
 
-    def get_task_detail(self, task_id: str, *, actor: User) -> TaskDetailResponse:
-        task = self._get_task_or_404(task_id, actor=actor)
+    def get_task_detail(self, task_id: str, *, actor: User, organization: Organization) -> TaskDetailResponse:
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         return self._to_task_detail(task, viewer=actor)
 
-    def get_next_task(self, *, actor: User) -> str | None:
+    def get_next_task(self, *, actor: User, organization: Organization) -> str | None:
         if actor.role == RoleEnum.CANDIDATE:
             raise ServiceError("Candidates cannot access annotation tasks", status_code=403)
         assignee_id = actor.id if actor.role != RoleEnum.ADMIN else None
-        return self.task_repo.get_next_unfinished_task(assignee_id=assignee_id)
+        return self.task_repo.get_next_unfinished_task(assignee_id=assignee_id, organization_id=organization.id)
 
     def save_combined_task(
         self,
@@ -129,11 +133,13 @@ class TaskService:
         payload: CombinedTaskUpdateRequest,
         provided_fields: set[str],
         actor: User,
+        organization: Organization,
     ) -> TaskPatchResponse:
-        task = self._get_task_or_404(task_id, actor=actor)
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         update_fields = provided_fields - {"version", "comment"}
         if not update_fields:
             raise ServiceError("No task fields provided for update", status_code=422)
+        self._guard_feature_updates(update_fields, organization)
         if "due_date" in update_fields and actor.role != RoleEnum.ADMIN:
             raise ServiceError("Only admins can update due dates", status_code=403)
         if "final_transcript" in update_fields:
@@ -236,8 +242,9 @@ class TaskService:
         version: int,
         final_transcript: str,
         actor: User,
+        organization: Organization,
     ) -> TaskPatchResponse:
-        task = self._get_task_or_404(task_id, actor=actor)
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         _raise_for_invalid_text(final_transcript, "transcript")
         self._ensure_version(task, version, ["final_transcript"], actor=actor)
         previous = {"final_transcript": task.final_transcript}
@@ -277,8 +284,11 @@ class TaskService:
         custom_metadata: dict[str, Any] | None,
         provided_fields: set[str] | None,
         actor: User,
+        organization: Organization,
     ) -> TaskPatchResponse:
-        task = self._get_task_or_404(task_id, actor=actor)
+        if not organization.metadata_enabled:
+            raise ServiceError("Metadata is disabled for this organization", status_code=403)
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         changed_fields = []
         previous_values: dict[str, Any] = {}
         new_values: dict[str, Any] = {}
@@ -337,8 +347,9 @@ class TaskService:
         version: int,
         notes: str | None,
         actor: User,
+        organization: Organization,
     ) -> TaskPatchResponse:
-        task = self._get_task_or_404(task_id, actor=actor)
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         _raise_for_invalid_text(notes, "notes")
         self._ensure_version(task, version, ["notes"], actor=actor)
         previous = {"notes": task.notes}
@@ -371,9 +382,10 @@ class TaskService:
         version: int,
         new_status: TaskStatusEnum,
         actor: User,
+        organization: Organization,
         comment: str | None = None,
     ) -> TaskPatchResponse:
-        task = self._get_task_or_404(task_id, actor=actor)
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         _raise_for_invalid_text(comment, "comment")
         self._ensure_version(task, version, ["status"], actor=actor)
         old_status = task.status
@@ -408,8 +420,11 @@ class TaskService:
         version: int,
         pii_annotations: list[PIIAnnotation],
         actor: User,
+        organization: Organization,
     ) -> TaskPatchResponse:
-        task = self._get_task_or_404(task_id, actor=actor)
+        if not organization.pii_enabled:
+            raise ServiceError("PII annotation is disabled for this organization", status_code=403)
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         self._ensure_version(task, version, ["pii_annotations"], actor=actor)
 
         normalized_annotations = self._normalize_pii_annotations(
@@ -451,11 +466,12 @@ class TaskService:
         version: int,
         assignee_id: str | None,
         actor: User,
+        organization: Organization,
     ) -> TaskPatchResponse:
-        task = self._get_task_or_404(task_id, actor=actor)
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         self._ensure_version(task, version, ["assignee_id"], actor=actor)
 
-        assignee = self._get_valid_task_assignee(assignee_id) if assignee_id else None
+        assignee = self._get_valid_task_assignee(assignee_id, organization_id=organization.id) if assignee_id else None
 
         if task.assignee_id == assignee_id:
             return TaskPatchResponse(task=self._to_task_detail(task, viewer=actor))
@@ -489,10 +505,11 @@ class TaskService:
         version: int,
         assignee_id: str,
         actor: User,
+        organization: Organization,
     ) -> TaskPatchResponse:
-        task = self._get_task_or_404(task_id, actor=actor)
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         self._ensure_version(task, version, ["assignee_id"], actor=actor)
-        assignee = self._get_valid_task_assignee(assignee_id)
+        assignee = self._get_valid_task_assignee(assignee_id, organization_id=organization.id)
         if task.assignee_id == assignee.id:
             raise ServiceError("This audio is already assigned to that user", status_code=409)
         existing = self.task_repo.get_existing_parallel_assignment(
@@ -500,6 +517,7 @@ class TaskService:
             file_location=task.file_location,
             assignee_id=assignee.id,
             exclude_task_id=task.id,
+            organization_id=organization.id,
         )
         if existing:
             raise ServiceError("This audio is already assigned to that user", status_code=409)
@@ -534,8 +552,9 @@ class TaskService:
         version: int,
         due_date: date | None,
         actor: User,
+        organization: Organization,
     ) -> TaskPatchResponse:
-        task = self._get_task_or_404(task_id, actor=actor)
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         self._ensure_version(task, version, ["due_date"], actor=actor)
         if task.due_date == due_date:
             return TaskPatchResponse(task=self._to_task_detail(task, viewer=actor))
@@ -554,8 +573,8 @@ class TaskService:
         self.db.commit()
         return TaskPatchResponse(task=self._to_task_detail(task, viewer=actor))
 
-    def claim_task(self, *, task_id: str, actor: User) -> TaskPatchResponse:
-        task = self._get_task_or_404(task_id)
+    def claim_task(self, *, task_id: str, actor: User, organization: Organization) -> TaskPatchResponse:
+        task = self._get_task_or_404(task_id, organization_id=organization.id)
         if task.assignee_id:
             raise ServiceError("Task is already assigned", status_code=409)
         task.assignee_id = actor.id
@@ -584,14 +603,14 @@ class TaskService:
         self.db.commit()
         return TaskPatchResponse(task=self._to_task_detail(task, viewer=actor))
 
-    def claim_next_task(self, *, actor: User) -> TaskPatchResponse | None:
-        task = self.task_repo.get_next_unassigned_task()
+    def claim_next_task(self, *, actor: User, organization: Organization) -> TaskPatchResponse | None:
+        task = self.task_repo.get_next_unassigned_task(organization_id=organization.id)
         if not task:
             return None
-        return self.claim_task(task_id=task.id, actor=actor)
+        return self.claim_task(task_id=task.id, actor=actor, organization=organization)
 
-    def start_task(self, *, task_id: str, actor: User) -> TaskPatchResponse:
-        task = self._get_task_or_404(task_id)
+    def start_task(self, *, task_id: str, actor: User, organization: Organization) -> TaskPatchResponse:
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         if task.status == TaskStatusEnum.APPROVED:
             raise ServiceError("Approved tasks cannot be started", status_code=409)
         if task.assignee_id != actor.id:
@@ -623,7 +642,9 @@ class TaskService:
         self.db.commit()
         return TaskPatchResponse(task=self._to_task_detail(task, viewer=actor))
 
-    def bulk_update_assignees(self, *, assignments: list[BulkAssigneeItem], actor: User) -> BulkAssigneeResponse:
+    def bulk_update_assignees(
+        self, *, assignments: list[BulkAssigneeItem], actor: User, organization: Organization
+    ) -> BulkAssigneeResponse:
         updated: list[BulkAssigneeUpdated] = []
         errors: list[BulkAssigneeError] = []
         for item in assignments:
@@ -633,6 +654,7 @@ class TaskService:
                     version=item.version,
                     assignee_id=item.assignee_id,
                     actor=actor,
+                    organization=organization,
                 )
                 updated.append(BulkAssigneeUpdated(task=response.task))
             except ServiceError as exc:
@@ -644,6 +666,7 @@ class TaskService:
         *,
         assignments: list[BulkAssignmentCopyItem],
         actor: User,
+        organization: Organization,
     ) -> BulkAssignmentCopyResponse:
         created: list[BulkAssigneeUpdated] = []
         errors: list[BulkAssigneeError] = []
@@ -654,13 +677,14 @@ class TaskService:
                     version=item.version,
                     assignee_id=item.assignee_id,
                     actor=actor,
+                    organization=organization,
                 )
                 created.append(BulkAssigneeUpdated(task=response.task))
             except ServiceError as exc:
                 errors.append(BulkAssigneeError(task_id=item.task_id, status_code=exc.status_code, message=exc.message))
         return BulkAssignmentCopyResponse(created=created, errors=errors)
 
-    def bulk_update_due_dates(self, *, updates: list[BulkDueDateItem], actor: User) -> BulkTaskResponse:
+    def bulk_update_due_dates(self, *, updates: list[BulkDueDateItem], actor: User, organization: Organization) -> BulkTaskResponse:
         updated: list[BulkTaskUpdated] = []
         errors: list[BulkTaskError] = []
         for item in updates:
@@ -670,6 +694,7 @@ class TaskService:
                     version=item.version,
                     due_date=item.due_date,
                     actor=actor,
+                    organization=organization,
                 )
                 updated.append(BulkTaskUpdated(task=response.task))
             except ServiceError as exc:
@@ -682,6 +707,7 @@ class TaskService:
         updates: list[BulkStatusItem],
         new_status: TaskStatusEnum,
         actor: User,
+        organization: Organization,
         comment: str | None = None,
     ) -> BulkTaskResponse:
         updated: list[BulkTaskUpdated] = []
@@ -693,6 +719,7 @@ class TaskService:
                     version=item.version,
                     new_status=new_status,
                     actor=actor,
+                    organization=organization,
                     comment=comment,
                 )
                 updated.append(BulkTaskUpdated(task=response.task))
@@ -700,17 +727,17 @@ class TaskService:
                 errors.append(BulkTaskError(task_id=item.task_id, status_code=exc.status_code, message=exc.message))
         return BulkTaskResponse(updated=updated, errors=errors)
 
-    def get_activity(self, task_id: str, *, actor: User) -> TaskActivityResponse:
-        self._get_task_or_404(task_id, actor=actor)
+    def get_activity(self, task_id: str, *, actor: User, organization: Organization) -> TaskActivityResponse:
+        self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         items = [TaskActivityItem(**item) for item in self.task_repo.list_activity(task_id)]
         return TaskActivityResponse(items=items)
 
-    def generate_audio_url(self, task_id: str, *, actor: User) -> tuple[str, int]:
+    def generate_audio_url(self, task_id: str, *, actor: User, organization: Organization) -> tuple[str, int]:
         from itsdangerous import URLSafeTimedSerializer
 
         from app.core.config import get_settings
 
-        task = self._get_task_or_404(task_id, actor=actor)
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         settings = get_settings()
         serializer = URLSafeTimedSerializer(settings.audio_signing_secret)
         token = serializer.dumps(
@@ -718,14 +745,17 @@ class TaskService:
                 "task_id": task.id,
                 "file_location": task.file_location,
                 "actor_user_id": actor.id,
+                "organization_id": organization.id,
                 "masked": False,
             }
         )
         url = f"{settings.api_v1_prefix}/media/audio/{token}"
         return url, settings.audio_signing_expire_seconds
 
-    def generate_alignment(self, task_id: str, *, actor: User, force: bool = False) -> TaskAudioAlignmentResponse:
-        task = self._get_task_or_404(task_id, actor=actor)
+    def generate_alignment(
+        self, task_id: str, *, actor: User, organization: Organization, force: bool = False
+    ) -> TaskAudioAlignmentResponse:
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         words = self.audio_alignment_service.align_task_audio(task, force=force)
         self.db.flush()
         self.db.commit()
@@ -742,6 +772,7 @@ class TaskService:
         task_id: str,
         *,
         actor: User,
+        organization: Organization,
         force: bool = False,
         mask_mode: AudioMaskMode = "silence",
         custom_intervals: list[AudioMaskInterval] | None = None,
@@ -750,7 +781,9 @@ class TaskService:
 
         from app.core.config import get_settings
 
-        task = self._get_task_or_404(task_id, actor=actor)
+        if not organization.audio_masking_enabled:
+            raise ServiceError("Audio masking is disabled for this organization", status_code=403)
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
         masked_audio_location, intervals = self.audio_alignment_service.build_pii_masked_audio(
             task,
             force=force,
@@ -782,6 +815,7 @@ class TaskService:
                 "task_id": task.id,
                 "file_location": masked_audio_location,
                 "actor_user_id": actor.id,
+                "organization_id": organization.id,
                 "masked": True,
             }
         )
@@ -802,8 +836,10 @@ class TaskService:
             generated_at=task.masked_audio_updated_at or datetime.now(timezone.utc),
         )
 
-    def _get_task_or_404(self, task_id: str, *, actor: User | None = None) -> AnnotationTask:
-        task = self.task_repo.get_task(task_id)
+    def _get_task_or_404(
+        self, task_id: str, *, actor: User | None = None, organization_id: str | None = None
+    ) -> AnnotationTask:
+        task = self.task_repo.get_task(task_id, organization_id=organization_id)
         if not task:
             raise ServiceError("Task not found", status_code=404)
         if actor and actor.role == RoleEnum.CANDIDATE:
@@ -812,12 +848,14 @@ class TaskService:
             raise ServiceError("Task is not assigned to you", status_code=403)
         return task
 
-    def _get_valid_task_assignee(self, assignee_id: str) -> User:
+    def _get_valid_task_assignee(self, assignee_id: str, *, organization_id: str) -> User:
         assignee = self.user_repo.get_by_id(assignee_id)
         if not assignee:
             raise ServiceError("Assignee user not found", status_code=404)
         if assignee.role not in {RoleEnum.ANNOTATOR, RoleEnum.REVIEWER, RoleEnum.ADMIN}:
             raise ServiceError("Assignee role is not valid for task assignment", status_code=422)
+        if not OrganizationService(self.db).user_has_access(assignee, organization_id):
+            raise ServiceError("Assignee does not have access to this organization", status_code=422)
         return assignee
 
     def _next_parallel_assignment_external_id(self, source_task: AnnotationTask, assignee: User) -> str:
@@ -826,7 +864,11 @@ class TaskService:
         prefix_length = max(1, 255 - len(suffix) - 2)
         base = source_task.external_id[:prefix_length].rstrip(" -_")
         external_id = f"{base}__{suffix}"
-        while self.task_repo.external_id_exists(upload_job_id=source_task.upload_job_id, external_id=external_id):
+        while self.task_repo.external_id_exists(
+            upload_job_id=source_task.upload_job_id,
+            external_id=external_id,
+            organization_id=source_task.organization_id,
+        ):
             suffix = f"copy-{safe_email[:48]}-{uuid.uuid4().hex[:8]}"
             prefix_length = max(1, 255 - len(suffix) - 2)
             base = source_task.external_id[:prefix_length].rstrip(" -_")
@@ -835,7 +877,11 @@ class TaskService:
 
     def _to_task_detail(self, task: AnnotationTask, *, viewer: User | None = None) -> TaskDetailResponse:
         assignee_scope = viewer.id if viewer and viewer.role != RoleEnum.ADMIN else None
-        prev_task_id, next_task_id = self.task_repo.get_prev_next_task_ids(task, assignee_id=assignee_scope)
+        prev_task_id, next_task_id = self.task_repo.get_prev_next_task_ids(
+            task,
+            assignee_id=assignee_scope,
+            organization_id=task.organization_id,
+        )
         return TaskDetailResponse(
             id=task.id,
             external_id=task.external_id,
@@ -1039,3 +1085,17 @@ class TaskService:
         task.masked_audio_reference_intervals = []
         task.masked_audio_alignment_intervals = []
         task.masked_audio_mode = None
+
+    def _guard_feature_updates(self, update_fields: set[str], organization: Organization) -> None:
+        metadata_fields = {
+            "speaker_gender",
+            "speaker_role",
+            "language",
+            "channel",
+            "duration_seconds",
+            "custom_metadata",
+        }
+        if update_fields & metadata_fields and not organization.metadata_enabled:
+            raise ServiceError("Metadata is disabled for this organization", status_code=403)
+        if "pii_annotations" in update_fields and not organization.pii_enabled:
+            raise ServiceError("PII annotation is disabled for this organization", status_code=403)

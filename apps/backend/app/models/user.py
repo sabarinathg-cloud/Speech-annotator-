@@ -26,6 +26,9 @@ class User(Base, TimestampMixin):
     active_session_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     assigned_tasks = relationship("AnnotationTask", back_populates="assignee", foreign_keys="AnnotationTask.assignee_id")
+    organization_memberships = relationship(
+        "OrganizationMembership", back_populates="user", cascade="all, delete-orphan"
+    )
 
     @property
     def confidentiality_acknowledged_for_session(self) -> bool:
