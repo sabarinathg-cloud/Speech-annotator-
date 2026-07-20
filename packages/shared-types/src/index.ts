@@ -218,6 +218,35 @@ export interface TaskListResponse {
   status_counts: Record<string, number>;
 }
 
+export interface TaskAudioGroupChunk {
+  task_id: string;
+  external_id: string;
+  file_location: string;
+  filename: string;
+  chunk_index: number | null;
+  position: number;
+  status: TaskStatus;
+  final_transcript: string | null;
+  has_transcript: boolean;
+  duration_seconds: number | null;
+}
+
+export interface TaskAudioGroup {
+  group_key: string | null;
+  group_label: string | null;
+  current_position: number;
+  current_chunk_index: number | null;
+  chunk_count: number;
+  completed_transcript_count: number;
+  missing_transcript_count: number;
+  assembled_transcript: string;
+  full_audio_url: string | null;
+  expires_in_seconds: number | null;
+  full_audio_available: boolean;
+  message: string | null;
+  chunks: TaskAudioGroupChunk[];
+}
+
 export interface AdminUser {
   id: string;
   email: string;

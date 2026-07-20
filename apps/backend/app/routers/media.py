@@ -7,6 +7,7 @@ from app.models.user import User
 from app.services.errors import ServiceError
 from app.services.media_service import MediaService
 from app.services.security_audit_service import SecurityAuditService
+from app.services.task_service import TaskService
 
 router = APIRouter(prefix="/media", tags=["media"])
 
@@ -28,10 +29,10 @@ def stream_audio(
     service = MediaService()
     try:
         payload = service.decode_audio_token(token)
-        file_location = payload["file_location"]
         actor = db.get(User, payload.get("actor_user_id")) if payload.get("actor_user_id") else None
+        group_audio = bool(payload.get("group_audio"))
         SecurityAuditService(db).log_event(
-            action="STREAM_AUDIO",
+            action="STREAM_FULL_AUDIO" if group_audio else "STREAM_AUDIO",
             actor=actor,
             resource_type="audio",
             resource_id=payload.get("task_id"),
@@ -39,8 +40,16 @@ def stream_audio(
             organization_id=payload.get("organization_id"),
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
-            metadata={"masked": bool(payload.get("masked")), "range": bool(range_header)},
+            metadata={"masked": bool(payload.get("masked")), "range": bool(range_header), "group_audio": group_audio},
         )
+        if group_audio:
+            file_locations = TaskService(db).audio_group_file_locations_for_media(
+                task_id=payload["task_id"],
+                actor=actor,
+                organization_id=payload["organization_id"],
+            )
+            return service.build_combined_wav_response(file_locations, range_header)
+        file_location = payload["file_location"]
         return service.build_audio_response(file_location, range_header)
     except (ServiceError, KeyError, FileNotFoundError) as exc:
         if isinstance(exc, ServiceError):

@@ -1,6 +1,14 @@
 "use client";
 
-import type { AudioAlignmentWord, AudioMaskInterval, AudioMaskMode, PIIAnnotation, TaskDetail, TaskStatus } from "@outcomes/shared-types";
+import type {
+  AudioAlignmentWord,
+  AudioMaskInterval,
+  AudioMaskMode,
+  PIIAnnotation,
+  TaskAudioGroup,
+  TaskDetail,
+  TaskStatus,
+} from "@outcomes/shared-types";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -27,6 +35,7 @@ import {
   fetchAudioURL,
   fetchPIILabels,
   fetchTask,
+  fetchTaskAudioGroup,
   generateTaskAlignment,
   maskTaskPIIAudio,
   patchTaskCombined,
@@ -368,6 +377,65 @@ function formatDurationLabel(durationSeconds: string | null | undefined): string
   return `${minutes}m ${remainder}s`;
 }
 
+function normalizeComparisonWords(text: string): string[] {
+  return text.toLowerCase().match(/[a-z0-9]+(?:'[a-z0-9]+)?/g) ?? [];
+}
+
+function countWords(words: string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  words.forEach((word) => counts.set(word, (counts.get(word) ?? 0) + 1));
+  return counts;
+}
+
+function diffWordCounts(expectedText: string, actualText: string): {
+  similarityPercent: number | null;
+  missingWords: string[];
+  extraWords: string[];
+  referenceWordCount: number;
+  actualWordCount: number;
+} {
+  const expectedWords = normalizeComparisonWords(expectedText);
+  const actualWords = normalizeComparisonWords(actualText);
+  if (expectedWords.length === 0 && actualWords.length === 0) {
+    return {
+      similarityPercent: null,
+      missingWords: [],
+      extraWords: [],
+      referenceWordCount: 0,
+      actualWordCount: 0,
+    };
+  }
+
+  const expectedCounts = countWords(expectedWords);
+  const actualCounts = countWords(actualWords);
+  const missingWords: string[] = [];
+  const extraWords: string[] = [];
+  let matched = 0;
+
+  expectedCounts.forEach((expectedCount, word) => {
+    const actualCount = actualCounts.get(word) ?? 0;
+    matched += Math.min(expectedCount, actualCount);
+    for (let index = 0; index < Math.max(0, expectedCount - actualCount); index += 1) {
+      missingWords.push(word);
+    }
+  });
+
+  actualCounts.forEach((actualCount, word) => {
+    const expectedCount = expectedCounts.get(word) ?? 0;
+    for (let index = 0; index < Math.max(0, actualCount - expectedCount); index += 1) {
+      extraWords.push(word);
+    }
+  });
+
+  return {
+    similarityPercent: Math.round((matched / Math.max(expectedWords.length, actualWords.length, 1)) * 100),
+    missingWords,
+    extraWords,
+    referenceWordCount: expectedWords.length,
+    actualWordCount: actualWords.length,
+  };
+}
+
 function formatTimestampSeconds(seconds: number | null | undefined): string {
   if (typeof seconds !== "number" || !Number.isFinite(seconds)) {
     return "--";
@@ -482,6 +550,11 @@ export default function TaskWorkspacePage() {
   const requestedTour = searchParams.get("tour") === "1";
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioGroup, setAudioGroup] = useState<TaskAudioGroup | null>(null);
+  const [fullAudioUrl, setFullAudioUrl] = useState<string | null>(null);
+  const [fullReviewTranscript, setFullReviewTranscript] = useState("");
+  const [fullReviewTouched, setFullReviewTouched] = useState(false);
+  const [fullReviewOpen, setFullReviewOpen] = useState(false);
   const [version, setVersion] = useState(1);
   const [finalTranscript, setFinalTranscript] = useState("");
   const [notes, setNotes] = useState("");
@@ -638,6 +711,20 @@ export default function TaskWorkspacePage() {
     }
   );
   const visibleSaveSectionStatuses = saveSectionStatuses.filter((section) => section.state !== "saved");
+  const assembledSegmentTranscript = useMemo(() => {
+    if (!audioGroup) return finalTranscript.trim();
+    return audioGroup.chunks
+      .map((chunk) => (chunk.task_id === task?.id ? finalTranscript : chunk.final_transcript ?? "").trim())
+      .filter(Boolean)
+      .join("\n");
+  }, [audioGroup, finalTranscript, task?.id]);
+  const fullReviewComparison = useMemo(
+    () => diffWordCounts(assembledSegmentTranscript, fullReviewTranscript),
+    [assembledSegmentTranscript, fullReviewTranscript]
+  );
+  const fullReviewHasConflict =
+    Boolean(fullReviewTranscript.trim() || assembledSegmentTranscript.trim()) &&
+    (fullReviewComparison.missingWords.length > 0 || fullReviewComparison.extraWords.length > 0);
   const guidedTourMilestones = useMemo<AnnotatorGuidedTourMilestone[]>(
     () => {
       const workflowAlreadyComplete = workflowSavedStatuses.includes(status);
@@ -786,9 +873,10 @@ export default function TaskWorkspacePage() {
     async function loadTask() {
       setLoading(true);
       try {
-        const [fetchedTask, signedAudio] = await Promise.all([
+        const [fetchedTask, signedAudio, fetchedAudioGroup] = await Promise.all([
           fetchTask(token, resolvedTaskId),
           fetchAudioURL(token, resolvedTaskId),
+          fetchTaskAudioGroup(token, resolvedTaskId).catch(() => null),
         ]);
         const labelsResponse = piiEnabled ? await fetchPIILabels(token).catch(() => ({ items: [] })) : { items: [] };
         if (cancelled) return;
@@ -804,6 +892,7 @@ export default function TaskWorkspacePage() {
           if (cancelled) return;
         }
         applyTaskState(activeTask);
+        applyAudioGroupState(fetchedAudioGroup);
         setPiiLabelOptions(piiEnabled ? toPIILabelOptions(labelsResponse.items) : []);
         retryAttemptRef.current = 0;
         clearRetryTimer();
@@ -854,6 +943,11 @@ export default function TaskWorkspacePage() {
       setActiveInspectorPanel("compare");
     }
   }, [activeInspectorPanel, visibleInspectorTabs]);
+
+  useEffect(() => {
+    if (fullReviewTouched) return;
+    setFullReviewTranscript(assembledSegmentTranscript);
+  }, [assembledSegmentTranscript, fullReviewTouched]);
 
   useEffect(() => {
     if (!hasUnsavedChanges || !taskId) return;
@@ -1154,6 +1248,36 @@ export default function TaskWorkspacePage() {
     if (!options.preserveVerification) {
       setVerifiedSections(deriveSectionSaveState(nextTask.status, nextPIIAnnotations, nextTask.masked_audio_intervals ?? []));
     }
+  }
+
+  function applyAudioGroupState(nextGroup: TaskAudioGroup | null) {
+    setAudioGroup(nextGroup);
+    setFullAudioUrl(nextGroup?.full_audio_url ? `${backendBase}${nextGroup.full_audio_url}` : null);
+    setFullReviewTouched(false);
+    setFullReviewTranscript(nextGroup?.assembled_transcript ?? "");
+    setFullReviewOpen(false);
+  }
+
+  async function handleFullReviewToggle() {
+    if (fullReviewOpen) {
+      setFullReviewOpen(false);
+      return;
+    }
+
+    if (accessToken && task?.id) {
+      try {
+        const refreshedGroup = await fetchTaskAudioGroup(accessToken, task.id);
+        setAudioGroup(refreshedGroup);
+        setFullAudioUrl(refreshedGroup.full_audio_url ? `${backendBase}${refreshedGroup.full_audio_url}` : null);
+        if (!fullReviewTouched) {
+          setFullReviewTranscript(refreshedGroup.assembled_transcript ?? "");
+        }
+      } catch {
+        // Keep the existing group details if the refresh fails; the player will show the current availability state.
+      }
+    }
+
+    setFullReviewOpen(true);
   }
 
   function applyLocalDraftState(draft: LocalTaskDraft) {
@@ -2358,6 +2482,122 @@ export default function TaskWorkspacePage() {
               <p className="mt-2 rounded-lg border border-[#e5e7eb] bg-[#f8fafc] px-3 py-2 text-xs text-[#4b5563]">
                 {alignmentMessage}
               </p>
+            ) : null}
+            {audioGroup && audioGroup.chunk_count > 1 ? (
+              <div className="mt-3 rounded-xl border border-[#d9d2ef] bg-[#fbf8ff] p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#4f4674]">Full Recording Review</p>
+                    <p className="mt-0.5 text-xs text-[#6b6682]">
+                      {audioGroup.group_label ?? "Recording"} | chunk {audioGroup.current_position}/{audioGroup.chunk_count}
+                      {audioGroup.missing_transcript_count > 0
+                        ? ` | ${audioGroup.missing_transcript_count} segment transcript${audioGroup.missing_transcript_count === 1 ? "" : "s"} missing`
+                        : " | all segment transcripts present"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleFullReviewToggle()}
+                    className="oa-btn-secondary px-3 py-1.5 text-xs font-semibold"
+                  >
+                    {fullReviewOpen ? "Hide full audio" : "Review full audio"}
+                  </button>
+                </div>
+                {fullReviewOpen ? (
+                  <div className="mt-3 space-y-3">
+                    {fullAudioUrl ? (
+                      <audio
+                        controls
+                        controlsList="nodownload"
+                        preload="metadata"
+                        className="w-full"
+                        onContextMenu={(event) => event.preventDefault()}
+                      >
+                        <source src={fullAudioUrl} />
+                      </audio>
+                    ) : (
+                      <p className="rounded-lg border border-[#f0c8c8] bg-white px-3 py-2 text-sm text-[#a13a3a]">
+                        {audioGroup.message ?? "Full audio is not available for this recording."}
+                      </p>
+                    )}
+                    <div className="grid gap-2 text-xs text-[#4f4674] sm:grid-cols-3">
+                      <span className="rounded-lg border border-[#e8def5] bg-white px-3 py-2">
+                        Segment words: {fullReviewComparison.referenceWordCount}
+                      </span>
+                      <span className="rounded-lg border border-[#e8def5] bg-white px-3 py-2">
+                        Review words: {fullReviewComparison.actualWordCount}
+                      </span>
+                      <span
+                        className={`rounded-lg border px-3 py-2 ${
+                          fullReviewHasConflict
+                            ? "border-[#ffd9a8] bg-[#fff8ec] text-[#925b17]"
+                            : "border-[#cdebd7] bg-[#f4fff7] text-[#2f6940]"
+                        }`}
+                      >
+                        Match: {fullReviewComparison.similarityPercent === null ? "--" : `${fullReviewComparison.similarityPercent}%`}
+                      </span>
+                    </div>
+                    <label className="block text-xs font-semibold text-[#4f4674]">
+                      Full transcript check
+                      <textarea
+                        value={fullReviewTranscript}
+                        onChange={(event) => {
+                          setFullReviewTranscript(event.target.value);
+                          setFullReviewTouched(true);
+                        }}
+                        rows={5}
+                        className="oa-textarea mt-1 bg-white font-mono text-sm"
+                        placeholder="Listen to the full recording and paste or type the complete transcript here to compare against segment transcripts."
+                      />
+                    </label>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <select
+                        value={task.id}
+                        onChange={(event) => router.push(`/tasks/${event.target.value}`)}
+                        className="oa-input min-w-[260px] px-3 py-2 text-xs"
+                        aria-label="Open a chunk from this recording"
+                      >
+                        {audioGroup.chunks.map((chunk) => (
+                          <option key={chunk.task_id} value={chunk.task_id}>
+                            {chunk.position}. {chunk.filename} - {chunk.has_transcript ? "has transcript" : "missing transcript"}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFullReviewTouched(false);
+                          setFullReviewTranscript(assembledSegmentTranscript);
+                        }}
+                        className="oa-btn-secondary px-3 py-2 text-xs font-semibold"
+                      >
+                        Use segment transcript
+                      </button>
+                    </div>
+                    {fullReviewHasConflict ? (
+                      <div className="rounded-lg border border-[#ffd9a8] bg-[#fff8ec] px-3 py-2 text-xs text-[#925b17]">
+                        <p className="font-semibold">Full transcript check does not match the segment transcripts.</p>
+                        <p className="mt-1">
+                          Review the nearby chunks, then correct the segment transcript that caused the mismatch.
+                        </p>
+                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                          <p>
+                            Missing from full check:{" "}
+                            {fullReviewComparison.missingWords.slice(0, 12).join(", ") || "none"}
+                          </p>
+                          <p>
+                            Extra in full check: {fullReviewComparison.extraWords.slice(0, 12).join(", ") || "none"}
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="rounded-lg border border-[#cdebd7] bg-[#f4fff7] px-3 py-2 text-xs text-[#2f6940]">
+                        Full transcript check matches the current segment transcripts.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
+              </div>
             ) : null}
             {audioMaskingEnabled && maskedIntervals.length > 0 ? (
               <div className="mt-3 rounded-xl border border-[#fed7aa] bg-[#fff7ed] p-3">

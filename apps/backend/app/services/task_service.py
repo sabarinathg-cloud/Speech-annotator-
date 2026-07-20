@@ -32,6 +32,8 @@ from app.schemas.task import (
     PIIAnnotation,
     TaskActivityItem,
     TaskActivityResponse,
+    TaskAudioGroupChunkResponse,
+    TaskAudioGroupResponse,
     TaskAudioAlignmentResponse,
     TaskDetailResponse,
     TaskListItemResponse,
@@ -40,6 +42,7 @@ from app.schemas.task import (
     TaskPatchResponse,
 )
 from app.services.audio_alignment_service import AudioAlignmentService, transcript_hash
+from app.services.audio_group_service import audio_group_info, audio_group_sort_key
 from app.services.errors import ServiceError
 from app.services.organization_service import OrganizationService
 from app.services.text_validation import find_invalid_annotation_text
@@ -60,6 +63,7 @@ ALLOWED_STATUS_TRANSITIONS: dict[TaskStatusEnum, set[TaskStatusEnum]] = {
 }
 
 AUTO_START_COMMENT = "Automatically moved to In Progress when work started"
+MAX_AUDIO_GROUP_CHUNKS = 1000
 
 
 def _raise_for_invalid_text(value: str | None, field_label: str) -> None:
@@ -752,6 +756,89 @@ class TaskService:
         url = f"{settings.api_v1_prefix}/media/audio/{token}"
         return url, settings.audio_signing_expire_seconds
 
+    def get_audio_group(self, task_id: str, *, actor: User, organization: Organization) -> TaskAudioGroupResponse:
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
+        group_info = audio_group_info(task.file_location)
+        if not group_info:
+            return self._single_chunk_group_response(
+                task,
+                viewer=actor,
+                message="Full audio review is available for WAV chunk folders only.",
+            )
+
+        group_tasks = self._load_audio_group_tasks(task, actor=actor, group_key=group_info.group_key)
+        if not group_tasks:
+            group_tasks = [task]
+
+        chunks: list[TaskAudioGroupChunkResponse] = []
+        transcript_parts: list[str] = []
+        current_position = 1
+        for position, group_task in enumerate(group_tasks, start=1):
+            info = audio_group_info(group_task.file_location)
+            text = (group_task.final_transcript or "").strip()
+            if text:
+                transcript_parts.append(text)
+            if group_task.id == task.id:
+                current_position = position
+            chunks.append(
+                TaskAudioGroupChunkResponse(
+                    task_id=group_task.id,
+                    external_id=group_task.external_id,
+                    file_location=self._display_file_location(group_task.file_location, actor),
+                    filename=info.filename if info else PurePosixPath(group_task.file_location).name,
+                    chunk_index=info.chunk_index if info else None,
+                    position=position,
+                    status=group_task.status,
+                    final_transcript=group_task.final_transcript,
+                    has_transcript=bool(text),
+                    duration_seconds=float(group_task.duration_seconds) if group_task.duration_seconds is not None else None,
+                )
+            )
+
+        completed_count = sum(1 for chunk in chunks if chunk.has_transcript)
+        full_audio_url = None
+        expires = None
+        full_audio_available = len(chunks) > 1
+        message = None
+        if full_audio_available:
+            full_audio_url, expires = self._generate_audio_group_url(task, actor=actor, organization=organization)
+        else:
+            message = "Only one chunk was found for this recording."
+
+        return TaskAudioGroupResponse(
+            group_key=group_info.group_key,
+            group_label=group_info.group_label,
+            current_position=current_position,
+            current_chunk_index=group_info.chunk_index,
+            chunk_count=len(chunks),
+            completed_transcript_count=completed_count,
+            missing_transcript_count=len(chunks) - completed_count,
+            assembled_transcript="\n".join(transcript_parts),
+            full_audio_url=full_audio_url,
+            expires_in_seconds=expires,
+            full_audio_available=full_audio_available,
+            message=message,
+            chunks=chunks,
+        )
+
+    def audio_group_file_locations_for_media(
+        self,
+        *,
+        task_id: str,
+        actor: User | None,
+        organization_id: str,
+    ) -> list[str]:
+        if actor is None:
+            raise ServiceError("Audio token is missing a valid user", status_code=401)
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization_id)
+        group_info = audio_group_info(task.file_location)
+        if not group_info:
+            raise ServiceError("Full audio review is available for WAV chunk folders only", status_code=422)
+        group_tasks = self._load_audio_group_tasks(task, actor=actor, group_key=group_info.group_key)
+        if len(group_tasks) < 2:
+            raise ServiceError("Only one chunk was found for this recording", status_code=404)
+        return [group_task.file_location for group_task in group_tasks]
+
     def generate_alignment(
         self, task_id: str, *, actor: User, organization: Organization, force: bool = False
     ) -> TaskAudioAlignmentResponse:
@@ -857,6 +944,91 @@ class TaskService:
         if not OrganizationService(self.db).user_has_access(assignee, organization_id):
             raise ServiceError("Assignee does not have access to this organization", status_code=422)
         return assignee
+
+    def _single_chunk_group_response(
+        self,
+        task: AnnotationTask,
+        *,
+        viewer: User,
+        message: str,
+    ) -> TaskAudioGroupResponse:
+        info = audio_group_info(task.file_location)
+        text = (task.final_transcript or "").strip()
+        return TaskAudioGroupResponse(
+            group_key=info.group_key if info else None,
+            group_label=info.group_label if info else None,
+            current_position=1,
+            current_chunk_index=info.chunk_index if info else None,
+            chunk_count=1,
+            completed_transcript_count=1 if text else 0,
+            missing_transcript_count=0 if text else 1,
+            assembled_transcript=text,
+            full_audio_url=None,
+            expires_in_seconds=None,
+            full_audio_available=False,
+            message=message,
+            chunks=[
+                TaskAudioGroupChunkResponse(
+                    task_id=task.id,
+                    external_id=task.external_id,
+                    file_location=self._display_file_location(task.file_location, viewer),
+                    filename=info.filename if info else PurePosixPath(task.file_location).name,
+                    chunk_index=info.chunk_index if info else None,
+                    position=1,
+                    status=task.status,
+                    final_transcript=task.final_transcript,
+                    has_transcript=bool(text),
+                    duration_seconds=float(task.duration_seconds) if task.duration_seconds is not None else None,
+                )
+            ],
+        )
+
+    def _load_audio_group_tasks(
+        self,
+        task: AnnotationTask,
+        *,
+        actor: User,
+        group_key: str,
+    ) -> list[AnnotationTask]:
+        info = audio_group_info(task.file_location)
+        if not info:
+            return [task]
+        assignee_id = actor.id if actor.role != RoleEnum.ADMIN else None
+        candidates = self.task_repo.list_audio_group_candidates(
+            upload_job_id=task.upload_job_id,
+            organization_id=task.organization_id,
+            location_prefix=info.query_prefix,
+            assignee_id=assignee_id,
+            limit=MAX_AUDIO_GROUP_CHUNKS,
+        )
+        deduped: dict[str, AnnotationTask] = {}
+        for candidate in candidates:
+            candidate_info = audio_group_info(candidate.file_location)
+            if not candidate_info or candidate_info.group_key != group_key:
+                continue
+            existing = deduped.get(candidate.file_location)
+            if existing is None or candidate.id == task.id:
+                deduped[candidate.file_location] = candidate
+        if task.file_location not in deduped:
+            deduped[task.file_location] = task
+        return sorted(deduped.values(), key=lambda item: audio_group_sort_key(item.file_location))
+
+    def _generate_audio_group_url(self, task: AnnotationTask, *, actor: User, organization: Organization) -> tuple[str, int]:
+        from itsdangerous import URLSafeTimedSerializer
+
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        serializer = URLSafeTimedSerializer(settings.audio_signing_secret)
+        token = serializer.dumps(
+            {
+                "task_id": task.id,
+                "actor_user_id": actor.id,
+                "organization_id": organization.id,
+                "group_audio": True,
+            }
+        )
+        return f"{settings.api_v1_prefix}/media/audio/{token}", settings.audio_signing_expire_seconds
 
     def _next_parallel_assignment_external_id(self, source_task: AnnotationTask, assignee: User) -> str:
         safe_email = "".join(char if char.isalnum() else "-" for char in assignee.email.lower()).strip("-")

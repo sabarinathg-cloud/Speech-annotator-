@@ -36,6 +36,7 @@ import type {
   Role,
   SecurityAuditEventListResponse,
   SecurityAuditEvent,
+  TaskAudioGroup,
   TaskAudioAlignmentResponse,
   TaskDetail,
   TaskListResponse,
@@ -321,6 +322,10 @@ export async function fetchAudioURL(
     { method: "GET" },
     token
   );
+}
+
+export async function fetchTaskAudioGroup(token: string, taskId: string): Promise<TaskAudioGroup> {
+  return request<TaskAudioGroup>(`/tasks/${taskId}/audio-group`, { method: "GET" }, token);
 }
 
 export async function patchTranscript(

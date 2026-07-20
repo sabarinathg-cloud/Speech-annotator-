@@ -38,6 +38,10 @@ SENSITIVE_AUDIT_FIELDS = {
 }
 
 
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _summarize_pii_annotations(value: Any) -> dict[str, Any]:
     annotations = value if isinstance(value, list) else []
     labels = sorted({str(item.get("label")) for item in annotations if isinstance(item, dict) and item.get("label")})
@@ -293,6 +297,28 @@ class TaskRepository:
         if organization_id:
             stmt = stmt.where(AnnotationTask.organization_id == organization_id)
         return self.db.execute(stmt).unique().scalar_one_or_none()
+
+    def list_audio_group_candidates(
+        self,
+        *,
+        upload_job_id: str,
+        organization_id: str,
+        location_prefix: str,
+        assignee_id: str | None = None,
+        limit: int = 1000,
+    ) -> list[AnnotationTask]:
+        stmt = (
+            select(AnnotationTask)
+            .options(joinedload(AnnotationTask.assignee), joinedload(AnnotationTask.last_tagger))
+            .where(AnnotationTask.upload_job_id == upload_job_id)
+            .where(AnnotationTask.organization_id == organization_id)
+            .where(AnnotationTask.file_location.like(f"{_escape_like(location_prefix)}%", escape="\\"))
+            .order_by(AnnotationTask.file_location.asc(), AnnotationTask.created_at.asc())
+            .limit(limit)
+        )
+        if assignee_id:
+            stmt = stmt.where(AnnotationTask.assignee_id == assignee_id)
+        return list(self.db.execute(stmt).unique().scalars().all())
 
     def get_prev_next_task_ids(
         self,

@@ -1,9 +1,14 @@
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
+import wave
 
 from app.core.config import Settings
+from app.models.enums import TaskStatusEnum
 from app.models.job import BackgroundJob
+from app.models.task import AnnotationTask
 from app.models.upload import UploadFile, UploadJob
+from app.services.organization_service import OrganizationService
 from scripts.cleanup import run_cleanup
 
 
@@ -21,6 +26,71 @@ def _mapping():
             "language": "language",
         },
     }
+
+
+def _write_wav(path: Path, samples: list[int], *, framerate: int = 8000) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(framerate)
+        wav_file.writeframes(b"".join(sample.to_bytes(2, "little", signed=True) for sample in samples))
+
+
+def _create_chunk_group(
+    db_session,
+    seed_users,
+    tmp_path: Path,
+    *,
+    second_chunk_framerate: int = 8000,
+) -> tuple[str, str]:
+    organization = OrganizationService(db_session).ensure_default_organization()
+    group_dir = tmp_path / "recording-one" / "channel1"
+    chunk_one = group_dir / "chunk_0001.wav"
+    chunk_two = group_dir / "chunk_0002.wav"
+    _write_wav(chunk_one, [0, 1200, -1200])
+    _write_wav(chunk_two, [500, -500], framerate=second_chunk_framerate)
+
+    upload_file = UploadFile(
+        organization_id=organization.id,
+        original_filename="manifest.xlsx",
+        stored_path=str(tmp_path / "manifest.xlsx"),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        uploaded_by_id=seed_users["admin"].id,
+    )
+    db_session.add(upload_file)
+    db_session.flush()
+    upload_job = UploadJob(
+        organization_id=organization.id,
+        upload_file_id=upload_file.id,
+        created_by_id=seed_users["admin"].id,
+    )
+    db_session.add(upload_job)
+    db_session.flush()
+
+    task_one = AnnotationTask(
+        organization_id=organization.id,
+        upload_job_id=upload_job.id,
+        external_id="chunk-1",
+        file_location=f"local://{chunk_one}",
+        final_transcript="hello",
+        status=TaskStatusEnum.IN_PROGRESS,
+        assignee_id=seed_users["annotator"].id,
+        original_row={},
+    )
+    task_two = AnnotationTask(
+        organization_id=organization.id,
+        upload_job_id=upload_job.id,
+        external_id="chunk-2",
+        file_location=f"local://{chunk_two}",
+        final_transcript="world",
+        status=TaskStatusEnum.IN_PROGRESS,
+        assignee_id=seed_users["annotator"].id,
+        original_row={},
+    )
+    db_session.add_all([task_one, task_two])
+    db_session.commit()
+    return task_one.id, task_two.id
 
 
 def test_production_rejects_default_secrets():
@@ -179,6 +249,47 @@ def test_audio_stream_rejects_mobile_devices(client, auth_headers, sample_excel_
 
     assert response.status_code == 403
     assert response.json()["detail"]["message"] == "This application can only be used from a laptop or desktop browser."
+
+
+def test_audio_group_combines_wav_chunks_for_full_recording_playback(
+    client, auth_headers, db_session, seed_users, tmp_path
+):
+    task_id, _ = _create_chunk_group(db_session, seed_users, tmp_path)
+
+    group_response = client.get(f"/api/v1/tasks/{task_id}/audio-group", headers=auth_headers["annotator"])
+
+    assert group_response.status_code == 200
+    group = group_response.json()
+    assert group["chunk_count"] == 2
+    assert group["current_position"] == 1
+    assert group["assembled_transcript"] == "hello\nworld"
+    assert group["full_audio_available"] is True
+    assert [chunk["filename"] for chunk in group["chunks"]] == ["chunk_0001.wav", "chunk_0002.wav"]
+
+    audio_response = client.get(group["full_audio_url"])
+
+    assert audio_response.status_code == 200
+    assert audio_response.headers["content-type"].startswith("audio/")
+    with wave.open(BytesIO(audio_response.content), "rb") as combined:
+        assert combined.getnchannels() == 1
+        assert combined.getsampwidth() == 2
+        assert combined.getframerate() == 8000
+        assert combined.getnframes() == 5
+
+
+def test_audio_group_rejects_incompatible_wav_chunks_without_crashing(
+    client, auth_headers, db_session, seed_users, tmp_path
+):
+    task_id, _ = _create_chunk_group(db_session, seed_users, tmp_path, second_chunk_framerate=16000)
+    group_response = client.get(f"/api/v1/tasks/{task_id}/audio-group", headers=auth_headers["annotator"])
+    assert group_response.status_code == 200
+
+    audio_response = client.get(group_response.json()["full_audio_url"])
+
+    assert audio_response.status_code == 422
+    assert audio_response.json()["detail"]["message"] == (
+        "Audio chunks use different WAV formats and cannot be combined safely"
+    )
 
 
 def test_cleanup_removes_abandoned_uploads_and_expired_job_outputs(db_session, tmp_path, seed_users):

@@ -21,6 +21,7 @@ from app.schemas.task import (
     DetectPIIRequest,
     DetectPIIResponse,
     TaskActivityResponse,
+    TaskAudioGroupResponse,
     TaskAudioAlignmentResponse,
     TaskDetailResponse,
     TaskListResponse,
@@ -525,5 +526,32 @@ def get_audio_url(
             metadata={"expires_in_seconds": expires},
         )
         return AudioURLResponse(url=url, expires_in_seconds=expires)
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.get("/{task_id}/audio-group", response_model=TaskAudioGroupResponse)
+def get_audio_group(
+    task_id: str,
+    request: Request,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
+):
+    service = TaskService(db)
+    try:
+        response = service.get_audio_group(task_id, actor=current_user, organization=organization)
+        SecurityAuditService(db).log_event(
+            action="VIEW_AUDIO_GROUP",
+            actor=current_user,
+            resource_type="audio_group",
+            resource_id=response.group_key,
+            task_id=task_id,
+            organization_id=organization.id,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            metadata={"chunk_count": response.chunk_count, "full_audio_available": response.full_audio_available},
+        )
+        return response
     except ServiceError as exc:
         raise _http_error(exc) from exc

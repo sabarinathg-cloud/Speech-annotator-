@@ -325,6 +325,35 @@ class AudioURLResponse(BaseModel):
     expires_in_seconds: int
 
 
+class TaskAudioGroupChunkResponse(BaseModel):
+    task_id: str
+    external_id: str
+    file_location: str
+    filename: str
+    chunk_index: int | None = None
+    position: int
+    status: TaskStatusEnum
+    final_transcript: str | None = None
+    has_transcript: bool
+    duration_seconds: float | None = None
+
+
+class TaskAudioGroupResponse(BaseModel):
+    group_key: str | None = None
+    group_label: str | None = None
+    current_position: int
+    current_chunk_index: int | None = None
+    chunk_count: int
+    completed_transcript_count: int
+    missing_transcript_count: int
+    assembled_transcript: str
+    full_audio_url: str | None = None
+    expires_in_seconds: int | None = None
+    full_audio_available: bool
+    message: str | None = None
+    chunks: list[TaskAudioGroupChunkResponse]
+
+
 class TaskAudioAlignmentResponse(BaseModel):
     task_id: str
     transcript_hash: str
