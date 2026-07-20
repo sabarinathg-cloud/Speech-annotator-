@@ -9,6 +9,8 @@ from app.models.enums import RoleEnum, TaskStatusEnum
 from app.models.user import User
 from app.schemas.task import (
     AudioURLResponse,
+    BulkAssignmentCopyRequest,
+    BulkAssignmentCopyResponse,
     BulkAssigneeRequest,
     BulkAssigneeResponse,
     BulkDueDateRequest,
@@ -25,6 +27,7 @@ from app.schemas.task import (
     TaskMaskedAudioResponse,
     TaskNextResponse,
     TaskPatchResponse,
+    CreateAssignmentCopyRequest,
     UpdateAssigneeRequest,
     UpdateMetadataRequest,
     UpdateNotesRequest,
@@ -108,6 +111,19 @@ def bulk_update_assignees(
     service = TaskService(db)
     try:
         return service.bulk_update_assignees(assignments=payload.assignments, actor=current_user)
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/bulk-assignment-copies", response_model=BulkAssignmentCopyResponse)
+def bulk_create_assignment_copies(
+    payload: BulkAssignmentCopyRequest,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    service = TaskService(db)
+    try:
+        return service.bulk_create_assignment_copies(assignments=payload.assignments, actor=current_user)
     except ServiceError as exc:
         raise _http_error(exc) from exc
 
@@ -415,6 +431,25 @@ def update_assignee(
     service = TaskService(db)
     try:
         return service.update_assignee(
+            task_id=task_id,
+            version=payload.version,
+            assignee_id=payload.assignee_id,
+            actor=current_user,
+        )
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/{task_id}/assignment-copy", response_model=TaskPatchResponse)
+def create_assignment_copy(
+    task_id: str,
+    payload: CreateAssignmentCopyRequest,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    service = TaskService(db)
+    try:
+        return service.create_assignment_copy(
             task_id=task_id,
             version=payload.version,
             assignee_id=payload.assignee_id,

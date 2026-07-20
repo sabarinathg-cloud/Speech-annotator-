@@ -1,3 +1,4 @@
+import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import PurePosixPath
@@ -15,6 +16,8 @@ from app.schemas.task import (
     AudioMaskInterval,
     AudioAlignmentWord,
     AudioMaskMode,
+    BulkAssignmentCopyItem,
+    BulkAssignmentCopyResponse,
     BulkAssigneeError,
     BulkAssigneeItem,
     BulkAssigneeResponse,
@@ -452,13 +455,7 @@ class TaskService:
         task = self._get_task_or_404(task_id, actor=actor)
         self._ensure_version(task, version, ["assignee_id"], actor=actor)
 
-        assignee = None
-        if assignee_id:
-            assignee = self.user_repo.get_by_id(assignee_id)
-            if not assignee:
-                raise ServiceError("Assignee user not found", status_code=404)
-            if assignee.role not in {RoleEnum.ANNOTATOR, RoleEnum.REVIEWER, RoleEnum.ADMIN}:
-                raise ServiceError("Assignee role is not valid for task assignment", status_code=422)
+        assignee = self._get_valid_task_assignee(assignee_id) if assignee_id else None
 
         if task.assignee_id == assignee_id:
             return TaskPatchResponse(task=self._to_task_detail(task, viewer=actor))
@@ -484,6 +481,51 @@ class TaskService:
         )
         self.db.commit()
         return TaskPatchResponse(task=self._to_task_detail(task, viewer=actor))
+
+    def create_assignment_copy(
+        self,
+        *,
+        task_id: str,
+        version: int,
+        assignee_id: str,
+        actor: User,
+    ) -> TaskPatchResponse:
+        task = self._get_task_or_404(task_id, actor=actor)
+        self._ensure_version(task, version, ["assignee_id"], actor=actor)
+        assignee = self._get_valid_task_assignee(assignee_id)
+        if task.assignee_id == assignee.id:
+            raise ServiceError("This audio is already assigned to that user", status_code=409)
+        existing = self.task_repo.get_existing_parallel_assignment(
+            upload_job_id=task.upload_job_id,
+            file_location=task.file_location,
+            assignee_id=assignee.id,
+            exclude_task_id=task.id,
+        )
+        if existing:
+            raise ServiceError("This audio is already assigned to that user", status_code=409)
+
+        copied_task = self.task_repo.create_parallel_assignment_copy(
+            source_task=task,
+            external_id=self._next_parallel_assignment_external_id(task, assignee),
+            assignee_id=assignee.id,
+        )
+        self.task_repo.add_audit_log(
+            task_id=copied_task.id,
+            actor_user_id=actor.id,
+            action="CREATE_PARALLEL_ASSIGNMENT",
+            changed_fields={"assignee_id": True, "source_task_id": True, "file_location": True},
+            previous_values={},
+            new_values={
+                "source_task_id": task.id,
+                "source_external_id": task.external_id,
+                "assignee_id": assignee.id,
+                "assignee_name": assignee.full_name,
+                "assignee_email": assignee.email,
+                "file_location": task.file_location,
+            },
+        )
+        self.db.commit()
+        return TaskPatchResponse(task=self._to_task_detail(copied_task, viewer=actor))
 
     def update_due_date(
         self,
@@ -596,6 +638,27 @@ class TaskService:
             except ServiceError as exc:
                 errors.append(BulkAssigneeError(task_id=item.task_id, status_code=exc.status_code, message=exc.message))
         return BulkAssigneeResponse(updated=updated, errors=errors)
+
+    def bulk_create_assignment_copies(
+        self,
+        *,
+        assignments: list[BulkAssignmentCopyItem],
+        actor: User,
+    ) -> BulkAssignmentCopyResponse:
+        created: list[BulkAssigneeUpdated] = []
+        errors: list[BulkAssigneeError] = []
+        for item in assignments:
+            try:
+                response = self.create_assignment_copy(
+                    task_id=item.task_id,
+                    version=item.version,
+                    assignee_id=item.assignee_id,
+                    actor=actor,
+                )
+                created.append(BulkAssigneeUpdated(task=response.task))
+            except ServiceError as exc:
+                errors.append(BulkAssigneeError(task_id=item.task_id, status_code=exc.status_code, message=exc.message))
+        return BulkAssignmentCopyResponse(created=created, errors=errors)
 
     def bulk_update_due_dates(self, *, updates: list[BulkDueDateItem], actor: User) -> BulkTaskResponse:
         updated: list[BulkTaskUpdated] = []
@@ -748,6 +811,27 @@ class TaskService:
         if actor and actor.role != RoleEnum.ADMIN and task.assignee_id != actor.id:
             raise ServiceError("Task is not assigned to you", status_code=403)
         return task
+
+    def _get_valid_task_assignee(self, assignee_id: str) -> User:
+        assignee = self.user_repo.get_by_id(assignee_id)
+        if not assignee:
+            raise ServiceError("Assignee user not found", status_code=404)
+        if assignee.role not in {RoleEnum.ANNOTATOR, RoleEnum.REVIEWER, RoleEnum.ADMIN}:
+            raise ServiceError("Assignee role is not valid for task assignment", status_code=422)
+        return assignee
+
+    def _next_parallel_assignment_external_id(self, source_task: AnnotationTask, assignee: User) -> str:
+        safe_email = "".join(char if char.isalnum() else "-" for char in assignee.email.lower()).strip("-")
+        suffix = f"copy-{safe_email[:48]}-{uuid.uuid4().hex[:8]}"
+        prefix_length = max(1, 255 - len(suffix) - 2)
+        base = source_task.external_id[:prefix_length].rstrip(" -_")
+        external_id = f"{base}__{suffix}"
+        while self.task_repo.external_id_exists(upload_job_id=source_task.upload_job_id, external_id=external_id):
+            suffix = f"copy-{safe_email[:48]}-{uuid.uuid4().hex[:8]}"
+            prefix_length = max(1, 255 - len(suffix) - 2)
+            base = source_task.external_id[:prefix_length].rstrip(" -_")
+            external_id = f"{base}__{suffix}"
+        return external_id
 
     def _to_task_detail(self, task: AnnotationTask, *, viewer: User | None = None) -> TaskDetailResponse:
         assignee_scope = viewer.id if viewer and viewer.role != RoleEnum.ADMIN else None

@@ -432,6 +432,18 @@ export async function patchTaskAssignee(
   );
 }
 
+export async function createTaskAssignmentCopy(
+  token: string,
+  taskId: string,
+  payload: { version: number; assignee_id: string }
+): Promise<{ task: TaskDetail }> {
+  return request<{ task: TaskDetail }>(
+    `/tasks/${taskId}/assignment-copy`,
+    { method: "POST", body: JSON.stringify(payload) },
+    token
+  );
+}
+
 export async function patchTaskDueDate(
   token: string,
   taskId: string,
@@ -450,6 +462,17 @@ export async function bulkAssignTasks(
 ): Promise<{ updated: Array<{ task: TaskDetail }>; errors: Array<{ task_id: string; status_code: number; message: string }> }> {
   return request(
     "/tasks/bulk-assignee",
+    { method: "POST", body: JSON.stringify({ assignments }) },
+    token
+  );
+}
+
+export async function bulkCreateTaskAssignmentCopies(
+  token: string,
+  assignments: Array<{ task_id: string; version: number; assignee_id: string }>
+): Promise<{ created: Array<{ task: TaskDetail }>; errors: Array<{ task_id: string; status_code: number; message: string }> }> {
+  return request(
+    "/tasks/bulk-assignment-copies",
     { method: "POST", body: JSON.stringify({ assignments }) },
     token
   );

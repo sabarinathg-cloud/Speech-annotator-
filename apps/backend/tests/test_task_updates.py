@@ -585,6 +585,87 @@ def test_admin_can_assign_task_to_user(client, auth_headers, sample_excel_bytes,
     assert payload["assignee_email"] == "reviewer@test.com"
 
 
+def test_admin_can_create_parallel_assignment_copy(client, auth_headers, sample_excel_bytes, seed_users):
+    task_id = _create_task(client, auth_headers, sample_excel_bytes)
+    source = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["admin"]).json()
+
+    duplicate_same_user = client.post(
+        f"/api/v1/tasks/{task_id}/assignment-copy",
+        headers=auth_headers["admin"],
+        json={"version": source["version"], "assignee_id": seed_users["annotator"].id},
+    )
+    assert duplicate_same_user.status_code == 409
+
+    copy_response = client.post(
+        f"/api/v1/tasks/{task_id}/assignment-copy",
+        headers=auth_headers["admin"],
+        json={"version": source["version"], "assignee_id": seed_users["reviewer"].id},
+    )
+    assert copy_response.status_code == 200
+    copied = copy_response.json()["task"]
+    assert copied["id"] != task_id
+    assert copied["external_id"].startswith(f"{source['external_id']}__copy-reviewer-test-com")
+    assert copied["file_location"] == source["file_location"]
+    assert copied["assignee_email"] == "reviewer@test.com"
+    assert copied["status"] == "Not Started"
+    assert copied["pii_annotations"] == []
+    assert [
+        (variant["source_key"], variant["source_label"], variant["transcript_text"])
+        for variant in copied["transcript_variants"]
+    ] == [
+        (variant["source_key"], variant["source_label"], variant["transcript_text"])
+        for variant in source["transcript_variants"]
+    ]
+
+    annotator_tasks = client.get("/api/v1/tasks", headers=auth_headers["annotator"]).json()["items"]
+    reviewer_tasks = client.get("/api/v1/tasks", headers=auth_headers["reviewer"]).json()["items"]
+    assert [task["id"] for task in annotator_tasks] == [task_id]
+    assert [task["id"] for task in reviewer_tasks] == [copied["id"]]
+
+    reviewer_update = client.patch(
+        f"/api/v1/tasks/{copied['id']}/transcript",
+        headers=auth_headers["reviewer"],
+        json={"version": copied["version"], "final_transcript": "reviewer transcript"},
+    )
+    assert reviewer_update.status_code == 200
+
+    original_after_copy_work = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["annotator"]).json()
+    assert original_after_copy_work["final_transcript"] != "reviewer transcript"
+
+
+def test_admin_can_bulk_create_parallel_assignment_copies(client, auth_headers, sample_excel_bytes, seed_users):
+    first_task_id = _create_task(client, auth_headers, sample_excel_bytes, assign_to_annotator=False)
+    second_task_id = _create_task(client, auth_headers, sample_excel_bytes, assign_to_annotator=False)
+    tasks = {
+        task["id"]: task
+        for task in client.get("/api/v1/tasks", headers=auth_headers["admin"]).json()["items"]
+        if task["id"] in {first_task_id, second_task_id}
+    }
+
+    bulk = client.post(
+        "/api/v1/tasks/bulk-assignment-copies",
+        headers=auth_headers["admin"],
+        json={
+            "assignments": [
+                {
+                    "task_id": first_task_id,
+                    "version": tasks[first_task_id]["version"],
+                    "assignee_id": seed_users["reviewer"].id,
+                },
+                {
+                    "task_id": second_task_id,
+                    "version": tasks[second_task_id]["version"],
+                    "assignee_id": seed_users["reviewer"].id,
+                },
+            ]
+        },
+    )
+    assert bulk.status_code == 200
+    assert len(bulk.json()["created"]) == 2
+    assert bulk.json()["errors"] == []
+    assert {item["task"]["assignee_email"] for item in bulk.json()["created"]} == {"reviewer@test.com"}
+
+
 def test_unassigned_filter_claim_next_bulk_assignment_and_activity(client, auth_headers, sample_excel_bytes, seed_users):
     task_id = _create_task(client, auth_headers, sample_excel_bytes, assign_to_annotator=False)
 

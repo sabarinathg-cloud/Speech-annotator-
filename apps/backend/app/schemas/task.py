@@ -190,6 +190,11 @@ class UpdateAssigneeRequest(BaseModel):
     assignee_id: str | None = None
 
 
+class CreateAssignmentCopyRequest(BaseModel):
+    version: int = Field(ge=1)
+    assignee_id: str = Field(min_length=1)
+
+
 class DetectPIIRequest(BaseModel):
     transcript: str
     include_ml: bool = False
@@ -237,6 +242,21 @@ class BulkAssigneeUpdated(BaseModel):
 
 class BulkAssigneeResponse(BaseModel):
     updated: list[BulkAssigneeUpdated]
+    errors: list[BulkAssigneeError]
+
+
+class BulkAssignmentCopyItem(BaseModel):
+    task_id: str
+    version: int = Field(ge=1)
+    assignee_id: str = Field(min_length=1)
+
+
+class BulkAssignmentCopyRequest(BaseModel):
+    assignments: list[BulkAssignmentCopyItem] = Field(min_length=1, max_length=200)
+
+
+class BulkAssignmentCopyResponse(BaseModel):
+    created: list[BulkAssigneeUpdated]
     errors: list[BulkAssigneeError]
 
 

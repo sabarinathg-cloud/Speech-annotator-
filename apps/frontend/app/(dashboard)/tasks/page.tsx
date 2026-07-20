@@ -10,8 +10,10 @@ import { StatusBadge } from "@/components/status-badge";
 import {
   APIError,
   bulkAssignTasks,
+  bulkCreateTaskAssignmentCopies,
   bulkUpdateTaskDueDates,
   bulkUpdateTaskStatuses,
+  createTaskAssignmentCopy,
   downloadTaskExport,
   fetchNextTask,
   fetchTasks,
@@ -247,6 +249,36 @@ export default function TasksPage() {
     }
   }
 
+  async function createAssignmentCopy(taskId: string, currentVersion: number) {
+    if (!accessToken || !isAdmin || assignmentBusyTaskId) return;
+    const selectedAssignee = (assigneeDraftByTask[taskId] ?? "").trim();
+    if (!selectedAssignee) {
+      setError("Choose an assignee before creating a copy");
+      return;
+    }
+    setAssignmentBusyTaskId(taskId);
+    try {
+      const response = await createTaskAssignmentCopy(accessToken, taskId, {
+        version: currentVersion,
+        assignee_id: selectedAssignee,
+      });
+      appendCreatedTasksToQueue([response.task]);
+      adjustUserAssignmentCounts([
+        {
+          previous_assignee_id: null,
+          assignee_id: response.task.assignee_id,
+          status: response.task.status,
+        },
+      ]);
+      setBulkResult(`Created a separate assignment for ${response.task.assignee_name || "the selected user"}.`);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Failed to create assignment copy");
+    } finally {
+      setAssignmentBusyTaskId(null);
+    }
+  }
+
   async function saveDueDate(taskId: string, currentVersion: number) {
     if (!accessToken || !isAdmin || dueDateBusyTaskId) return;
     const dueDate = (dueDateDraftByTask[taskId] ?? "").trim() || null;
@@ -291,6 +323,39 @@ export default function TasksPage() {
         assignee_id: bulkAssigneeId || null,
       }));
     await applyAssignmentBatch(assignments, "Bulk assignment failed");
+  }
+
+  async function applyBulkAssignmentCopies() {
+    if (!accessToken || !isAdmin || bulkBusy || selectedTaskIds.length === 0) return;
+    if (!bulkAssigneeId) {
+      setError("Choose an assignee before creating copies");
+      return;
+    }
+    const assignments = selectedVisibleTasks.map((task) => ({
+      task_id: task.id,
+      version: task.version,
+      assignee_id: bulkAssigneeId,
+    }));
+    if (assignments.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const response = await bulkCreateTaskAssignmentCopies(accessToken, assignments);
+      const createdTasks = response.created.map((item) => item.task);
+      appendCreatedTasksToQueue(createdTasks);
+      adjustUserAssignmentCounts(
+        createdTasks.map((task) => ({
+          previous_assignee_id: null,
+          assignee_id: task.assignee_id,
+          status: task.status,
+        }))
+      );
+      setBulkResult(`${response.created.length} copies created, ${response.errors.length} conflict/error${response.errors.length === 1 ? "" : "s"}.`);
+      setError(response.errors[0]?.message ?? null);
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Bulk copy assignment failed");
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
   async function applyAutoBalanceAssignment() {
@@ -517,6 +582,42 @@ export default function TasksPage() {
     );
   }
 
+  function appendCreatedTasksToQueue(createdTasks: TaskDetail[]) {
+    if (createdTasks.length === 0) return;
+    setData((prev) => {
+      if (!prev) return prev;
+      const createdItems = createdTasks.map((task) => task as TaskListItem);
+      const createdIds = new Set(createdItems.map((task) => task.id));
+      const statusCounts = { ...prev.status_counts };
+      for (const task of createdItems) {
+        statusCounts[task.status] = (statusCounts[task.status] ?? 0) + 1;
+      }
+      return {
+        ...prev,
+        items: [
+          ...createdItems,
+          ...prev.items.filter((task) => !createdIds.has(task.id)),
+        ].slice(0, prev.page_size),
+        total: prev.total + createdItems.length,
+        status_counts: statusCounts,
+      };
+    });
+    setAssigneeDraftByTask((prev) => {
+      const next = { ...prev };
+      for (const task of createdTasks) {
+        next[task.id] = task.assignee_id ?? "";
+      }
+      return next;
+    });
+    setDueDateDraftByTask((prev) => {
+      const next = { ...prev };
+      for (const task of createdTasks) {
+        next[task.id] = task.due_date ?? "";
+      }
+      return next;
+    });
+  }
+
   function selectUnassignedVisibleTasks() {
     setSelectedTaskIds(visibleTasks.filter((task) => !task.assignee_id).map((task) => task.id));
   }
@@ -687,6 +788,14 @@ export default function TasksPage() {
                   className="oa-btn-primary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {bulkBusy ? "Applying..." : "Apply"}
+                </button>
+                <button
+                  type="button"
+                  onClick={applyBulkAssignmentCopies}
+                  disabled={bulkBusy || selectedTaskIds.length === 0 || !bulkAssigneeId}
+                  className="oa-btn-secondary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Create copies
                 </button>
                 <button
                   type="button"
@@ -954,6 +1063,7 @@ export default function TasksPage() {
                       {isAdmin ? (
                         <div className="flex items-center gap-1">
                           <select
+                            aria-label={`Assignee for ${task.external_id}`}
                             value={assigneeDraftByTask[task.id] ?? task.assignee_id ?? ""}
                             onChange={(event) =>
                               setAssigneeDraftByTask((prev) => ({ ...prev, [task.id]: event.target.value }))
@@ -974,6 +1084,14 @@ export default function TasksPage() {
                             className="oa-btn-primary px-2.5 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             {assignmentBusyTaskId === task.id ? "Saving..." : "Assign"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void createAssignmentCopy(task.id, task.version)}
+                            disabled={assignmentBusyTaskId === task.id || !(assigneeDraftByTask[task.id] ?? "").trim()}
+                            className="oa-btn-secondary px-2.5 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Assign copy
                           </button>
                         </div>
                       ) : null}

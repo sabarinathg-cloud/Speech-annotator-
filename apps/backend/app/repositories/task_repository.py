@@ -1,3 +1,4 @@
+import copy
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
@@ -107,6 +108,86 @@ class TaskRepository:
         self.db.add(task)
         self.db.flush()
         return task
+
+    def create_parallel_assignment_copy(
+        self,
+        *,
+        source_task: AnnotationTask,
+        external_id: str,
+        assignee_id: str,
+    ) -> AnnotationTask:
+        original_row = copy.deepcopy(source_task.original_row or {})
+        original_row["parallel_assignment_source_task_id"] = source_task.id
+        original_row["parallel_assignment_source_external_id"] = source_task.external_id
+
+        task = AnnotationTask(
+            upload_job_id=source_task.upload_job_id,
+            external_id=external_id,
+            file_location=source_task.file_location,
+            final_transcript=source_task.final_transcript,
+            notes=source_task.notes,
+            status=TaskStatusEnum.NOT_STARTED,
+            speaker_gender=source_task.speaker_gender,
+            speaker_role=source_task.speaker_role,
+            language=source_task.language,
+            channel=source_task.channel,
+            duration_seconds=source_task.duration_seconds,
+            due_date=source_task.due_date,
+            custom_metadata=copy.deepcopy(source_task.custom_metadata or {}),
+            original_row=original_row,
+            pii_annotations=[],
+            alignment_words=copy.deepcopy(source_task.alignment_words or []),
+            alignment_transcript_hash=source_task.alignment_transcript_hash,
+            alignment_model=source_task.alignment_model,
+            alignment_updated_at=source_task.alignment_updated_at,
+            assignee_id=assignee_id,
+            last_saved_at=datetime.now(timezone.utc),
+        )
+        self.db.add(task)
+        self.db.flush()
+        for variant in source_task.transcript_variants or []:
+            self.db.add(
+                TaskTranscriptVariant(
+                    task_id=task.id,
+                    source_key=variant.source_key,
+                    source_label=variant.source_label,
+                    transcript_text=variant.transcript_text,
+                )
+            )
+        self.db.flush()
+        return task
+
+    def get_existing_parallel_assignment(
+        self,
+        *,
+        upload_job_id: str,
+        file_location: str,
+        assignee_id: str,
+        exclude_task_id: str,
+    ) -> AnnotationTask | None:
+        stmt = (
+            select(AnnotationTask)
+            .options(
+                joinedload(AnnotationTask.transcript_variants),
+                joinedload(AnnotationTask.assignee),
+                joinedload(AnnotationTask.last_tagger),
+            )
+            .where(AnnotationTask.upload_job_id == upload_job_id)
+            .where(AnnotationTask.file_location == file_location)
+            .where(AnnotationTask.assignee_id == assignee_id)
+            .where(AnnotationTask.id != exclude_task_id)
+            .limit(1)
+        )
+        return self.db.execute(stmt).unique().scalar_one_or_none()
+
+    def external_id_exists(self, *, upload_job_id: str, external_id: str) -> bool:
+        stmt = (
+            select(AnnotationTask.id)
+            .where(AnnotationTask.upload_job_id == upload_job_id)
+            .where(AnnotationTask.external_id == external_id)
+            .limit(1)
+        )
+        return self.db.execute(stmt).scalar_one_or_none() is not None
 
     def add_transcript_variants(
         self,

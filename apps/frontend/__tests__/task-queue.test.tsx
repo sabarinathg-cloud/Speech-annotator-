@@ -8,8 +8,10 @@ const {
   push,
   authState,
   bulkAssignTasks,
+  bulkCreateTaskAssignmentCopies,
   bulkUpdateTaskDueDates,
   bulkUpdateTaskStatuses,
+  createTaskAssignmentCopy,
   downloadTaskExport,
   fetchNextTask,
   fetchTasks,
@@ -27,8 +29,10 @@ const {
     },
   },
   bulkAssignTasks: vi.fn(),
+  bulkCreateTaskAssignmentCopies: vi.fn(),
   bulkUpdateTaskDueDates: vi.fn(),
   bulkUpdateTaskStatuses: vi.fn(),
+  createTaskAssignmentCopy: vi.fn(),
   downloadTaskExport: vi.fn(),
   fetchNextTask: vi.fn(),
   fetchTasks: vi.fn(),
@@ -105,8 +109,10 @@ vi.mock("@/lib/api", () => ({
     }
   },
   bulkAssignTasks: (...args: unknown[]) => bulkAssignTasks(...args),
+  bulkCreateTaskAssignmentCopies: (...args: unknown[]) => bulkCreateTaskAssignmentCopies(...args),
   bulkUpdateTaskDueDates: (...args: unknown[]) => bulkUpdateTaskDueDates(...args),
   bulkUpdateTaskStatuses: (...args: unknown[]) => bulkUpdateTaskStatuses(...args),
+  createTaskAssignmentCopy: (...args: unknown[]) => createTaskAssignmentCopy(...args),
   downloadTaskExport: (...args: unknown[]) => downloadTaskExport(...args),
   fetchNextTask: (...args: unknown[]) => fetchNextTask(...args),
   fetchTasks: (...args: unknown[]) => fetchTasks(...args),
@@ -140,6 +146,33 @@ describe("TasksPage queue workflows", () => {
     patchTaskDueDate.mockResolvedValue({ task: { ...task, due_date: "2026-05-15", version: 5 } });
     bulkAssignTasks.mockResolvedValue({
       updated: [{ task: { ...task, assignee_id: "reviewer-1", assignee_name: "Reviewer", version: 5 } }],
+      errors: [],
+    });
+    createTaskAssignmentCopy.mockResolvedValue({
+      task: {
+        ...task,
+        id: "task-copy-1",
+        external_id: "OUT-001__copy-reviewer-test-com-a1b2c3d4",
+        assignee_id: "reviewer-1",
+        assignee_name: "Reviewer",
+        assignee_email: "reviewer@test.com",
+        version: 1,
+      },
+    });
+    bulkCreateTaskAssignmentCopies.mockResolvedValue({
+      created: [
+        {
+          task: {
+            ...task,
+            id: "task-copy-1",
+            external_id: "OUT-001__copy-reviewer-test-com-a1b2c3d4",
+            assignee_id: "reviewer-1",
+            assignee_name: "Reviewer",
+            assignee_email: "reviewer@test.com",
+            version: 1,
+          },
+        },
+      ],
       errors: [],
     });
     bulkUpdateTaskDueDates.mockResolvedValue({
@@ -259,6 +292,39 @@ describe("TasksPage queue workflows", () => {
       ])
     );
     expect(await screen.findByText(/1 assigned, 0 conflict/)).toBeInTheDocument();
+  });
+
+  it("creates assignment copies so the same audio can go to another annotator", async () => {
+    render(<TasksPage />);
+    await screen.findByText("OUT-001");
+
+    fireEvent.change(screen.getByLabelText("Assignee for OUT-001"), { target: { value: "reviewer-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Assign copy" }));
+
+    await waitFor(() =>
+      expect(createTaskAssignmentCopy).toHaveBeenCalledWith("test-token", "task-1", {
+        version: 4,
+        assignee_id: "reviewer-1",
+      })
+    );
+    expect(await screen.findByText(/Created a separate assignment/)).toBeInTheDocument();
+    expect(screen.getByText("OUT-001__copy-reviewer-test-com-a1b2c3d4")).toBeInTheDocument();
+  });
+
+  it("bulk creates assignment copies for selected audio", async () => {
+    render(<TasksPage />);
+    await screen.findByText("OUT-001");
+
+    fireEvent.click(screen.getByLabelText("Select task OUT-001"));
+    fireEvent.change(screen.getByLabelText("Bulk assignee"), { target: { value: "reviewer-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create copies" }));
+
+    await waitFor(() =>
+      expect(bulkCreateTaskAssignmentCopies).toHaveBeenCalledWith("test-token", [
+        { task_id: "task-1", version: 4, assignee_id: "reviewer-1" },
+      ])
+    );
+    expect(await screen.findByText(/1 copies created, 0 conflict/)).toBeInTheDocument();
   });
 
   it("auto-balances selected tasks across active eligible users by workload", async () => {
