@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -756,7 +756,7 @@ def test_admin_can_generate_deepgram_references_and_rank_by_wer(
         )
         assert assign_response.status_code == 200
         assignments = {entry["candidate_id"]: entry["id"] for entry in assign_response.json()["items"]}
-        submitted_at = datetime.now(UTC)
+        submitted_at = datetime.now(timezone.utc)
         first_assignment = db_session.get(HiringAssignment, assignments[seed_users["candidate"].id])
         second_assignment = db_session.get(HiringAssignment, assignments[candidate_two.id])
         first_assignment.status = HiringAssignmentStatusEnum.SUBMITTED
@@ -849,8 +849,8 @@ def test_hiring_deadline_locks_and_admin_can_extend(client, auth_headers, seed_u
     original_roots = settings.hiring_audio_import_roots
     settings.hiring_audio_import_roots = str(tmp_path)
     try:
-        past_due_at = datetime.now(UTC) - timedelta(minutes=5)
-        future_due_at = datetime.now(UTC) + timedelta(minutes=30)
+        past_due_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        future_due_at = datetime.now(timezone.utc) + timedelta(minutes=30)
         response = client.post(
             "/api/v1/hiring/assessments",
             headers=auth_headers["admin"],

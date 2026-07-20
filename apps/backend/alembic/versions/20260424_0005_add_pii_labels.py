@@ -5,7 +5,7 @@ Revises: 20260424_0004
 Create Date: 2026-04-24
 """
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import uuid
 
 from alembic import op
@@ -67,7 +67,7 @@ def upgrade() -> None:
         sa.column("created_at", sa.DateTime(timezone=True)),
         sa.column("updated_at", sa.DateTime(timezone=True)),
     )
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     op.bulk_insert(
         labels_table,
         [

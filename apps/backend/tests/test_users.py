@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.models.enums import RoleEnum, TaskStatusEnum, UploadJobStatusEnum
 from app.models.task import AnnotationTask
@@ -223,7 +223,7 @@ def test_login_and_authenticated_requests_update_user_activity(client, auth_head
     assert annotator.last_login_at is not None
     assert annotator.last_activity_at is not None
 
-    stale_activity = datetime.now(UTC) - timedelta(days=3)
+    stale_activity = datetime.now(timezone.utc) - timedelta(days=3)
     annotator.last_activity_at = stale_activity
     db_session.commit()
 
@@ -233,5 +233,5 @@ def test_login_and_authenticated_requests_update_user_activity(client, auth_head
     db_session.refresh(annotator)
     refreshed_activity = annotator.last_activity_at
     if refreshed_activity.tzinfo is None:
-        refreshed_activity = refreshed_activity.replace(tzinfo=UTC)
+        refreshed_activity = refreshed_activity.replace(tzinfo=timezone.utc)
     assert refreshed_activity > stale_activity

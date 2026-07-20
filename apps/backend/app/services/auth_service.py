@@ -1,5 +1,5 @@
 import secrets
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -30,7 +30,7 @@ class AuthService:
         if user and verify_password(password, user.password_hash):
             if not user.is_active:
                 raise ServiceError("User account is inactive", status_code=403)
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             user.last_login_at = now
             user.last_activity_at = now
             user.active_session_id = secrets.token_urlsafe(32)
@@ -71,7 +71,7 @@ class AuthService:
         ip_address: str | None = None,
         user_agent: str | None = None,
     ) -> TokenResponse:
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         user.confidentiality_acknowledged_at = now
         user.confidentiality_acknowledged_version = CONFIDENTIALITY_ACKNOWLEDGEMENT_VERSION
         user.confidentiality_acknowledged_session_id = user.active_session_id

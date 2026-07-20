@@ -1,5 +1,5 @@
 from collections.abc import Generator
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -73,7 +73,7 @@ def seed_users(db_session: Session) -> dict[str, User]:
         password_hash=get_password_hash("Admin@123"),
         role=RoleEnum.ADMIN,
         is_active=True,
-        confidentiality_acknowledged_at=datetime.now(UTC),
+        confidentiality_acknowledged_at=datetime.now(timezone.utc),
         confidentiality_acknowledged_version="2026-05-sensitive-data-v1",
     )
     annotator = User(
@@ -82,7 +82,7 @@ def seed_users(db_session: Session) -> dict[str, User]:
         password_hash=get_password_hash("Annotator@123"),
         role=RoleEnum.ANNOTATOR,
         is_active=True,
-        confidentiality_acknowledged_at=datetime.now(UTC),
+        confidentiality_acknowledged_at=datetime.now(timezone.utc),
         confidentiality_acknowledged_version="2026-05-sensitive-data-v1",
     )
     reviewer = User(
@@ -91,7 +91,7 @@ def seed_users(db_session: Session) -> dict[str, User]:
         password_hash=get_password_hash("Reviewer@123"),
         role=RoleEnum.REVIEWER,
         is_active=True,
-        confidentiality_acknowledged_at=datetime.now(UTC),
+        confidentiality_acknowledged_at=datetime.now(timezone.utc),
         confidentiality_acknowledged_version="2026-05-sensitive-data-v1",
     )
     candidate = User(
@@ -100,7 +100,7 @@ def seed_users(db_session: Session) -> dict[str, User]:
         password_hash=get_password_hash("Candidate@123"),
         role=RoleEnum.CANDIDATE,
         is_active=True,
-        confidentiality_acknowledged_at=datetime.now(UTC),
+        confidentiality_acknowledged_at=datetime.now(timezone.utc),
         confidentiality_acknowledged_version="2026-05-sensitive-data-v1",
     )
     db_session.add_all([admin, annotator, reviewer, candidate])

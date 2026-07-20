@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.models.enums import TaskStatusEnum, UploadJobStatusEnum
 from app.models.security import SecurityAuditEvent
@@ -351,7 +351,7 @@ def test_admin_metrics_include_user_productivity_and_session_metrics(
     db_session,
     seed_users,
 ):
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     annotator = seed_users["annotator"]
     annotator.last_login_at = now - timedelta(hours=3)
     annotator.active_session_started_at = now - timedelta(minutes=95)

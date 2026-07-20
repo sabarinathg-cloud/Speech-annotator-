@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import delete, select
 
@@ -18,7 +18,7 @@ def upsert_user(session, email: str, full_name: str, password: str, role: RoleEn
     existing = session.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if existing:
         if not existing.confidentiality_acknowledged_at:
-            existing.confidentiality_acknowledged_at = datetime.now(UTC)
+            existing.confidentiality_acknowledged_at = datetime.now(timezone.utc)
             existing.confidentiality_acknowledged_version = CONFIDENTIALITY_ACKNOWLEDGEMENT_VERSION
         return existing
     user = User(
@@ -27,7 +27,7 @@ def upsert_user(session, email: str, full_name: str, password: str, role: RoleEn
         password_hash=get_password_hash(password),
         role=role,
         is_active=True,
-        confidentiality_acknowledged_at=datetime.now(UTC),
+        confidentiality_acknowledged_at=datetime.now(timezone.utc),
         confidentiality_acknowledged_version=CONFIDENTIALITY_ACKNOWLEDGEMENT_VERSION,
     )
     session.add(user)

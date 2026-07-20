@@ -1,5 +1,5 @@
 from collections.abc import Generator
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
@@ -52,7 +52,7 @@ def get_current_user(
     session_id = payload.get("sid")
     if not session_id or not user.active_session_id or session_id != user.active_session_id:
         raise replaced_session_exception
-    user.last_activity_at = datetime.now(UTC)
+    user.last_activity_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(user)
     return user

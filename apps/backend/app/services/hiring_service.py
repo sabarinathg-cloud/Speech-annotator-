@@ -4,7 +4,7 @@ import secrets
 import shutil
 import uuid
 import zipfile
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import BinaryIO, Iterable
@@ -74,7 +74,7 @@ HIRING_FOLDER_IMPORT_MAX_MESSAGES = 25
 
 
 def _now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def _safe_decimal(value: float | None) -> Decimal | None:
@@ -88,7 +88,7 @@ def _score_to_float(value: Decimal | None) -> float | None:
 
 
 def _as_utc(value: datetime) -> datetime:
-    return value if value.tzinfo else value.replace(tzinfo=UTC)
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 class HiringService:
@@ -823,7 +823,7 @@ class HiringService:
                 entry[1]["average_word_error_rate"] if entry[1]["average_word_error_rate"] is not None else 0,
                 entry[0].total_score is None,
                 -(float(entry[0].total_score or 0)),
-                entry[0].submitted_at or datetime.max.replace(tzinfo=UTC),
+                entry[0].submitted_at or datetime.max.replace(tzinfo=timezone.utc),
             ),
         )
         items = []
@@ -1041,7 +1041,7 @@ class HiringService:
         if assessment.due_at:
             return _as_utc(assessment.due_at)
         if assessment.due_date:
-            return datetime.combine(assessment.due_date + timedelta(days=1), time.min, tzinfo=UTC)
+            return datetime.combine(assessment.due_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
         return None
 
     def _submission_deadline_at(self, assignment: HiringAssignment) -> datetime | None:

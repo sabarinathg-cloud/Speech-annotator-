@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import or_, select
@@ -23,7 +23,7 @@ def _unlink_if_present(path_value: str | None) -> bool:
 
 def run_cleanup(session: Session | None = None) -> dict[str, int]:
     settings = get_settings()
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     abandoned_upload_cutoff = now - timedelta(hours=settings.abandoned_upload_cleanup_hours)
     failed_job_cutoff = now - timedelta(hours=settings.failed_job_output_cleanup_hours)
     export_cutoff = now - timedelta(hours=settings.export_file_cleanup_hours)

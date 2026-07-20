@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -95,7 +95,7 @@ class JobService:
             return
 
         job.status = "RUNNING"
-        job.started_at = datetime.now(UTC)
+        job.started_at = datetime.now(timezone.utc)
         job.error_message = None
         self.db.commit()
 
@@ -104,14 +104,14 @@ class JobService:
             job = self.get_job(job_id)
             job.status = "COMPLETED"
             job.result = result
-            job.completed_at = datetime.now(UTC)
+            job.completed_at = datetime.now(timezone.utc)
             self.db.commit()
         except Exception as exc:
             self.db.rollback()
             job = self.get_job(job_id)
             job.status = "FAILED"
             job.error_message = str(exc)
-            job.completed_at = datetime.now(UTC)
+            job.completed_at = datetime.now(timezone.utc)
             self.db.commit()
 
     def _create_job(self, *, job_type: str, payload: dict[str, Any], actor: User) -> BackgroundJob:

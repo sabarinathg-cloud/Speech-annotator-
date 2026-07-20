@@ -1,5 +1,5 @@
 from io import BytesIO
-from datetime import UTC, date, datetime, time
+from datetime import date, datetime, time, timezone
 from typing import Literal
 
 import pandas as pd
@@ -63,9 +63,9 @@ class ExportService:
         if language:
             filters.append(AnnotationTask.language == language)
         if date_from:
-            filters.append(AnnotationTask.updated_at >= datetime.combine(date_from, time.min, tzinfo=UTC))
+            filters.append(AnnotationTask.updated_at >= datetime.combine(date_from, time.min, tzinfo=timezone.utc))
         if date_to:
-            filters.append(AnnotationTask.updated_at <= datetime.combine(date_to, time.max, tzinfo=UTC))
+            filters.append(AnnotationTask.updated_at <= datetime.combine(date_to, time.max, tzinfo=timezone.utc))
         if task_ids:
             filters.append(AnnotationTask.id.in_(task_ids))
         if filters:

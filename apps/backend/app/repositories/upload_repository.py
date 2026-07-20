@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, joinedload
@@ -60,9 +60,9 @@ class UploadRepository:
         if preview_row_count is not None:
             job.preview_row_count = preview_row_count
         if validated:
-            job.validated_at = datetime.now(UTC)
+            job.validated_at = datetime.now(timezone.utc)
         if imported:
-            job.imported_at = datetime.now(UTC)
+            job.imported_at = datetime.now(timezone.utc)
         self.db.flush()
         return job
 

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from app.models.task import AnnotationTask
 from app.services.audio_alignment_service import AudioAlignmentService, transcript_hash
@@ -456,7 +456,7 @@ def test_alignment_and_masked_audio_endpoints(client, auth_headers, sample_excel
         task.alignment_words = words
         task.alignment_transcript_hash = transcript_hash(task.final_transcript or "")
         task.alignment_model = "test-aligner"
-        task.alignment_updated_at = datetime.now(UTC)
+        task.alignment_updated_at = datetime.now(timezone.utc)
         return words
 
     mask_modes: list[str] = []
@@ -482,7 +482,7 @@ def test_alignment_and_masked_audio_endpoints(client, auth_headers, sample_excel
         accepted_reference_intervals = actual_intervals if custom_intervals else reference_intervals
         task.masked_audio_location = str(fake_path)
         task.masked_audio_pii_hash = "pii-hash"
-        task.masked_audio_updated_at = datetime.now(UTC)
+        task.masked_audio_updated_at = datetime.now(timezone.utc)
         task.masked_audio_intervals = actual_intervals
         task.masked_audio_reference_intervals = accepted_reference_intervals
         task.masked_audio_alignment_intervals = reference_intervals

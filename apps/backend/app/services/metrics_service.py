@@ -1,7 +1,7 @@
 import re
 import unicodedata
 from collections import Counter, defaultdict
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import and_, select
@@ -210,8 +210,8 @@ def _as_aware_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _minutes_between(start: datetime | None, end: datetime | None) -> float | None:
@@ -504,7 +504,7 @@ class MetricsService:
         task_metrics.sort(key=lambda item: item.max_wer if item.max_wer is not None else -1, reverse=True)
 
         return AdminMetricsResponse(
-            generated_at=datetime.now(UTC),
+            generated_at=datetime.now(timezone.utc),
             filters=MetricsFilters(
                 status=status,
                 assignee_id=assignee_id,
@@ -572,9 +572,9 @@ class MetricsService:
         if language:
             filters.append(AnnotationTask.language == language)
         if date_from:
-            filters.append(AnnotationTask.updated_at >= datetime.combine(date_from, datetime.min.time(), tzinfo=UTC))
+            filters.append(AnnotationTask.updated_at >= datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc))
         if date_to:
-            filters.append(AnnotationTask.updated_at <= datetime.combine(date_to, datetime.max.time(), tzinfo=UTC))
+            filters.append(AnnotationTask.updated_at <= datetime.combine(date_to, datetime.max.time(), tzinfo=timezone.utc))
         return filters
 
     def _build_pii_metrics(self, tasks: list[AnnotationTask]) -> PIIMetrics:
@@ -827,7 +827,7 @@ class MetricsService:
         users = list(self.db.execute(select(User).order_by(User.full_name.asc())).scalars().all())
         task_ids = [task.id for task in tasks]
         user_ids = [user.id for user in users]
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         assigned_task_counts: Counter[str] = Counter()
         open_assigned_task_counts: Counter[str] = Counter()

@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import PurePosixPath
 from typing import Any
@@ -671,7 +671,7 @@ class TaskService:
             transcript_hash=task.alignment_transcript_hash or transcript_hash(task.final_transcript or ""),
             model=task.alignment_model or "unknown",
             words=[AudioAlignmentWord(**word) for word in words],
-            generated_at=task.alignment_updated_at or datetime.now(UTC),
+            generated_at=task.alignment_updated_at or datetime.now(timezone.utc),
         )
 
     def generate_masked_pii_audio(
@@ -736,7 +736,7 @@ class TaskService:
                 AudioMaskInterval(**interval) for interval in (task.masked_audio_alignment_intervals or [])
             ],
             words=[AudioAlignmentWord(**word) for word in task.alignment_words],
-            generated_at=task.masked_audio_updated_at or datetime.now(UTC),
+            generated_at=task.masked_audio_updated_at or datetime.now(timezone.utc),
         )
 
     def _get_task_or_404(self, task_id: str, *, actor: User | None = None) -> AnnotationTask:

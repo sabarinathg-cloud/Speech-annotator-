@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.core.config import Settings
@@ -182,7 +182,7 @@ def test_audio_stream_rejects_mobile_devices(client, auth_headers, sample_excel_
 
 
 def test_cleanup_removes_abandoned_uploads_and_expired_job_outputs(db_session, tmp_path, seed_users):
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     upload_path = tmp_path / "abandoned.xlsx"
     upload_path.write_bytes(b"abandoned")
     output_path = tmp_path / "old-export.csv"

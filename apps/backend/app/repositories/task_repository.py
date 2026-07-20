@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any
@@ -102,7 +102,7 @@ class TaskRepository:
             custom_metadata=custom_metadata,
             original_row=original_row,
             pii_annotations=[],
-            last_saved_at=datetime.now(UTC),
+            last_saved_at=datetime.now(timezone.utc),
         )
         self.db.add(task)
         self.db.flush()
@@ -165,9 +165,9 @@ class TaskRepository:
         if language:
             filters.append(AnnotationTask.language == language)
         if date_from:
-            filters.append(AnnotationTask.updated_at >= datetime.combine(date_from, datetime.min.time(), tzinfo=UTC))
+            filters.append(AnnotationTask.updated_at >= datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc))
         if date_to:
-            filters.append(AnnotationTask.updated_at <= datetime.combine(date_to, datetime.max.time(), tzinfo=UTC))
+            filters.append(AnnotationTask.updated_at <= datetime.combine(date_to, datetime.max.time(), tzinfo=timezone.utc))
 
         if filters:
             stmt = stmt.where(and_(*filters))
@@ -307,7 +307,7 @@ class TaskRepository:
 
     def save_task(self, task: AnnotationTask) -> AnnotationTask:
         task.version += 1
-        task.last_saved_at = datetime.now(UTC)
+        task.last_saved_at = datetime.now(timezone.utc)
         self.db.flush()
         return task
 

@@ -6,7 +6,7 @@ import shutil
 import tempfile
 import wave
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -349,7 +349,7 @@ class AudioAlignmentService:
         task.alignment_words = [word.to_dict() for word in aligned_words]
         task.alignment_transcript_hash = current_hash
         task.alignment_model = ALIGNMENT_MODEL_NAME
-        task.alignment_updated_at = datetime.now(UTC)
+        task.alignment_updated_at = datetime.now(timezone.utc)
         return task.alignment_words
 
     def build_pii_masked_audio(
@@ -412,7 +412,7 @@ class AudioAlignmentService:
 
         task.masked_audio_location = str(output_path)
         task.masked_audio_pii_hash = current_pii_hash
-        task.masked_audio_updated_at = datetime.now(UTC)
+        task.masked_audio_updated_at = datetime.now(timezone.utc)
         accepted_reference_intervals = intervals if custom_intervals is not None else reference_intervals
         self._store_mask_metadata(
             task,

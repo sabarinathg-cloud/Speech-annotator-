@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -110,7 +110,7 @@ class PIILabelService:
         if "sort_order" in provided_fields and sort_order is not None:
             label.sort_order = sort_order
 
-        label.updated_at = datetime.now(UTC)
+        label.updated_at = datetime.now(timezone.utc)
         self.db.commit()
         self.db.refresh(label)
         return PIILabelResponse.model_validate(label)
