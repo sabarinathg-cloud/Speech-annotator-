@@ -1132,6 +1132,17 @@ export async function uploadExcel(
   );
 }
 
+export async function uploadSourceFromPath(
+  token: string,
+  path: string
+): Promise<{ id: string; upload_job_id: string; filename: string; status: string }> {
+  return request<{ id: string; upload_job_id: string; filename: string; status: string }>(
+    "/uploads/from-path",
+    { method: "POST", body: JSON.stringify({ path }) },
+    token
+  );
+}
+
 export async function previewUpload(
   token: string,
   uploadJobId: string

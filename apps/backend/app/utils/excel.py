@@ -4,6 +4,16 @@ from typing import Any
 import pandas as pd
 
 
+SUPPORTED_TABULAR_SUFFIXES = {".csv", ".xlsx", ".xls"}
+
+
+def load_tabular_as_dataframe(file_bytes: bytes, file_suffix: str | None = None) -> pd.DataFrame:
+    suffix = (file_suffix or "").lower()
+    if suffix == ".csv":
+        return pd.read_csv(BytesIO(file_bytes)).fillna("")
+    return load_excel_as_dataframe(file_bytes, suffix)
+
+
 def load_excel_as_dataframe(file_bytes: bytes, file_suffix: str | None = None) -> pd.DataFrame:
     engine = "xlrd" if file_suffix == ".xls" else "openpyxl"
     return pd.read_excel(BytesIO(file_bytes), engine=engine).fillna("")

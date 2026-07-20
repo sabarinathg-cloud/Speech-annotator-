@@ -10,6 +10,7 @@ from app.schemas.upload import (
     ColumnMappingRequest,
     PreviewResponse,
     UploadFileResponse,
+    UploadFromPathRequest,
     UploadImportResult,
     UploadValidationResult,
 )
@@ -36,6 +37,24 @@ def upload_file(
     service = UploadService(db)
     try:
         return service.upload_excel(file, current_user, organization)
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/from-path", response_model=UploadFileResponse)
+def upload_file_from_path(
+    payload: UploadFromPathRequest,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
+):
+    service = UploadService(db)
+    try:
+        return service.import_source_file_from_path(
+            source_path=payload.path,
+            current_user=current_user,
+            organization=organization,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc
 

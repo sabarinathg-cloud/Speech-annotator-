@@ -1,5 +1,7 @@
 import uuid
 import re
+import mimetypes
+import shutil
 import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -28,7 +30,7 @@ from app.schemas.upload import (
 )
 from app.services.errors import ServiceError
 from app.storage.audio_resolver import AudioResolver
-from app.utils.excel import dataframe_preview, load_excel_as_dataframe, normalize_cell
+from app.utils.excel import SUPPORTED_TABULAR_SUFFIXES, dataframe_preview, load_tabular_as_dataframe, normalize_cell
 
 settings = get_settings()
 ALLOWED_CORE_METADATA_FIELDS = {"speaker_gender", "speaker_role", "language", "channel", "duration_seconds"}
@@ -69,8 +71,8 @@ class UploadService:
         if not file.filename:
             raise ServiceError("File name is required")
         suffix = Path(file.filename).suffix.lower()
-        if suffix not in {".xlsx", ".xls"}:
-            raise ServiceError("Only .xlsx/.xls files are supported", status_code=422)
+        if suffix not in SUPPORTED_TABULAR_SUFFIXES:
+            raise ServiceError("Only .csv/.xlsx/.xls files are supported", status_code=422)
 
         content = file.file.read()
         if not content:
@@ -85,6 +87,46 @@ class UploadService:
             original_filename=file.filename,
             stored_path=str(destination),
             content_type=file.content_type,
+            uploaded_by_id=current_user.id,
+        )
+        upload_job = self.upload_repo.create_upload_job(
+            organization_id=organization.id,
+            upload_file_id=upload_file.id,
+            created_by_id=current_user.id,
+        )
+        self.db.commit()
+        return UploadFileResponse(
+            id=upload_file.id,
+            upload_job_id=upload_job.id,
+            organization_id=organization.id,
+            filename=upload_file.original_filename,
+            status=upload_job.status,
+        )
+
+    def import_source_file_from_path(
+        self,
+        *,
+        source_path: str,
+        current_user: User,
+        organization: Organization,
+    ) -> UploadFileResponse:
+        resolved_source = self._resolve_allowed_source_path(source_path)
+        suffix = resolved_source.suffix.lower()
+        if suffix not in SUPPORTED_TABULAR_SUFFIXES:
+            raise ServiceError("Only .csv/.xlsx/.xls source files are supported", status_code=422)
+
+        stored_name = f"{uuid.uuid4()}{suffix}"
+        destination = settings.upload_path / stored_name
+        try:
+            shutil.copy2(resolved_source, destination)
+        except OSError as exc:
+            raise ServiceError("Unable to copy source file into managed upload storage", status_code=422) from exc
+
+        upload_file = self.upload_repo.create_upload_file(
+            organization_id=organization.id,
+            original_filename=resolved_source.name,
+            stored_path=str(destination),
+            content_type=mimetypes.guess_type(str(resolved_source))[0],
             uploaded_by_id=current_user.id,
         )
         upload_job = self.upload_repo.create_upload_job(
@@ -280,9 +322,36 @@ class UploadService:
     def _load_job_dataframe(self, job) -> Any:
         file_path = Path(job.upload_file.stored_path)
         try:
-            return load_excel_as_dataframe(file_path.read_bytes(), file_path.suffix.lower())
+            return load_tabular_as_dataframe(file_path.read_bytes(), file_path.suffix.lower())
         except Exception as exc:
-            raise ServiceError("Unable to read Excel file", status_code=422) from exc
+            raise ServiceError("Unable to read source file", status_code=422) from exc
+
+    def _resolve_allowed_source_path(self, raw_path: str) -> Path:
+        roots = [root.resolve() for root in settings.task_manifest_import_root_list]
+        if not roots:
+            raise ServiceError("No task manifest import roots are configured", status_code=422)
+
+        try:
+            requested = Path(raw_path).expanduser()
+            if not requested.is_absolute():
+                raise ServiceError("Source file path must be absolute", status_code=422)
+            resolved = requested.resolve(strict=True)
+        except ServiceError:
+            raise
+        except OSError as exc:
+            raise ServiceError("Source file was not found", status_code=404) from exc
+
+        if not resolved.is_file():
+            raise ServiceError("Source path must point to a file", status_code=422)
+
+        if not any(resolved == root or root in resolved.parents for root in roots):
+            raise ServiceError(
+                "Source file path is outside the configured task manifest import roots",
+                status_code=403,
+                extra={"allowed_roots": [str(root) for root in roots]},
+            )
+
+        return resolved
 
     def _validate_dataframe(self, df, mapping: ColumnMappingRequest) -> ValidationArtifacts:
         columns = set(str(col) for col in df.columns.tolist())

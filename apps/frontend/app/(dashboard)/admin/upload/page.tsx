@@ -15,6 +15,7 @@ import {
   previewUpload,
   resetUserPassword,
   uploadExcel,
+  uploadSourceFromPath,
   updateUser,
   validateUpload,
 } from "@/lib/api";
@@ -70,6 +71,7 @@ function formatGateLabel(gateKey: string): string {
 export default function AdminUploadPage() {
   const { accessToken, user } = useAuth();
   const [file, setFile] = useState<File | null>(null);
+  const [sourcePath, setSourcePath] = useState("");
   const [uploadJobId, setUploadJobId] = useState<string | null>(null);
   const [columns, setColumns] = useState<string[]>([]);
   const [sampleRows, setSampleRows] = useState<Record<string, unknown>[]>([]);
@@ -144,6 +146,29 @@ export default function AdminUploadPage() {
     ]
   );
 
+  function applyPreviewDefaults(preview: Awaited<ReturnType<typeof previewUpload>>) {
+    setColumns(preview.columns);
+    setSampleRows(preview.sample_rows);
+    setIdColumn(preview.columns.includes("id") ? "id" : preview.columns[0] || "");
+    setFileLocationColumn(
+      preview.columns.includes("file_location") ? "file_location" : preview.columns[1] || ""
+    );
+    setFinalTranscriptColumn("");
+    setNotesColumn(preview.columns.includes("notes") ? "notes" : "");
+    setSpeakerGenderColumn(preview.columns.includes("speaker_gender") ? "speaker_gender" : "");
+    setSpeakerRoleColumn(preview.columns.includes("speaker_role") ? "speaker_role" : "");
+    setLanguageColumn(preview.columns.includes("language") ? "language" : "");
+    setChannelColumn(preview.columns.includes("channel") ? "channel" : "");
+    setDurationColumn(
+      preview.columns.includes("duration_seconds")
+        ? "duration_seconds"
+        : preview.columns.includes("duration")
+          ? "duration"
+          : ""
+    );
+    setTranscriptMaps(inferTranscriptMaps(preview.columns));
+  }
+
   async function handleUpload() {
     if (!accessToken || !file) return;
     setBusy(true);
@@ -154,28 +179,27 @@ export default function AdminUploadPage() {
       const upload = await uploadExcel(accessToken, file);
       setUploadJobId(upload.upload_job_id);
       const preview = await previewUpload(accessToken, upload.upload_job_id);
-      setColumns(preview.columns);
-      setSampleRows(preview.sample_rows);
-      setIdColumn(preview.columns.includes("id") ? "id" : preview.columns[0] || "");
-      setFileLocationColumn(
-        preview.columns.includes("file_location") ? "file_location" : preview.columns[1] || ""
-      );
-      setFinalTranscriptColumn("");
-      setNotesColumn(preview.columns.includes("notes") ? "notes" : "");
-      setSpeakerGenderColumn(preview.columns.includes("speaker_gender") ? "speaker_gender" : "");
-      setSpeakerRoleColumn(preview.columns.includes("speaker_role") ? "speaker_role" : "");
-      setLanguageColumn(preview.columns.includes("language") ? "language" : "");
-      setChannelColumn(preview.columns.includes("channel") ? "channel" : "");
-      setDurationColumn(
-        preview.columns.includes("duration_seconds")
-          ? "duration_seconds"
-          : preview.columns.includes("duration")
-            ? "duration"
-            : ""
-      );
-      setTranscriptMaps(inferTranscriptMaps(preview.columns));
+      applyPreviewDefaults(preview);
     } catch (err) {
       setError(err instanceof APIError ? err.message : "Upload failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSourcePathLoad() {
+    if (!accessToken || !sourcePath.trim()) return;
+    setBusy(true);
+    setError(null);
+    setValidationResult(null);
+    setImportResult(null);
+    try {
+      const upload = await uploadSourceFromPath(accessToken, sourcePath.trim());
+      setUploadJobId(upload.upload_job_id);
+      const preview = await previewUpload(accessToken, upload.upload_job_id);
+      applyPreviewDefaults(preview);
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Source file load failed");
     } finally {
       setBusy(false);
     }
@@ -804,8 +828,8 @@ export default function AdminUploadPage() {
         <div className="oa-card p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 className="oa-title text-base font-semibold">Step 1: Upload Source File</h3>
-              <p className="oa-subtext mt-1 text-sm">Use `.xlsx` or `.xls` format exported from admin operations.</p>
+              <h3 className="oa-title text-base font-semibold">Step 1: Load Source File</h3>
+              <p className="oa-subtext mt-1 text-sm">Use a CSV/XLSX file from your browser or a backend-accessible path.</p>
             </div>
             <button
               type="button"
@@ -816,31 +840,55 @@ export default function AdminUploadPage() {
             </button>
           </div>
 
-          <div className="oa-card-soft mt-4 border-dashed p-4">
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-              className="w-full text-sm text-[#5f5a79] file:mr-3 file:rounded-md file:border-0 file:bg-[#e9def6] file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-[#3b315e] hover:file:bg-[#dcccf0]"
-            />
-            <p className="mt-2 text-xs text-[#7a7494]">{file ? `Selected: ${file.name}` : "No file selected yet."}</p>
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            <div className="oa-card-soft border-dashed p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">Browser file</p>
+              <input
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                className="mt-3 w-full text-sm text-[#5f5a79] file:mr-3 file:rounded-md file:border-0 file:bg-[#e9def6] file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-[#3b315e] hover:file:bg-[#dcccf0]"
+              />
+              <p className="mt-2 text-xs text-[#7a7494]">{file ? `Selected: ${file.name}` : "No file selected yet."}</p>
+              <button
+                type="button"
+                onClick={handleUpload}
+                disabled={!file || busy}
+                className="oa-btn-primary mt-3 px-3.5 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {busy ? "Processing..." : "Upload & Preview"}
+              </button>
+            </div>
+
+            <div className="oa-card-soft p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">Server file path</p>
+              <input
+                value={sourcePath}
+                onChange={(event) => setSourcePath(event.target.value)}
+                className="oa-input mt-3"
+                placeholder="/mnt/amc-data/stt-train-related-files/transcripts_test_150.csv"
+              />
+              <p className="mt-2 text-xs text-[#7a7494]">
+                Path must be readable by the backend and inside `TASK_MANIFEST_IMPORT_ROOTS`.
+              </p>
+              <button
+                type="button"
+                onClick={handleSourcePathLoad}
+                disabled={!sourcePath.trim() || busy}
+                className="oa-btn-primary mt-3 px-3.5 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {busy ? "Processing..." : "Load Path & Preview"}
+              </button>
+            </div>
           </div>
 
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handleUpload}
-              disabled={!file || busy}
-              className="oa-btn-primary px-3.5 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {busy ? "Processing..." : "Upload & Preview"}
-            </button>
-            {uploadJobId ? (
+          {uploadJobId ? (
+            <div className="mt-4">
               <span className="rounded-md border border-[#e3d8f3] bg-[#f7f1ff] px-2.5 py-1 text-xs text-[#5e597a]">
                 Job: {uploadJobId}
               </span>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
         </div>
 
         <div className="oa-card p-5">

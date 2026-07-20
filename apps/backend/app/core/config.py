@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     abandoned_upload_cleanup_hours: int = Field(default=24, alias="ABANDONED_UPLOAD_CLEANUP_HOURS")
     failed_job_output_cleanup_hours: int = Field(default=24, alias="FAILED_JOB_OUTPUT_CLEANUP_HOURS")
     export_file_cleanup_hours: int = Field(default=168, alias="EXPORT_FILE_CLEANUP_HOURS")
+    task_manifest_import_roots: str = Field(default="", alias="TASK_MANIFEST_IMPORT_ROOTS")
     pii_ml_detection_enabled: bool = Field(default=False, alias="PII_ML_DETECTION_ENABLED")
     pii_model_preload_enabled: bool = Field(default=False, alias="PII_MODEL_PRELOAD_ENABLED")
     hiring_audio_import_roots: str = Field(default="", alias="HIRING_AUDIO_IMPORT_ROOTS")
@@ -106,6 +107,10 @@ class Settings(BaseSettings):
         path = Path(self.upload_dir)
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @property
+    def task_manifest_import_root_list(self) -> list[Path]:
+        return [Path(value).expanduser() for value in self.task_manifest_import_roots.split(",") if value.strip()]
 
     @property
     def hiring_audio_import_root_list(self) -> list[Path]:

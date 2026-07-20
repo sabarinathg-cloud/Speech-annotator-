@@ -29,6 +29,10 @@ class ColumnMappingRequest(BaseModel):
         return self
 
 
+class UploadFromPathRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=2000)
+
+
 class UploadFileResponse(BaseModel):
     id: str
     upload_job_id: str

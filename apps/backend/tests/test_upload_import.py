@@ -1,3 +1,6 @@
+from app.core.config import get_settings
+
+
 def _mapping():
     return {
         "id_column": "id",
@@ -179,7 +182,89 @@ def test_preview_rejects_unreadable_excel_files(client, auth_headers):
 
     preview_response = client.get(f"/api/v1/uploads/{upload_job_id}/preview", headers=auth_headers["admin"])
     assert preview_response.status_code == 422
-    assert preview_response.json()["detail"]["message"] == "Unable to read Excel file"
+    assert preview_response.json()["detail"]["message"] == "Unable to read source file"
+
+
+def test_upload_source_file_from_allowed_server_csv_path(client, auth_headers, tmp_path):
+    settings = get_settings()
+    original_roots = settings.task_manifest_import_roots
+    settings.task_manifest_import_roots = str(tmp_path)
+    try:
+        audio_path = tmp_path / "audio-row.wav"
+        audio_path.write_bytes(b"RIFF")
+        csv_path = tmp_path / "tasks.csv"
+        csv_path.write_text(
+            "\n".join(
+                [
+                    "id,file_location,model_1_transcript,model_2_transcript,speaker_gender,language,notes",
+                    f"CSV-001,local://{audio_path},hello from csv,hello alternate,female,en,server path import",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        upload_response = client.post(
+            "/api/v1/uploads/from-path",
+            headers=auth_headers["admin"],
+            json={"path": str(csv_path)},
+        )
+
+        assert upload_response.status_code == 200
+        assert upload_response.json()["filename"] == "tasks.csv"
+        upload_job_id = upload_response.json()["upload_job_id"]
+
+        preview_response = client.get(f"/api/v1/uploads/{upload_job_id}/preview", headers=auth_headers["admin"])
+        assert preview_response.status_code == 200
+        assert preview_response.json()["columns"][:3] == ["id", "file_location", "model_1_transcript"]
+
+        validate_response = client.post(
+            f"/api/v1/uploads/{upload_job_id}/validate",
+            headers=auth_headers["admin"],
+            json=_mapping(),
+        )
+        assert validate_response.status_code == 200
+        assert validate_response.json()["valid_rows"] == 1
+
+        import_response = client.post(
+            f"/api/v1/uploads/{upload_job_id}/import",
+            headers=auth_headers["admin"],
+            json=_mapping(),
+        )
+        assert import_response.status_code == 200
+        assert import_response.json()["imported_tasks"] == 1
+    finally:
+        settings.task_manifest_import_roots = original_roots
+
+
+def test_upload_source_file_from_path_rejects_unconfigured_or_outside_roots(client, auth_headers, tmp_path):
+    settings = get_settings()
+    original_roots = settings.task_manifest_import_roots
+    csv_path = tmp_path / "tasks.csv"
+    csv_path.write_text("id,file_location,model_1_transcript\n", encoding="utf-8")
+    try:
+        settings.task_manifest_import_roots = ""
+        unconfigured = client.post(
+            "/api/v1/uploads/from-path",
+            headers=auth_headers["admin"],
+            json={"path": str(csv_path)},
+        )
+        assert unconfigured.status_code == 422
+        assert unconfigured.json()["detail"]["message"] == "No task manifest import roots are configured"
+
+        allowed_root = tmp_path / "allowed"
+        allowed_root.mkdir()
+        settings.task_manifest_import_roots = str(allowed_root)
+        outside = client.post(
+            "/api/v1/uploads/from-path",
+            headers=auth_headers["admin"],
+            json={"path": str(csv_path)},
+        )
+        assert outside.status_code == 403
+        assert outside.json()["detail"]["message"] == (
+            "Source file path is outside the configured task manifest import roots"
+        )
+    finally:
+        settings.task_manifest_import_roots = original_roots
 
 
 def test_import_is_blocked_when_quick_gates_fail(client, auth_headers, tmp_path):

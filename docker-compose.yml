@@ -43,6 +43,7 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JOBS_INLINE: ${JOBS_INLINE:-false}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/data/uploads}
+      TASK_MANIFEST_IMPORT_ROOTS: ${TASK_MANIFEST_IMPORT_ROOTS:-/mnt/amc-data}
       HIRING_AUDIO_IMPORT_ROOTS: ${HIRING_AUDIO_IMPORT_ROOTS:-/mnt/amc-data}
       HF_HOME: ${HF_HOME:-/app/.cache/huggingface}
       PII_MODEL_PRELOAD_ENABLED: ${PII_MODEL_PRELOAD_ENABLED:-false}
@@ -73,6 +74,7 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JOBS_INLINE: "false"
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/data/uploads}
+      TASK_MANIFEST_IMPORT_ROOTS: ${TASK_MANIFEST_IMPORT_ROOTS:-/mnt/amc-data}
       HIRING_AUDIO_IMPORT_ROOTS: ${HIRING_AUDIO_IMPORT_ROOTS:-/mnt/amc-data}
       HF_HOME: ${HF_HOME:-/app/.cache/huggingface}
     volumes:
