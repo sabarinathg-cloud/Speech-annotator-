@@ -218,7 +218,7 @@ class TaskRepository:
             )
         self.db.flush()
 
-    def list_tasks(
+    def _task_filters(
         self,
         *,
         status: TaskStatusEnum | None,
@@ -229,15 +229,7 @@ class TaskRepository:
         date_from: date | None = None,
         date_to: date | None = None,
         organization_id: str | None = None,
-        page: int,
-        page_size: int,
-    ) -> tuple[list[AnnotationTask], int]:
-        stmt = select(AnnotationTask).options(
-            joinedload(AnnotationTask.assignee),
-            joinedload(AnnotationTask.last_tagger),
-        )
-        count_stmt = select(func.count(AnnotationTask.id))
-
+    ) -> list[Any]:
         filters = []
         if organization_id:
             filters.append(AnnotationTask.organization_id == organization_id)
@@ -264,6 +256,38 @@ class TaskRepository:
             filters.append(AnnotationTask.updated_at >= datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc))
         if date_to:
             filters.append(AnnotationTask.updated_at <= datetime.combine(date_to, datetime.max.time(), tzinfo=timezone.utc))
+        return filters
+
+    def list_tasks(
+        self,
+        *,
+        status: TaskStatusEnum | None,
+        search: str | None,
+        assignee_id: str | None,
+        upload_job_id: str | None = None,
+        language: str | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        organization_id: str | None = None,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[AnnotationTask], int]:
+        stmt = select(AnnotationTask).options(
+            joinedload(AnnotationTask.assignee),
+            joinedload(AnnotationTask.last_tagger),
+        )
+        count_stmt = select(func.count(AnnotationTask.id))
+
+        filters = self._task_filters(
+            status=status,
+            search=search,
+            assignee_id=assignee_id,
+            upload_job_id=upload_job_id,
+            language=language,
+            date_from=date_from,
+            date_to=date_to,
+            organization_id=organization_id,
+        )
 
         if filters:
             stmt = stmt.where(and_(*filters))
@@ -272,6 +296,39 @@ class TaskRepository:
         stmt = stmt.order_by(AnnotationTask.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)
 
         items = list(self.db.execute(stmt).scalars().all())
+        total = self.db.execute(count_stmt).scalar_one()
+        return items, int(total)
+
+    def list_tasks_for_bulk_assignment(
+        self,
+        *,
+        status: TaskStatusEnum | None,
+        search: str | None,
+        assignee_id: str | None,
+        upload_job_id: str | None = None,
+        language: str | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        organization_id: str | None = None,
+        limit: int,
+    ) -> tuple[list[AnnotationTask], int]:
+        filters = self._task_filters(
+            status=status,
+            search=search,
+            assignee_id=assignee_id,
+            upload_job_id=upload_job_id,
+            language=language,
+            date_from=date_from,
+            date_to=date_to,
+            organization_id=organization_id,
+        )
+        stmt = select(AnnotationTask).options(joinedload(AnnotationTask.assignee))
+        count_stmt = select(func.count(AnnotationTask.id))
+        if filters:
+            stmt = stmt.where(and_(*filters))
+            count_stmt = count_stmt.where(and_(*filters))
+        stmt = stmt.order_by(AnnotationTask.file_location.asc(), AnnotationTask.external_id.asc(), AnnotationTask.id.asc()).limit(limit)
+        items = list(self.db.execute(stmt).unique().scalars().all())
         total = self.db.execute(count_stmt).scalar_one()
         return items, int(total)
 
@@ -480,5 +537,23 @@ class TaskRepository:
                 previous_values=_audit_safe_mapping(previous_values),
                 new_values=_audit_safe_mapping(new_values),
             )
+        )
+        self.db.flush()
+
+    def add_audit_logs(self, entries: list[dict[str, Any]]) -> None:
+        if not entries:
+            return
+        self.db.add_all(
+            [
+                TaskAuditLog(
+                    task_id=entry["task_id"],
+                    actor_user_id=entry["actor_user_id"],
+                    action=entry["action"],
+                    changed_fields=_json_safe(entry["changed_fields"]),
+                    previous_values=_audit_safe_mapping(entry["previous_values"]),
+                    new_values=_audit_safe_mapping(entry["new_values"]),
+                )
+                for entry in entries
+            ]
         )
         self.db.flush()

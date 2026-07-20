@@ -3,6 +3,8 @@ import type {
   AdminMetricsResponse,
   AudioMaskInterval,
   AudioMaskMode,
+  BulkAutoBalanceRequest,
+  BulkAutoBalanceResponse,
   ClientSecurityAction,
   ColumnMappingRequest,
   DetectPIIResponse,
@@ -488,6 +490,17 @@ export async function bulkAssignTasks(
   return request(
     "/tasks/bulk-assignee",
     { method: "POST", body: JSON.stringify({ assignments }) },
+    token
+  );
+}
+
+export async function bulkAutoBalanceTasks(
+  token: string,
+  payload: BulkAutoBalanceRequest
+): Promise<BulkAutoBalanceResponse> {
+  return request(
+    "/tasks/bulk-auto-balance",
+    { method: "POST", body: JSON.stringify(payload) },
     token
   );
 }

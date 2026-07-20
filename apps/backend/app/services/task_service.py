@@ -19,6 +19,8 @@ from app.schemas.task import (
     AudioMaskMode,
     BulkAssignmentCopyItem,
     BulkAssignmentCopyResponse,
+    BulkAutoBalanceResponse,
+    BulkTaskFilter,
     BulkAssigneeError,
     BulkAssigneeItem,
     BulkAssigneeResponse,
@@ -664,6 +666,79 @@ class TaskService:
             except ServiceError as exc:
                 errors.append(BulkAssigneeError(task_id=item.task_id, status_code=exc.status_code, message=exc.message))
         return BulkAssigneeResponse(updated=updated, errors=errors)
+
+    def bulk_auto_balance_assignees(
+        self,
+        *,
+        filters: BulkTaskFilter,
+        assignee_ids: list[str],
+        max_tasks: int,
+        actor: User,
+        organization: Organization,
+    ) -> BulkAutoBalanceResponse:
+        unique_assignee_ids = list(dict.fromkeys(assignee_ids))
+        assignees = [
+            self._get_valid_task_assignee(assignee_id, organization_id=organization.id)
+            for assignee_id in unique_assignee_ids
+        ]
+        tasks, matched_count = self.task_repo.list_tasks_for_bulk_assignment(
+            status=filters.status,
+            search=filters.search.strip() if filters.search else None,
+            assignee_id=filters.assignee_id,
+            upload_job_id=filters.job_id,
+            language=filters.language,
+            date_from=filters.date_from,
+            date_to=filters.date_to,
+            organization_id=organization.id,
+            limit=max_tasks,
+        )
+        if matched_count > max_tasks:
+            raise ServiceError(
+                f"{matched_count} tasks match this filter. Narrow the filter or raise the max_tasks limit.",
+                status_code=422,
+            )
+
+        now = datetime.now(timezone.utc)
+        updated_count = 0
+        audit_entries: list[dict[str, Any]] = []
+        for index, task in enumerate(tasks):
+            assignee = assignees[index % len(assignees)]
+            if task.assignee_id == assignee.id:
+                continue
+            previous_assignee = task.assignee
+            audit_entries.append(
+                {
+                    "task_id": task.id,
+                    "actor_user_id": actor.id,
+                    "action": "BULK_AUTO_BALANCE_ASSIGNEE",
+                    "changed_fields": {"assignee_id": True},
+                    "previous_values": {
+                        "assignee_id": task.assignee_id,
+                        "assignee_name": previous_assignee.full_name if previous_assignee else None,
+                        "assignee_email": previous_assignee.email if previous_assignee else None,
+                    },
+                    "new_values": {
+                        "assignee_id": assignee.id,
+                        "assignee_name": assignee.full_name,
+                        "assignee_email": assignee.email,
+                    },
+                }
+            )
+            task.assignee_id = assignee.id
+            task.version += 1
+            task.last_saved_at = now
+            task.updated_at = now
+            updated_count += 1
+
+        self.db.flush()
+        self.task_repo.add_audit_logs(audit_entries)
+        self.db.commit()
+        return BulkAutoBalanceResponse(
+            matched_count=matched_count,
+            updated_count=updated_count,
+            skipped_count=matched_count - updated_count,
+            assignee_count=len(assignees),
+        )
 
     def bulk_create_assignment_copies(
         self,

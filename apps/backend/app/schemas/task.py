@@ -245,6 +245,29 @@ class BulkAssigneeResponse(BaseModel):
     errors: list[BulkAssigneeError]
 
 
+class BulkTaskFilter(BaseModel):
+    status: TaskStatusEnum | None = None
+    search: str | None = Field(default=None, max_length=255)
+    assignee_id: str | None = None
+    job_id: str | None = None
+    language: str | None = Field(default=None, max_length=100)
+    date_from: date | None = None
+    date_to: date | None = None
+
+
+class BulkAutoBalanceRequest(BaseModel):
+    filters: BulkTaskFilter = Field(default_factory=BulkTaskFilter)
+    assignee_ids: list[str] = Field(min_length=1, max_length=100)
+    max_tasks: int = Field(default=50000, ge=1, le=50000)
+
+
+class BulkAutoBalanceResponse(BaseModel):
+    matched_count: int
+    updated_count: int
+    skipped_count: int
+    assignee_count: int
+
+
 class BulkAssignmentCopyItem(BaseModel):
     task_id: str
     version: int = Field(ge=1)

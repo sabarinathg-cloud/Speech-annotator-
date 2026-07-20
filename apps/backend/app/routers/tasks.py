@@ -12,6 +12,8 @@ from app.schemas.task import (
     AudioURLResponse,
     BulkAssignmentCopyRequest,
     BulkAssignmentCopyResponse,
+    BulkAutoBalanceRequest,
+    BulkAutoBalanceResponse,
     BulkAssigneeRequest,
     BulkAssigneeResponse,
     BulkDueDateRequest,
@@ -118,6 +120,26 @@ def bulk_update_assignees(
     service = TaskService(db)
     try:
         return service.bulk_update_assignees(assignments=payload.assignments, actor=current_user, organization=organization)
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/bulk-auto-balance", response_model=BulkAutoBalanceResponse)
+def bulk_auto_balance_assignees(
+    payload: BulkAutoBalanceRequest,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
+):
+    service = TaskService(db)
+    try:
+        return service.bulk_auto_balance_assignees(
+            filters=payload.filters,
+            assignee_ids=payload.assignee_ids,
+            max_tasks=payload.max_tasks,
+            actor=current_user,
+            organization=organization,
+        )
     except ServiceError as exc:
         raise _http_error(exc) from exc
 

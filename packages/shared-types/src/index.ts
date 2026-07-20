@@ -218,6 +218,29 @@ export interface TaskListResponse {
   status_counts: Record<string, number>;
 }
 
+export interface BulkTaskFilter {
+  status?: TaskStatus | null;
+  search?: string | null;
+  assignee_id?: string | null;
+  job_id?: string | null;
+  language?: string | null;
+  date_from?: string | null;
+  date_to?: string | null;
+}
+
+export interface BulkAutoBalanceRequest {
+  filters: BulkTaskFilter;
+  assignee_ids: string[];
+  max_tasks?: number;
+}
+
+export interface BulkAutoBalanceResponse {
+  matched_count: number;
+  updated_count: number;
+  skipped_count: number;
+  assignee_count: number;
+}
+
 export interface TaskAudioGroupChunk {
   task_id: string;
   external_id: string;

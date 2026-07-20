@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   APIError,
   acknowledgeConfidentiality,
+  bulkAutoBalanceTasks,
   bulkUpdateTaskDueDates,
   bulkUpdateTaskStatuses,
   detectTaskPII,
@@ -86,6 +87,12 @@ describe("API client error handling", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ updated: [], errors: [] }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ updated: [], errors: [] }), { status: 200 }))
       .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ matched_count: 10, updated_count: 10, skipped_count: 0, assignee_count: 2 }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
         new Response("task_id\n", {
           status: 200,
           headers: { "Content-Disposition": 'attachment; filename="selected.csv"' },
@@ -112,10 +119,22 @@ describe("API client error handling", () => {
       updates: [{ task_id: "task-1", version: 5 }],
     });
 
+    await bulkAutoBalanceTasks("admin-token", {
+      filters: { status: "Not Started", assignee_id: "unassigned" },
+      assignee_ids: ["user-1", "user-2"],
+      max_tasks: 50000,
+    });
+    expect(new URL(String(fetchMock.mock.calls[2]?.[0])).pathname).toBe("/api/v1/tasks/bulk-auto-balance");
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      filters: { status: "Not Started", assignee_id: "unassigned" },
+      assignee_ids: ["user-1", "user-2"],
+      max_tasks: 50000,
+    });
+
     await expect(
       downloadTaskExport("admin-token", { format: "csv", taskIds: ["task-1", "task-2"] })
     ).resolves.toMatchObject({ filename: "selected.csv" });
-    const exportUrl = new URL(String(fetchMock.mock.calls[2]?.[0]));
+    const exportUrl = new URL(String(fetchMock.mock.calls[3]?.[0]));
     expect(exportUrl.pathname).toBe("/api/v1/exports/tasks");
     expect(exportUrl.searchParams.getAll("task_ids")).toEqual(["task-1", "task-2"]);
 

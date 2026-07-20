@@ -8,6 +8,7 @@ const {
   push,
   authState,
   bulkAssignTasks,
+  bulkAutoBalanceTasks,
   bulkCreateTaskAssignmentCopies,
   bulkUpdateTaskDueDates,
   bulkUpdateTaskStatuses,
@@ -29,6 +30,7 @@ const {
     },
   },
   bulkAssignTasks: vi.fn(),
+  bulkAutoBalanceTasks: vi.fn(),
   bulkCreateTaskAssignmentCopies: vi.fn(),
   bulkUpdateTaskDueDates: vi.fn(),
   bulkUpdateTaskStatuses: vi.fn(),
@@ -109,6 +111,7 @@ vi.mock("@/lib/api", () => ({
     }
   },
   bulkAssignTasks: (...args: unknown[]) => bulkAssignTasks(...args),
+  bulkAutoBalanceTasks: (...args: unknown[]) => bulkAutoBalanceTasks(...args),
   bulkCreateTaskAssignmentCopies: (...args: unknown[]) => bulkCreateTaskAssignmentCopies(...args),
   bulkUpdateTaskDueDates: (...args: unknown[]) => bulkUpdateTaskDueDates(...args),
   bulkUpdateTaskStatuses: (...args: unknown[]) => bulkUpdateTaskStatuses(...args),
@@ -147,6 +150,12 @@ describe("TasksPage queue workflows", () => {
     bulkAssignTasks.mockResolvedValue({
       updated: [{ task: { ...task, assignee_id: "reviewer-1", assignee_name: "Reviewer", version: 5 } }],
       errors: [],
+    });
+    bulkAutoBalanceTasks.mockResolvedValue({
+      matched_count: 19690,
+      updated_count: 19690,
+      skipped_count: 0,
+      assignee_count: 1,
     });
     createTaskAssignmentCopy.mockResolvedValue({
       task: {
@@ -383,6 +392,68 @@ describe("TasksPage queue workflows", () => {
       ])
     );
     expect(await screen.findByText(/2 assigned, 0 conflict/)).toBeInTheDocument();
+  });
+
+  it("auto-balances all tasks matching the current filters beyond the visible page", async () => {
+    fetchTasks.mockResolvedValue({
+      items: [task, secondTask],
+      page: 1,
+      page_size: 25,
+      total: 19690,
+      status_counts: { "Not Started": 19690 },
+    });
+    fetchUsers.mockResolvedValue({
+      items: [
+        adminUser({
+          id: "annotator-1",
+          email: "ann@test.com",
+          full_name: "Ann Annotator",
+          role: "ANNOTATOR",
+          open_assigned_task_count: 0,
+          assignment_load: "none",
+        }),
+        adminUser({
+          id: "reviewer-1",
+          email: "reviewer@test.com",
+          full_name: "Reviewer",
+          role: "REVIEWER",
+          open_assigned_task_count: 0,
+          assignment_load: "none",
+        }),
+      ],
+    });
+    bulkAutoBalanceTasks.mockResolvedValue({
+      matched_count: 19690,
+      updated_count: 19665,
+      skipped_count: 25,
+      assignee_count: 2,
+    });
+
+    render(<TasksPage />);
+    await screen.findByText("OUT-001");
+
+    fireEvent.change(screen.getByLabelText("Status"), { target: { value: "Not Started" } });
+    fireEvent.change(screen.getByLabelText("Assignee"), { target: { value: "unassigned" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Select all matching (19690)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Auto-balance selected" }));
+
+    await waitFor(() =>
+      expect(bulkAutoBalanceTasks).toHaveBeenCalledWith("test-token", {
+        filters: {
+          status: "Not Started",
+          search: null,
+          assignee_id: "unassigned",
+          job_id: null,
+          language: null,
+          date_from: null,
+          date_to: null,
+        },
+        assignee_ids: ["annotator-1", "reviewer-1"],
+        max_tasks: 50000,
+      })
+    );
+    expect(bulkAssignTasks).not.toHaveBeenCalled();
+    expect(await screen.findByText(/19665 tasks auto-balanced across 2 users/)).toBeInTheDocument();
   });
 
   it("shows queue progress and lets admins set optional due dates", async () => {

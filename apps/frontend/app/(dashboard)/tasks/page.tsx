@@ -1,6 +1,6 @@
 "use client";
 
-import type { AdminUser, Role, TaskDetail, TaskListItem, TaskStatus } from "@outcomes/shared-types";
+import type { AdminUser, BulkTaskFilter, Role, TaskDetail, TaskListItem, TaskStatus } from "@outcomes/shared-types";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, useTransition } from "react";
@@ -10,6 +10,7 @@ import { StatusBadge } from "@/components/status-badge";
 import {
   APIError,
   bulkAssignTasks,
+  bulkAutoBalanceTasks,
   bulkCreateTaskAssignmentCopies,
   bulkUpdateTaskDueDates,
   bulkUpdateTaskStatuses,
@@ -70,6 +71,7 @@ export default function TasksPage() {
   const [assignmentBusyTaskId, setAssignmentBusyTaskId] = useState<string | null>(null);
   const [dueDateBusyTaskId, setDueDateBusyTaskId] = useState<string | null>(null);
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
+  const [allMatchingSelected, setAllMatchingSelected] = useState(false);
   const [bulkAssigneeId, setBulkAssigneeId] = useState("");
   const [bulkDueDate, setBulkDueDate] = useState("");
   const [bulkStatus, setBulkStatus] = useState<TaskStatus>("In Progress");
@@ -79,6 +81,7 @@ export default function TasksPage() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [loading, startTransition] = useTransition();
   const router = useRouter();
   const isAdmin = user?.role === "ADMIN";
@@ -100,6 +103,11 @@ export default function TasksPage() {
       }
     })();
   }, [accessToken, isAdmin]);
+
+  useEffect(() => {
+    setAllMatchingSelected(false);
+    setSelectedTaskIds([]);
+  }, [search, statusFilter, assigneeFilter]);
 
   useEffect(() => {
     if (!accessToken || (!isAdmin && !user?.id)) return;
@@ -146,7 +154,7 @@ export default function TasksPage() {
         setError("Failed to load tasks");
       }
     });
-  }, [accessToken, statusFilter, assigneeFilter, search, page, isAdmin, user?.id]);
+  }, [accessToken, statusFilter, assigneeFilter, search, page, isAdmin, user?.id, reloadKey]);
 
   const visibleTasks = data?.items ?? [];
   const selectedVisibleTasks = useMemo(
@@ -155,6 +163,18 @@ export default function TasksPage() {
         .map((taskId) => visibleTasks.find((task) => task.id === taskId))
         .filter((task): task is TaskListItem => Boolean(task)),
     [selectedTaskIds, visibleTasks]
+  );
+  const bulkFilterPayload = useMemo<BulkTaskFilter>(
+    () => ({
+      status: statusFilter === "All" ? null : statusFilter,
+      search: search.trim() || null,
+      assignee_id: assigneeFilter === "all" ? null : assigneeFilter,
+      job_id: null,
+      language: null,
+      date_from: null,
+      date_to: null,
+    }),
+    [assigneeFilter, search, statusFilter]
   );
   const assignableUsers = useMemo(
     () =>
@@ -174,6 +194,12 @@ export default function TasksPage() {
     ? progressStatuses.reduce((sum, progressStatus) => sum + (data.status_counts[progressStatus] ?? 0), 0)
     : 0;
   const progressPercent = data && data.total > 0 ? Math.round((completedCount / data.total) * 100) : 0;
+  const selectedTaskCount = allMatchingSelected ? data?.total ?? 0 : selectedTaskIds.length;
+  const selectionLabel = allMatchingSelected
+    ? `${selectedTaskCount} matching selected`
+    : `${selectedTaskIds.length} visible selected`;
+  const canSelectAllMatching = Boolean(data && data.total > 0 && data.total > visibleTasks.length);
+  const onlyVisiblePageSelected = !allMatchingSelected && selectedTaskIds.length > 0 && selectedTaskIds.length === visibleTasks.length && canSelectAllMatching;
 
   const totalPages = useMemo(() => {
     if (!data) return 1;
@@ -316,6 +342,10 @@ export default function TasksPage() {
 
   async function applyBulkAssignment() {
     if (!accessToken || !isAdmin || bulkBusy || selectedTaskIds.length === 0) return;
+    if (allMatchingSelected) {
+      setError("Bulk assign applies to visible selected rows. Use Auto-balance for all matching tasks.");
+      return;
+    }
     const assignments = selectedVisibleTasks
       .map((task) => ({
         task_id: task.id,
@@ -327,6 +357,10 @@ export default function TasksPage() {
 
   async function applyBulkAssignmentCopies() {
     if (!accessToken || !isAdmin || bulkBusy || selectedTaskIds.length === 0) return;
+    if (allMatchingSelected) {
+      setError("Create copies applies to visible selected rows only.");
+      return;
+    }
     if (!bulkAssigneeId) {
       setError("Choose an assignee before creating copies");
       return;
@@ -359,7 +393,36 @@ export default function TasksPage() {
   }
 
   async function applyAutoBalanceAssignment() {
-    if (!accessToken || !isAdmin || bulkBusy || selectedVisibleTasks.length === 0 || assignableUsers.length === 0) return;
+    if (!accessToken || !isAdmin || bulkBusy || selectedTaskCount === 0 || assignableUsers.length === 0) return;
+    if (allMatchingSelected) {
+      setBulkBusy(true);
+      try {
+        const response = await bulkAutoBalanceTasks(accessToken, {
+          filters: bulkFilterPayload,
+          assignee_ids: assignableUsers.map((account) => account.id),
+          max_tasks: 50000,
+        });
+        setBulkResult(
+          `${response.updated_count} tasks auto-balanced across ${response.assignee_count} users (${response.matched_count} matched, ${response.skipped_count} unchanged).`
+        );
+        setSelectedTaskIds([]);
+        setAllMatchingSelected(false);
+        setReloadKey((value) => value + 1);
+        try {
+          const usersResponse = await fetchUsers(accessToken);
+          setUsers(usersResponse.items);
+        } catch {
+          // Keep the current user cards if the refresh fails; the queue refresh still shows task changes.
+        }
+        setError(null);
+      } catch (err) {
+        setError(err instanceof APIError ? err.message : "Auto-balance assignment failed");
+      } finally {
+        setBulkBusy(false);
+      }
+      return;
+    }
+    if (selectedVisibleTasks.length === 0) return;
     const orderedUsers = [...assignableUsers];
     const assignments = selectedVisibleTasks.map((task, index) => {
       const assignee = orderedUsers[index % orderedUsers.length];
@@ -410,6 +473,7 @@ export default function TasksPage() {
           status: task.status,
         }))
       );
+      setAllMatchingSelected(false);
       setBulkResult(`${response.updated.length} assigned, ${response.errors.length} conflict/error${response.errors.length === 1 ? "" : "s"}.`);
       setError(response.errors[0]?.message ?? null);
     } catch (err) {
@@ -421,6 +485,10 @@ export default function TasksPage() {
 
   async function applyBulkDueDate() {
     if (!accessToken || !isAdmin || bulkBusy || selectedVisibleTasks.length === 0) return;
+    if (allMatchingSelected) {
+      setError("Bulk due date applies to visible selected rows only.");
+      return;
+    }
     const updates = selectedVisibleTasks.map((task) => ({
       task_id: task.id,
       version: task.version,
@@ -450,6 +518,10 @@ export default function TasksPage() {
 
   async function applyBulkStatus() {
     if (!accessToken || !isAdmin || bulkBusy || selectedVisibleTasks.length === 0) return;
+    if (allMatchingSelected) {
+      setError("Bulk status applies to visible selected rows only.");
+      return;
+    }
     const updates = selectedVisibleTasks.map((task) => ({
       task_id: task.id,
       version: task.version,
@@ -476,6 +548,10 @@ export default function TasksPage() {
 
   async function exportSelectedTasks() {
     if (!accessToken || !isAdmin || bulkBusy || selectedVisibleTasks.length === 0) return;
+    if (allMatchingSelected) {
+      setError("Export selected tasks applies to visible selected rows only.");
+      return;
+    }
     const taskIds = selectedVisibleTasks.map((task) => task.id);
     setBulkBusy(true);
     try {
@@ -498,6 +574,7 @@ export default function TasksPage() {
   function clearUpdatedSelection(updatedTasks: TaskDetail[]) {
     const updatedIds = new Set(updatedTasks.map((task) => task.id));
     setSelectedTaskIds((prev) => prev.filter((taskId) => !updatedIds.has(taskId)));
+    setAllMatchingSelected(false);
   }
 
   function applyUpdatedTaskDetails(
@@ -619,7 +696,21 @@ export default function TasksPage() {
   }
 
   function selectUnassignedVisibleTasks() {
+    setAllMatchingSelected(false);
     setSelectedTaskIds(visibleTasks.filter((task) => !task.assignee_id).map((task) => task.id));
+  }
+
+  function clearTaskSelection() {
+    setAllMatchingSelected(false);
+    setSelectedTaskIds([]);
+  }
+
+  function selectAllMatchingTasks() {
+    if (!data || data.total === 0) return;
+    setSelectedTaskIds([]);
+    setAllMatchingSelected(true);
+    setBulkResult(`All ${data.total} tasks matching the current filters are selected for auto-balance.`);
+    setError(null);
   }
 
   return (
@@ -730,7 +821,7 @@ export default function TasksPage() {
                 <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[#625d7f]">
                   Smart Assignment
                 </span>
-                <span className="text-xs text-[#6f6a89]">{selectedTaskIds.length} selected</span>
+                <span className="text-xs text-[#6f6a89]">{selectionLabel}</span>
                 <button
                   type="button"
                   onClick={selectUnassignedVisibleTasks}
@@ -740,8 +831,16 @@ export default function TasksPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSelectedTaskIds([])}
-                  disabled={selectedTaskIds.length === 0}
+                  onClick={selectAllMatchingTasks}
+                  disabled={!canSelectAllMatching || allMatchingSelected}
+                  className="oa-btn-secondary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {data ? `Select all matching (${data.total})` : "Select all matching"}
+                </button>
+                <button
+                  type="button"
+                  onClick={clearTaskSelection}
+                  disabled={selectedTaskCount === 0}
                   className="oa-btn-quiet px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Clear selection
@@ -784,7 +883,7 @@ export default function TasksPage() {
                 <button
                   type="button"
                   onClick={applyBulkAssignment}
-                  disabled={bulkBusy || selectedTaskIds.length === 0}
+                  disabled={bulkBusy || selectedTaskIds.length === 0 || allMatchingSelected}
                   className="oa-btn-primary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {bulkBusy ? "Applying..." : "Apply"}
@@ -792,7 +891,7 @@ export default function TasksPage() {
                 <button
                   type="button"
                   onClick={applyBulkAssignmentCopies}
-                  disabled={bulkBusy || selectedTaskIds.length === 0 || !bulkAssigneeId}
+                  disabled={bulkBusy || selectedTaskIds.length === 0 || allMatchingSelected || !bulkAssigneeId}
                   className="oa-btn-secondary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Create copies
@@ -800,12 +899,22 @@ export default function TasksPage() {
                 <button
                   type="button"
                   onClick={applyAutoBalanceAssignment}
-                  disabled={bulkBusy || selectedTaskIds.length === 0 || assignableUsers.length === 0}
+                  disabled={bulkBusy || selectedTaskCount === 0 || assignableUsers.length === 0}
                   className="oa-btn-secondary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Auto-balance selected
                 </button>
               </div>
+              {allMatchingSelected ? (
+                <p className="rounded-lg border border-[#ded4ef] bg-white px-3 py-2 text-xs text-[#5f5b77]">
+                  Auto-balance will update every task matching the current Search, Status, and Assignee filters. Use Assignee = Unassigned to balance only unassigned tasks.
+                </p>
+              ) : null}
+              {onlyVisiblePageSelected ? (
+                <p className="rounded-lg border border-[#f1dfb6] bg-[#fffaf0] px-3 py-2 text-xs text-[#7a5a24]">
+                  Only the visible page is selected. Use Select all matching to auto-balance every task in the current filter.
+                </p>
+              ) : null}
 
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
                 <label className="flex flex-col gap-1.5">
@@ -847,7 +956,7 @@ export default function TasksPage() {
                   <button
                     type="button"
                     onClick={applyBulkDueDate}
-                    disabled={bulkBusy || selectedTaskIds.length === 0}
+                    disabled={bulkBusy || selectedTaskIds.length === 0 || allMatchingSelected}
                     className="oa-btn-secondary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     Update selected due dates
@@ -855,7 +964,7 @@ export default function TasksPage() {
                   <button
                     type="button"
                     onClick={applyBulkStatus}
-                    disabled={bulkBusy || selectedTaskIds.length === 0}
+                    disabled={bulkBusy || selectedTaskIds.length === 0 || allMatchingSelected}
                     className="oa-btn-secondary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     Move selected status
@@ -879,7 +988,7 @@ export default function TasksPage() {
                 <button
                   type="button"
                   onClick={exportSelectedTasks}
-                  disabled={bulkBusy || selectedTaskIds.length === 0}
+                  disabled={bulkBusy || selectedTaskIds.length === 0 || allMatchingSelected}
                   className="oa-btn-primary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Export selected tasks
@@ -961,8 +1070,9 @@ export default function TasksPage() {
                     <input
                       aria-label="Select all visible tasks"
                       type="checkbox"
-                      checked={visibleTasks.length > 0 && selectedTaskIds.length === visibleTasks.length}
+                      checked={visibleTasks.length > 0 && (allMatchingSelected || selectedTaskIds.length === visibleTasks.length)}
                       onChange={(event) => {
+                        setAllMatchingSelected(false);
                         setSelectedTaskIds(event.target.checked ? visibleTasks.map((task) => task.id) : []);
                       }}
                     />
@@ -1005,11 +1115,20 @@ export default function TasksPage() {
                       <input
                         aria-label={`Select task ${task.external_id}`}
                         type="checkbox"
-                        checked={selectedTaskIds.includes(task.id)}
+                        checked={allMatchingSelected || selectedTaskIds.includes(task.id)}
                         onChange={(event) => {
-                          setSelectedTaskIds((prev) =>
-                            event.target.checked ? [...prev, task.id] : prev.filter((id) => id !== task.id)
-                          );
+                          if (allMatchingSelected) {
+                            setAllMatchingSelected(false);
+                            setSelectedTaskIds(
+                              visibleTasks
+                                .filter((visibleTask) => visibleTask.id !== task.id)
+                                .map((visibleTask) => visibleTask.id)
+                            );
+                          } else {
+                            setSelectedTaskIds((prev) =>
+                              event.target.checked ? [...prev, task.id] : prev.filter((id) => id !== task.id)
+                            );
+                          }
                         }}
                       />
                     </td>

@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 
+from app.models.enums import TaskStatusEnum, UploadJobStatusEnum
 from app.models.task import AnnotationTask
+from app.models.upload import UploadFile, UploadJob
 from app.services.audio_alignment_service import AudioAlignmentService, transcript_hash
 
 INVALID_TRANSCRIPT_MESSAGE = (
@@ -704,6 +706,81 @@ def test_unassigned_filter_claim_next_bulk_assignment_and_activity(client, auth_
     activity_types = {item["type"] for item in activity.json()["items"]}
     assert {"audit", "status"}.issubset(activity_types)
     assert any(item["actor_email"] == "annotator@test.com" for item in activity.json()["items"])
+
+
+def test_admin_can_auto_balance_all_matching_tasks_beyond_current_page(client, auth_headers, db_session, seed_users):
+    upload_file = UploadFile(
+        original_filename="bulk-balance.xlsx",
+        stored_path="/tmp/bulk-balance.xlsx",
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        uploaded_by_id=seed_users["admin"].id,
+    )
+    db_session.add(upload_file)
+    db_session.flush()
+    upload_job = UploadJob(
+        upload_file_id=upload_file.id,
+        created_by_id=seed_users["admin"].id,
+        status=UploadJobStatusEnum.IMPORTED,
+        preview_row_count=5,
+    )
+    db_session.add(upload_job)
+    db_session.flush()
+    tasks = []
+    for index in range(5):
+        task = AnnotationTask(
+            upload_job_id=upload_job.id,
+            external_id=f"BULK-BALANCE-{index}",
+            file_location=f"local:///tmp/bulk-balance-{index}.wav",
+            final_transcript="",
+            notes=None,
+            status=TaskStatusEnum.NOT_STARTED,
+            speaker_gender=None,
+            speaker_role=None,
+            language="en",
+            channel=None,
+            duration_seconds=None,
+            custom_metadata={},
+            original_row={},
+            pii_annotations=[],
+            alignment_words=[],
+        )
+        db_session.add(task)
+        tasks.append(task)
+    db_session.commit()
+
+    first_page = client.get("/api/v1/tasks?search=BULK-BALANCE&page_size=2", headers=auth_headers["admin"])
+    assert first_page.status_code == 200
+    assert len(first_page.json()["items"]) == 2
+    assert first_page.json()["total"] == 5
+
+    response = client.post(
+        "/api/v1/tasks/bulk-auto-balance",
+        headers=auth_headers["admin"],
+        json={
+            "filters": {
+                "search": "BULK-BALANCE",
+                "status": "Not Started",
+                "assignee_id": "unassigned",
+            },
+            "assignee_ids": [seed_users["annotator"].id, seed_users["reviewer"].id],
+        },
+    )
+    assert response.status_code == 200, response.json()
+    assert response.json() == {
+        "matched_count": 5,
+        "updated_count": 5,
+        "skipped_count": 0,
+        "assignee_count": 2,
+    }
+
+    assigned = client.get("/api/v1/tasks?search=BULK-BALANCE&page_size=10", headers=auth_headers["admin"]).json()["items"]
+    assignee_counts = {}
+    for task in assigned:
+        assignee_counts[task["assignee_email"]] = assignee_counts.get(task["assignee_email"], 0) + 1
+    assert assignee_counts == {"annotator@test.com": 3, "reviewer@test.com": 2}
+
+    activity = client.get(f"/api/v1/tasks/{tasks[0].id}/activity", headers=auth_headers["admin"]).json()["items"]
+    assert any(item["action"] == "BULK_AUTO_BALANCE_ASSIGNEE" for item in activity)
 
 
 def test_start_endpoint_claims_and_marks_task_in_progress(client, auth_headers, sample_excel_bytes):
