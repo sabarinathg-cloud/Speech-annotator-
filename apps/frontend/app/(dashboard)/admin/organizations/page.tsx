@@ -25,6 +25,8 @@ const featureLabels: Array<{ key: keyof OrganizationSettings; label: string; hin
   { key: "hiring_enabled", label: "Hiring", hint: "Show hiring assessments and candidate flows." },
 ];
 
+const optionalFeatureKeys = featureLabels.map((feature) => feature.key);
+
 const blankCreateForm: Partial<OrganizationSettings> & { name: string; slug: string; is_active: boolean } = {
   name: "",
   slug: "",
@@ -243,6 +245,9 @@ export default function AdminOrganizationsPage() {
       <div className="grid gap-5 xl:grid-cols-[360px_1fr]">
         <section className="oa-card p-4">
           <h3 className="oa-title text-lg font-semibold">Create organization</h3>
+          <p className="mt-1 text-sm text-[#6f6a86]">
+            Transcript correction is always enabled. Leave add-ons off for a transcript-only workspace.
+          </p>
           <div className="mt-4 space-y-3">
             <input
               value={createForm.name}
@@ -261,6 +266,19 @@ export default function AdminOrganizationsPage() {
               label="Active"
               onChange={(checked) => setCreateForm((prev) => ({ ...prev, is_active: checked }))}
             />
+            <CoreWorkflowCard />
+            <button
+              type="button"
+              onClick={() =>
+                setCreateForm((prev) => ({
+                  ...prev,
+                  ...Object.fromEntries(optionalFeatureKeys.map((key) => [key, false])),
+                }))
+              }
+              className="oa-btn-secondary w-full px-3 py-2 text-sm font-semibold"
+            >
+              Use transcript correction only
+            </button>
             {featureLabels.map((feature) => (
               <FeatureToggle
                 key={feature.key}
@@ -298,6 +316,25 @@ export default function AdminOrganizationsPage() {
                     className="oa-input flex-1 px-3 py-2 text-sm"
                     placeholder="slug"
                   />
+                </div>
+                <div className="mt-4 flex flex-col gap-3 rounded-xl border border-[#e8def5] bg-[#fbf8ff] p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <CoreWorkflowCard compact />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDraft((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              ...Object.fromEntries(optionalFeatureKeys.map((key) => [key, false])),
+                            }
+                          : prev
+                      )
+                    }
+                    className="oa-btn-secondary shrink-0 px-3 py-2 text-sm font-semibold"
+                  >
+                    Set transcript only
+                  </button>
                 </div>
                 <div className="mt-4 grid gap-3 md:grid-cols-2">
                   <FeatureToggle
@@ -389,6 +426,26 @@ async function refreshCurrentUserSession(accessToken: string) {
   if (!session.refreshToken) return;
   const user = await fetchCurrentUser(accessToken);
   writeSession(accessToken, session.refreshToken, user);
+}
+
+function CoreWorkflowCard({ compact = false }: { compact?: boolean }) {
+  return (
+    <div
+      className={
+        compact
+          ? "flex min-w-0 flex-1 items-start gap-3"
+          : "flex items-start gap-3 rounded-xl border border-[#cdebd7] bg-[#f4fff7] p-3 text-sm"
+      }
+    >
+      <span className="mt-0.5 h-4 w-4 shrink-0 rounded border border-[#47a064] bg-[#47a064]" />
+      <span className="min-w-0">
+        <span className="block font-semibold text-[#241f43]">Transcript correction</span>
+        <span className="mt-0.5 block text-xs leading-5 text-[#4e765b]">
+          Core workflow, always enabled. Use this alone when an org only needs transcript correction.
+        </span>
+      </span>
+    </div>
+  );
 }
 
 function FeatureToggle({
