@@ -68,6 +68,32 @@ function formatGateLabel(gateKey: string): string {
     .join(" ");
 }
 
+function chooseColumn(columns: string[], preferredNames: string[], fallback = ""): string {
+  const normalized = new Map(columns.map((column) => [column.toLowerCase(), column]));
+  for (const name of preferredNames) {
+    const match = normalized.get(name.toLowerCase());
+    if (match) return match;
+  }
+  return fallback;
+}
+
+function chooseAudioLocationColumn(columns: string[]): string {
+  const exact = chooseColumn(columns, [
+    "file_location",
+    "audio",
+    "audio_path",
+    "audio_file",
+    "audio_filepath",
+    "file_path",
+    "path",
+    "wav_path",
+    "wav_file",
+  ]);
+  if (exact) return exact;
+
+  return columns.find((column) => /audio|wav|file.*path|path.*file/i.test(column) && !/transcript/i.test(column)) ?? "";
+}
+
 export default function AdminUploadPage() {
   const { accessToken, user } = useAuth();
   const [file, setFile] = useState<File | null>(null);
@@ -147,12 +173,11 @@ export default function AdminUploadPage() {
   );
 
   function applyPreviewDefaults(preview: Awaited<ReturnType<typeof previewUpload>>) {
+    const audioLocationColumn = chooseAudioLocationColumn(preview.columns);
     setColumns(preview.columns);
     setSampleRows(preview.sample_rows);
-    setIdColumn(preview.columns.includes("id") ? "id" : preview.columns[0] || "");
-    setFileLocationColumn(
-      preview.columns.includes("file_location") ? "file_location" : preview.columns[1] || ""
-    );
+    setIdColumn(chooseColumn(preview.columns, ["id", "task_id", "external_id", "row_id"], audioLocationColumn || preview.columns[0] || ""));
+    setFileLocationColumn(audioLocationColumn || preview.columns[0] || "");
     setFinalTranscriptColumn("");
     setNotesColumn(preview.columns.includes("notes") ? "notes" : "");
     setSpeakerGenderColumn(preview.columns.includes("speaker_gender") ? "speaker_gender" : "");
