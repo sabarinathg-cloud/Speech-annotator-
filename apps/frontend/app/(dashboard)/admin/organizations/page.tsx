@@ -14,6 +14,7 @@ import {
   fetchUsers,
   removeOrganizationMember,
   updateOrganization,
+  updateUser,
 } from "@/lib/api";
 import { readSession, writeSession } from "@/lib/session";
 
@@ -45,6 +46,8 @@ export default function AdminOrganizationsPage() {
   const [members, setMembers] = useState<Awaited<ReturnType<typeof fetchOrganizationMembers>>["items"]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [memberUserId, setMemberUserId] = useState("");
+  const [accessUserId, setAccessUserId] = useState("");
+  const [accessOrgIds, setAccessOrgIds] = useState<string[]>([]);
   const [createForm, setCreateForm] = useState(blankCreateForm);
   const [draft, setDraft] = useState<Organization | null>(null);
   const [busy, setBusy] = useState(false);
@@ -63,6 +66,17 @@ export default function AdminOrganizationsPage() {
         .filter((user) => !currentMemberIds.has(user.id))
         .sort((first, second) => first.full_name.localeCompare(second.full_name)),
     [currentMemberIds, users]
+  );
+  const accessUsers = useMemo(
+    () =>
+      users
+        .filter((availableUser) => availableUser.role !== "ADMIN")
+        .sort((first, second) => first.full_name.localeCompare(second.full_name)),
+    [users]
+  );
+  const selectedAccessUser = useMemo(
+    () => users.find((availableUser) => availableUser.id === accessUserId) ?? null,
+    [accessUserId, users]
   );
 
   useEffect(() => {
@@ -117,6 +131,19 @@ export default function AdminOrganizationsPage() {
       cancelled = true;
     };
   }, [accessToken, selectedOrganization]);
+
+  useEffect(() => {
+    if (accessUserId || accessUsers.length === 0) return;
+    setAccessUserId(accessUsers[0].id);
+  }, [accessUserId, accessUsers]);
+
+  useEffect(() => {
+    if (!selectedAccessUser) {
+      setAccessOrgIds([]);
+      return;
+    }
+    setAccessOrgIds((selectedAccessUser.organizations ?? []).map((organization) => organization.id));
+  }, [selectedAccessUser]);
 
   async function refreshOrganizations(nextSelectedId?: string) {
     if (!accessToken) return;
@@ -203,6 +230,37 @@ export default function AdminOrganizationsPage() {
       setMessage("Member removed.");
     } catch (err) {
       setError(err instanceof APIError ? err.message : "Could not remove member");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleAccessOrg(organizationId: string, checked: boolean) {
+    setAccessOrgIds((current) => {
+      if (checked) {
+        return current.includes(organizationId) ? current : [...current, organizationId];
+      }
+      return current.filter((id) => id !== organizationId);
+    });
+  }
+
+  async function handleSaveUserAccess() {
+    if (!accessToken || !selectedAccessUser) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const updatedUser = await updateUser(accessToken, selectedAccessUser.id, {
+        organization_ids: accessOrgIds,
+      });
+      setUsers((current) => current.map((availableUser) => (availableUser.id === updatedUser.id ? updatedUser : availableUser)));
+      if (selectedOrganization) {
+        const response = await fetchOrganizationMembers(accessToken, selectedOrganization.id);
+        setMembers(response.items);
+      }
+      setMessage("User organization access saved.");
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Could not save user organization access");
     } finally {
       setBusy(false);
     }
@@ -417,6 +475,81 @@ export default function AdminOrganizationsPage() {
           )}
         </section>
       </div>
+
+      <section className="oa-card p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h3 className="oa-title text-lg font-semibold">User access</h3>
+            <p className="mt-1 max-w-3xl text-sm text-[#6f6a86]">
+              Add the same annotator, reviewer, or candidate to multiple organizations in one save.
+            </p>
+          </div>
+          <label className="flex min-w-[280px] flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">
+            User
+            <select
+              value={accessUserId}
+              onChange={(event) => setAccessUserId(event.target.value)}
+              className="oa-input px-3 py-2 text-sm normal-case tracking-normal"
+            >
+              {accessUsers.map((availableUser) => (
+                <option key={availableUser.id} value={availableUser.id}>
+                  {availableUser.full_name} ({availableUser.role})
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {selectedAccessUser ? (
+          <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_auto] lg:items-start">
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {organizations.map((organization) => {
+                const checked = accessOrgIds.includes(organization.id);
+                return (
+                  <label
+                    key={organization.id}
+                    className={`flex items-start gap-3 rounded-xl border p-3 text-sm ${
+                      checked ? "border-[#cdb9ef] bg-[#fbf8ff]" : "border-[#ece6f5] bg-white"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) => toggleAccessOrg(organization.id, event.target.checked)}
+                      className="mt-1 h-4 w-4 rounded border-[#cfc3e5] text-[#241f43]"
+                    />
+                    <span className="min-w-0">
+                      <span className="block truncate font-semibold text-[#241f43]">{organization.name}</span>
+                      <span className="mt-0.5 block text-xs text-[#6f6a86]">
+                        {organization.is_active ? "Active" : "Inactive"} | {organization.slug}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="rounded-xl border border-[#e8def5] bg-[#fbf8ff] p-3 lg:w-[260px]">
+              <p className="text-sm font-semibold text-[#241f43]">{selectedAccessUser.full_name}</p>
+              <p className="mt-0.5 truncate text-xs text-[#6f6a86]">{selectedAccessUser.email}</p>
+              <p className="mt-3 text-sm text-[#403c5d]">
+                {accessOrgIds.length} organization{accessOrgIds.length === 1 ? "" : "s"} selected.
+              </p>
+              <button
+                type="button"
+                disabled={busy || accessOrgIds.length === 0}
+                onClick={() => void handleSaveUserAccess()}
+                className="oa-btn-primary mt-3 w-full px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                Save access
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="mt-4 rounded-xl border border-[#e8def5] bg-[#fbf8ff] px-4 py-3 text-sm text-[#6f6a86]">
+            Create a non-admin user before assigning organization access.
+          </p>
+        )}
+      </section>
     </div>
   );
 }
