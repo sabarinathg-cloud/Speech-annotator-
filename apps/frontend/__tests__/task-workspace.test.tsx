@@ -24,15 +24,17 @@ const {
   authState,
   searchParamsState,
   fetchTask,
-  fetchAudioURL,
-  fetchPIILabels,
-  fetchTaskActivity,
-  detectTaskPII,
-  generateTaskAlignment,
-  maskTaskPIIAudio,
-  patchTaskCombined,
-  startTask,
-} = vi.hoisted(
+	  fetchAudioURL,
+	  fetchTaskAudioGroup,
+	  fetchPIILabels,
+	  fetchTaskActivity,
+	  detectTaskPII,
+	  generateTaskAlignment,
+	  maskTaskPIIAudio,
+	  patchTaskCombined,
+	  saveTaskAudioGroupFullTranscript,
+	  startTask,
+	} = vi.hoisted(
   () => ({
     push: vi.fn(),
     authState: {
@@ -46,17 +48,19 @@ const {
     searchParamsState: {
       current: "",
     },
-    fetchTask: vi.fn(),
-    fetchAudioURL: vi.fn(),
-    fetchPIILabels: vi.fn(),
-    fetchTaskActivity: vi.fn(),
-    detectTaskPII: vi.fn(),
-    generateTaskAlignment: vi.fn(),
-    maskTaskPIIAudio: vi.fn(),
-    patchTaskCombined: vi.fn(),
-    startTask: vi.fn()
-  })
-);
+	    fetchTask: vi.fn(),
+	    fetchAudioURL: vi.fn(),
+	    fetchTaskAudioGroup: vi.fn(),
+	    fetchPIILabels: vi.fn(),
+	    fetchTaskActivity: vi.fn(),
+	    detectTaskPII: vi.fn(),
+	    generateTaskAlignment: vi.fn(),
+	    maskTaskPIIAudio: vi.fn(),
+	    patchTaskCombined: vi.fn(),
+	    saveTaskAudioGroupFullTranscript: vi.fn(),
+	    startTask: vi.fn()
+	  })
+	);
 
 const mockTask = {
   id: "task-1",
@@ -105,6 +109,59 @@ const mockTask = {
   next_task_id: null
 };
 
+const mockAudioGroup = {
+  group_key: "/tmp/recording-one/channel1",
+  group_label: "channel1",
+  current_position: 1,
+  current_chunk_index: 1,
+  chunk_count: 2,
+  completed_transcript_count: 0,
+  missing_transcript_count: 2,
+  assembled_transcript: "",
+  full_transcript_text: "hello world\nsecond chunk",
+  full_transcript_source: "segment_asr_seed",
+  full_transcript_review_version: null,
+  full_transcript_review_updated_at: null,
+  full_transcript_seed_missing_count: 0,
+  full_transcript_seed_source_counts: { whisper: 2 },
+  full_audio_url: "/api/v1/media/audio/group-token",
+  expires_in_seconds: 300,
+  full_audio_available: true,
+  message: null,
+  chunks: [
+    {
+      task_id: "task-1",
+      external_id: "OUT-001",
+      file_location: "chunk_0001.wav",
+      filename: "chunk_0001.wav",
+      chunk_index: 1,
+      position: 1,
+      status: "Not Started",
+      final_transcript: "",
+      has_transcript: false,
+      duration_seconds: 1,
+      seed_transcript: "hello world",
+      seed_source_key: "whisper",
+      seed_source_label: "Whisper",
+    },
+    {
+      task_id: "task-2",
+      external_id: "OUT-002",
+      file_location: "chunk_0002.wav",
+      filename: "chunk_0002.wav",
+      chunk_index: 2,
+      position: 2,
+      status: "Not Started",
+      final_transcript: "",
+      has_transcript: false,
+      duration_seconds: 1,
+      seed_transcript: "second chunk",
+      seed_source_key: "whisper",
+      seed_source_label: "Whisper",
+    },
+  ],
+};
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push, replace: push }),
   useParams: () => ({ taskId: "task-1" }),
@@ -128,16 +185,18 @@ vi.mock("@/lib/api", () => ({
       this.payload = payload;
     }
   },
-  fetchTask: (...args: unknown[]) => fetchTask(...args),
-  fetchAudioURL: (...args: unknown[]) => fetchAudioURL(...args),
-  fetchPIILabels: (...args: unknown[]) => fetchPIILabels(...args),
-  fetchTaskActivity: (...args: unknown[]) => fetchTaskActivity(...args),
-  detectTaskPII: (...args: unknown[]) => detectTaskPII(...args),
-  generateTaskAlignment: (...args: unknown[]) => generateTaskAlignment(...args),
-  maskTaskPIIAudio: (...args: unknown[]) => maskTaskPIIAudio(...args),
-  patchTaskCombined: (...args: unknown[]) => patchTaskCombined(...args),
-  startTask: (...args: unknown[]) => startTask(...args)
-}));
+	  fetchTask: (...args: unknown[]) => fetchTask(...args),
+	  fetchAudioURL: (...args: unknown[]) => fetchAudioURL(...args),
+	  fetchTaskAudioGroup: (...args: unknown[]) => fetchTaskAudioGroup(...args),
+	  fetchPIILabels: (...args: unknown[]) => fetchPIILabels(...args),
+	  fetchTaskActivity: (...args: unknown[]) => fetchTaskActivity(...args),
+	  detectTaskPII: (...args: unknown[]) => detectTaskPII(...args),
+	  generateTaskAlignment: (...args: unknown[]) => generateTaskAlignment(...args),
+	  maskTaskPIIAudio: (...args: unknown[]) => maskTaskPIIAudio(...args),
+	  patchTaskCombined: (...args: unknown[]) => patchTaskCombined(...args),
+	  saveTaskAudioGroupFullTranscript: (...args: unknown[]) => saveTaskAudioGroupFullTranscript(...args),
+	  startTask: (...args: unknown[]) => startTask(...args)
+	}));
 
 describe("TaskWorkspacePage", () => {
   beforeEach(() => {
@@ -151,9 +210,10 @@ describe("TaskWorkspacePage", () => {
     localStorage.removeItem(draftKey);
     localStorage.setItem(ANNOTATOR_GUIDED_TOUR_STORAGE_KEY, "complete");
     vi.useRealTimers();
-    fetchTask.mockResolvedValue(mockTask);
-    fetchAudioURL.mockResolvedValue({ url: "/api/v1/media/audio/token", expires_in_seconds: 300 });
-    fetchPIILabels.mockResolvedValue({ items: [] });
+	    fetchTask.mockResolvedValue(mockTask);
+	    fetchAudioURL.mockResolvedValue({ url: "/api/v1/media/audio/token", expires_in_seconds: 300 });
+	    fetchTaskAudioGroup.mockResolvedValue(mockAudioGroup);
+	    fetchPIILabels.mockResolvedValue({ items: [] });
     fetchTaskActivity.mockResolvedValue({ items: [] });
     detectTaskPII.mockResolvedValue({ pii_annotations: [] });
     generateTaskAlignment.mockResolvedValue({
@@ -185,7 +245,14 @@ describe("TaskWorkspacePage", () => {
       alignment_intervals: [{ start_seconds: 0, end_seconds: 0.4, labels: ["PHONE"], text: "1234567890" }],
       words: [],
     });
-    patchTaskCombined.mockResolvedValue({ task: { ...mockTask, version: 2 } });
+	    patchTaskCombined.mockResolvedValue({ task: { ...mockTask, version: 2 } });
+	    saveTaskAudioGroupFullTranscript.mockResolvedValue({
+	      ...mockAudioGroup,
+	      full_transcript_text: "edited full call",
+	      full_transcript_source: "saved_review",
+	      full_transcript_review_version: 1,
+	      full_transcript_review_updated_at: new Date().toISOString(),
+	    });
     startTask.mockResolvedValue({
       task: {
         ...mockTask,

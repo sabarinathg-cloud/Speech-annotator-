@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     JSON,
     Numeric,
     String,
@@ -120,6 +121,47 @@ class TaskTranscriptVariant(Base):
     )
 
     task = relationship("AnnotationTask", back_populates="transcript_variants")
+
+
+class TaskAudioGroupReview(Base, TimestampMixin):
+    __tablename__ = "task_audio_group_reviews"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "upload_job_id",
+            "group_hash",
+            "assignment_scope_key",
+            name="uq_task_audio_group_reviews_scope",
+        ),
+        Index("ix_task_audio_group_reviews_organization_id", "organization_id"),
+        Index("ix_task_audio_group_reviews_upload_job_id", "upload_job_id"),
+        Index("ix_task_audio_group_reviews_assignee_id", "assignee_id"),
+        Index("ix_task_audio_group_reviews_group_hash", "group_hash"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    upload_job_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("upload_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    group_key: Mapped[str] = mapped_column(Text, nullable=False)
+    group_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    assignee_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    assignment_scope_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    transcript: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    organization = relationship("Organization")
+    upload_job = relationship("UploadJob")
+    assignee = relationship("User")
 
 
 class TaskStatusHistory(Base):

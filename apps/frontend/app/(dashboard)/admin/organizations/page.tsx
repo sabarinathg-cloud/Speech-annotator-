@@ -18,7 +18,18 @@ import {
 } from "@/lib/api";
 import { readSession, writeSession } from "@/lib/session";
 
-const featureLabels: Array<{ key: keyof OrganizationSettings; label: string; hint: string }> = [
+type OrganizationFeatureKey = Exclude<keyof OrganizationSettings, "instructions">;
+
+const defaultOrganizationInstructions = `Please read these instructions before starting annotation work.
+
+- Work only on tasks assigned to you in this organization.
+- Listen to the full audio before finalizing transcript changes.
+- Correct the transcript exactly as spoken, including punctuation when it is clear.
+- Complete metadata or PII fields only when they are enabled for this organization.
+- Do not copy, download, screenshot, or share customer audio, transcripts, PII, or metadata outside the approved workspace.
+- Contact an admin if audio is missing, unclear, duplicated, or assigned incorrectly.`;
+
+const featureLabels: Array<{ key: OrganizationFeatureKey; label: string; hint: string }> = [
   { key: "metadata_enabled", label: "Metadata", hint: "Show metadata fields and allow metadata import/update." },
   { key: "pii_enabled", label: "PII", hint: "Show PII review, labels, and detection." },
   { key: "transcript_redaction_enabled", label: "Transcript redaction", hint: "Add redacted transcript previews/exports." },
@@ -37,6 +48,7 @@ const blankCreateForm: Partial<OrganizationSettings> & { name: string; slug: str
   transcript_redaction_enabled: false,
   audio_masking_enabled: false,
   hiring_enabled: false,
+  instructions: defaultOrganizationInstructions,
 };
 
 export default function AdminOrganizationsPage() {
@@ -162,6 +174,7 @@ export default function AdminOrganizationsPage() {
         ...createForm,
         name: createForm.name.trim(),
         slug: createForm.slug.trim() || null,
+        instructions: createForm.instructions?.trim() || null,
       });
       setCreateForm(blankCreateForm);
       await refreshOrganizations(organization.id);
@@ -190,6 +203,7 @@ export default function AdminOrganizationsPage() {
         transcript_redaction_enabled: draft.transcript_redaction_enabled,
         audio_masking_enabled: draft.audio_masking_enabled,
         hiring_enabled: draft.hiring_enabled,
+        instructions: draft.instructions?.trim() || null,
       });
       setOrganizations((prev) => prev.map((organization) => (organization.id === updated.id ? updated : organization)));
       setDraft(updated);
@@ -325,6 +339,31 @@ export default function AdminOrganizationsPage() {
               onChange={(checked) => setCreateForm((prev) => ({ ...prev, is_active: checked }))}
             />
             <CoreWorkflowCard />
+            <label className="block text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">
+              Instructions for annotators
+              <textarea
+                value={createForm.instructions ?? ""}
+                onChange={(event) => setCreateForm((prev) => ({ ...prev, instructions: event.target.value }))}
+                className="oa-textarea mt-1 min-h-[150px] resize-y normal-case tracking-normal"
+                placeholder="Shown to annotators when they open this organization. Leave blank to hide."
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setCreateForm((prev) => ({ ...prev, instructions: defaultOrganizationInstructions }))}
+                className="oa-btn-secondary px-3 py-2 text-sm font-semibold"
+              >
+                Use default
+              </button>
+              <button
+                type="button"
+                onClick={() => setCreateForm((prev) => ({ ...prev, instructions: "" }))}
+                className="oa-btn-secondary px-3 py-2 text-sm font-semibold"
+              >
+                Clear
+              </button>
+            </div>
             <button
               type="button"
               onClick={() =>
@@ -392,6 +431,33 @@ export default function AdminOrganizationsPage() {
                     className="oa-btn-secondary shrink-0 px-3 py-2 text-sm font-semibold"
                   >
                     Set transcript only
+                  </button>
+                </div>
+                <label className="mt-4 block text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">
+                  Instructions for annotators
+                  <textarea
+                    value={draft.instructions ?? ""}
+                    onChange={(event) => setDraft((prev) => (prev ? { ...prev, instructions: event.target.value } : prev))}
+                    className="oa-textarea mt-1 min-h-[160px] resize-y normal-case tracking-normal"
+                    placeholder="Shown to annotators when they open this organization. Leave blank to hide."
+                  />
+                </label>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDraft((prev) => (prev ? { ...prev, instructions: defaultOrganizationInstructions } : prev))
+                    }
+                    className="oa-btn-secondary px-3 py-2 text-sm font-semibold"
+                  >
+                    Use default
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDraft((prev) => (prev ? { ...prev, instructions: "" } : prev))}
+                    className="oa-btn-secondary px-3 py-2 text-sm font-semibold"
+                  >
+                    Clear instructions
                   </button>
                 </div>
                 <div className="mt-4 grid gap-3 md:grid-cols-2">

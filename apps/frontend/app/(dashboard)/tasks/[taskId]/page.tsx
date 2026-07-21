@@ -39,6 +39,7 @@ import {
   generateTaskAlignment,
   maskTaskPIIAudio,
   patchTaskCombined,
+  saveTaskAudioGroupFullTranscript,
   startTask,
 } from "@/lib/api";
 import { detectPIIAnnotations, sanitizePIIAnnotations } from "@/lib/pii";
@@ -553,7 +554,10 @@ export default function TaskWorkspacePage() {
   const [audioGroup, setAudioGroup] = useState<TaskAudioGroup | null>(null);
   const [fullAudioUrl, setFullAudioUrl] = useState<string | null>(null);
   const [fullReviewTranscript, setFullReviewTranscript] = useState("");
-  const [fullReviewTouched, setFullReviewTouched] = useState(false);
+  const [fullReviewOriginalTranscript, setFullReviewOriginalTranscript] = useState("");
+  const [fullReviewVersion, setFullReviewVersion] = useState<number | null>(null);
+  const [fullReviewSaveState, setFullReviewSaveState] = useState<SaveState>("idle");
+  const [fullReviewSaveError, setFullReviewSaveError] = useState<string | null>(null);
   const [fullReviewOpen, setFullReviewOpen] = useState(false);
   const [version, setVersion] = useState(1);
   const [finalTranscript, setFinalTranscript] = useState("");
@@ -625,6 +629,8 @@ export default function TaskWorkspacePage() {
   const retryTimeoutRef = useRef<number | null>(null);
   const retryAttemptRef = useRef(0);
   const saveAllRef = useRef<(versionOverride?: number) => Promise<boolean>>(async () => false);
+  const fullReviewSavingRef = useRef(false);
+  const fullReviewTranscriptRef = useRef("");
   const wordAudioRef = useRef<HTMLAudioElement | null>(null);
   const wordStopAtRef = useRef<number | null>(null);
   const wordStopTimerRef = useRef<number | null>(null);
@@ -718,6 +724,26 @@ export default function TaskWorkspacePage() {
       .filter(Boolean)
       .join("\n");
   }, [audioGroup, finalTranscript, task?.id]);
+  const fullReviewSeedTranscript = useMemo(() => {
+    if (!audioGroup) return "";
+    return audioGroup.chunks
+      .map((chunk) => (chunk.seed_transcript ?? "").trim())
+      .filter(Boolean)
+      .join("\n");
+  }, [audioGroup]);
+  const fullReviewDirty = fullReviewTranscript !== fullReviewOriginalTranscript;
+  const fullReviewSourceLabel =
+    audioGroup?.full_transcript_source === "saved_review" ? "Saved full-call review" : "Seeded from segment ASR";
+  const fullReviewSeedSourceSummary = useMemo(() => {
+    if (!audioGroup) return "";
+    const entries = Object.entries(audioGroup.full_transcript_seed_source_counts ?? {})
+      .filter(([, count]) => count > 0)
+      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+    if (entries.length === 0) return "No seed transcript available";
+    return entries
+      .map(([key, count]) => `${key.replaceAll("_", " ")}: ${count}`)
+      .join(" | ");
+  }, [audioGroup]);
   const fullReviewComparison = useMemo(
     () => diffWordCounts(assembledSegmentTranscript, fullReviewTranscript),
     [assembledSegmentTranscript, fullReviewTranscript]
@@ -945,17 +971,20 @@ export default function TaskWorkspacePage() {
   }, [activeInspectorPanel, visibleInspectorTabs]);
 
   useEffect(() => {
-    if (fullReviewTouched) return;
-    setFullReviewTranscript(assembledSegmentTranscript);
-  }, [assembledSegmentTranscript, fullReviewTouched]);
-
-  useEffect(() => {
     if (!hasUnsavedChanges || !taskId) return;
     const timeout = window.setTimeout(() => {
       void saveAll();
     }, 1500);
     return () => window.clearTimeout(timeout);
   }, [hasUnsavedChanges, finalTranscript, piiAnnotations, metadata, customMetadata, notes, status, taskId]);
+
+  useEffect(() => {
+    if (!fullReviewOpen || !fullReviewDirty || !accessToken || !task?.id || !audioGroup) return;
+    const timeout = window.setTimeout(() => {
+      void saveFullReviewTranscript();
+    }, 1200);
+    return () => window.clearTimeout(timeout);
+  }, [fullReviewOpen, fullReviewDirty, fullReviewTranscript, accessToken, task?.id, audioGroup?.group_key, fullReviewVersion]);
 
   useEffect(() => {
     if (piiLabelOptions.some((label) => label.key === selectionLabel)) {
@@ -967,6 +996,10 @@ export default function TaskWorkspacePage() {
   useEffect(() => {
     hasUnsavedChangesRef.current = hasUnsavedChanges;
   }, [hasUnsavedChanges]);
+
+  useEffect(() => {
+    fullReviewTranscriptRef.current = fullReviewTranscript;
+  }, [fullReviewTranscript]);
 
   useEffect(() => {
     versionRef.current = version;
@@ -1253,13 +1286,24 @@ export default function TaskWorkspacePage() {
   function applyAudioGroupState(nextGroup: TaskAudioGroup | null) {
     setAudioGroup(nextGroup);
     setFullAudioUrl(nextGroup?.full_audio_url ? `${backendBase}${nextGroup.full_audio_url}` : null);
-    setFullReviewTouched(false);
-    setFullReviewTranscript(nextGroup?.assembled_transcript ?? "");
+    applyFullReviewState(nextGroup);
     setFullReviewOpen(false);
+  }
+
+  function applyFullReviewState(nextGroup: TaskAudioGroup | null) {
+    const nextTranscript = nextGroup?.full_transcript_text ?? "";
+    setFullReviewTranscript(nextTranscript);
+    setFullReviewOriginalTranscript(nextTranscript);
+    setFullReviewVersion(nextGroup?.full_transcript_review_version ?? null);
+    setFullReviewSaveState(nextGroup ? "saved" : "idle");
+    setFullReviewSaveError(null);
   }
 
   async function handleFullReviewToggle() {
     if (fullReviewOpen) {
+      if (fullReviewDirty) {
+        await saveFullReviewTranscript();
+      }
       setFullReviewOpen(false);
       return;
     }
@@ -1269,8 +1313,8 @@ export default function TaskWorkspacePage() {
         const refreshedGroup = await fetchTaskAudioGroup(accessToken, task.id);
         setAudioGroup(refreshedGroup);
         setFullAudioUrl(refreshedGroup.full_audio_url ? `${backendBase}${refreshedGroup.full_audio_url}` : null);
-        if (!fullReviewTouched) {
-          setFullReviewTranscript(refreshedGroup.assembled_transcript ?? "");
+        if (!fullReviewDirty) {
+          applyFullReviewState(refreshedGroup);
         }
       } catch {
         // Keep the existing group details if the refresh fails; the player will show the current availability state.
@@ -1278,6 +1322,44 @@ export default function TaskWorkspacePage() {
     }
 
     setFullReviewOpen(true);
+  }
+
+  async function saveFullReviewTranscript(): Promise<boolean> {
+    if (!accessToken || !task?.id || !audioGroup || fullReviewSavingRef.current || !fullReviewDirty) {
+      return false;
+    }
+
+    const transcriptSnapshot = fullReviewTranscript;
+    const versionSnapshot = fullReviewVersion;
+    fullReviewSavingRef.current = true;
+    setFullReviewSaveState("saving");
+    setFullReviewSaveError(null);
+    try {
+      const refreshedGroup = await saveTaskAudioGroupFullTranscript(accessToken, task.id, {
+        transcript: transcriptSnapshot,
+        review_version: versionSnapshot,
+      });
+      setAudioGroup(refreshedGroup);
+      setFullAudioUrl(refreshedGroup.full_audio_url ? `${backendBase}${refreshedGroup.full_audio_url}` : null);
+      setFullReviewOriginalTranscript(refreshedGroup.full_transcript_text ?? "");
+      setFullReviewVersion(refreshedGroup.full_transcript_review_version ?? null);
+      const changedWhileSaving = fullReviewTranscriptRef.current !== transcriptSnapshot;
+      setFullReviewTranscript(changedWhileSaving ? fullReviewTranscriptRef.current : (refreshedGroup.full_transcript_text ?? ""));
+      setFullReviewSaveState(changedWhileSaving ? "unsaved" : "saved");
+      return true;
+    } catch (err) {
+      const message =
+        err instanceof APIError && err.status === 409
+          ? "Full transcript changed elsewhere. Refresh the full recording review, then try again."
+          : err instanceof APIError
+            ? err.message
+            : "Failed to save full transcript";
+      setFullReviewSaveError(message);
+      setFullReviewSaveState("error");
+      return false;
+    } finally {
+      fullReviewSavingRef.current = false;
+    }
   }
 
   function applyLocalDraftState(draft: LocalTaskDraft) {
@@ -2486,11 +2568,33 @@ export default function TaskWorkspacePage() {
             {audioGroup && audioGroup.chunk_count > 1 ? (
               <div className="mt-3 rounded-xl border border-[#d9d2ef] bg-[#fbf8ff] p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#4f4674]">Full Recording Review</p>
-                    <p className="mt-0.5 text-xs text-[#6b6682]">
-                      {audioGroup.group_label ?? "Recording"} | chunk {audioGroup.current_position}/{audioGroup.chunk_count}
-                      {audioGroup.missing_transcript_count > 0
+	                  <div>
+	                    <div className="flex flex-wrap items-center gap-2">
+	                      <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#4f4674]">Full Recording Review</p>
+	                      <span className="rounded-full border border-[#d9d2ef] bg-white px-2 py-0.5 text-[11px] font-semibold text-[#4f4674]">
+	                        {fullReviewSourceLabel}
+	                      </span>
+	                      {fullReviewSaveState === "saving" ? (
+	                        <span className="rounded-full border border-[#bfdbfe] bg-[#eff6ff] px-2 py-0.5 text-[11px] font-semibold text-[#1d4ed8]">
+	                          Saving
+	                        </span>
+	                      ) : fullReviewSaveState === "error" ? (
+	                        <span className="rounded-full border border-[#fecaca] bg-[#fff1f2] px-2 py-0.5 text-[11px] font-semibold text-[#b91c1c]">
+	                          Save failed
+	                        </span>
+	                      ) : fullReviewDirty ? (
+	                        <span className="rounded-full border border-[#fed7aa] bg-[#fff7ed] px-2 py-0.5 text-[11px] font-semibold text-[#9a3412]">
+	                          Unsaved
+	                        </span>
+	                      ) : (
+	                        <span className="rounded-full border border-[#bbf7d0] bg-[#f0fdf4] px-2 py-0.5 text-[11px] font-semibold text-[#166534]">
+	                          Saved
+	                        </span>
+	                      )}
+	                    </div>
+	                    <p className="mt-0.5 text-xs text-[#6b6682]">
+	                      {audioGroup.group_label ?? "Recording"} | chunk {audioGroup.current_position}/{audioGroup.chunk_count}
+	                      {audioGroup.missing_transcript_count > 0
                         ? ` | ${audioGroup.missing_transcript_count} segment transcript${audioGroup.missing_transcript_count === 1 ? "" : "s"} missing`
                         : " | all segment transcripts present"}
                     </p>
@@ -2520,15 +2624,18 @@ export default function TaskWorkspacePage() {
                         {audioGroup.message ?? "Full audio is not available for this recording."}
                       </p>
                     )}
-                    <div className="grid gap-2 text-xs text-[#4f4674] sm:grid-cols-3">
-                      <span className="rounded-lg border border-[#e8def5] bg-white px-3 py-2">
-                        Segment words: {fullReviewComparison.referenceWordCount}
-                      </span>
-                      <span className="rounded-lg border border-[#e8def5] bg-white px-3 py-2">
-                        Review words: {fullReviewComparison.actualWordCount}
-                      </span>
-                      <span
-                        className={`rounded-lg border px-3 py-2 ${
+	                    <div className="grid gap-2 text-xs text-[#4f4674] sm:grid-cols-4">
+	                      <span className="rounded-lg border border-[#e8def5] bg-white px-3 py-2">
+	                        Segment words: {fullReviewComparison.referenceWordCount}
+	                      </span>
+	                      <span className="rounded-lg border border-[#e8def5] bg-white px-3 py-2">
+	                        Review words: {fullReviewComparison.actualWordCount}
+	                      </span>
+	                      <span className="rounded-lg border border-[#e8def5] bg-white px-3 py-2">
+	                        Seed missing: {audioGroup.full_transcript_seed_missing_count}
+	                      </span>
+	                      <span
+	                        className={`rounded-lg border px-3 py-2 ${
                           fullReviewHasConflict
                             ? "border-[#ffd9a8] bg-[#fff8ec] text-[#925b17]"
                             : "border-[#cdebd7] bg-[#f4fff7] text-[#2f6940]"
@@ -2537,19 +2644,31 @@ export default function TaskWorkspacePage() {
                         Match: {fullReviewComparison.similarityPercent === null ? "--" : `${fullReviewComparison.similarityPercent}%`}
                       </span>
                     </div>
-                    <label className="block text-xs font-semibold text-[#4f4674]">
-                      Full transcript check
-                      <textarea
-                        value={fullReviewTranscript}
-                        onChange={(event) => {
-                          setFullReviewTranscript(event.target.value);
-                          setFullReviewTouched(true);
-                        }}
-                        rows={5}
-                        className="oa-textarea mt-1 bg-white font-mono text-sm"
-                        placeholder="Listen to the full recording and paste or type the complete transcript here to compare against segment transcripts."
-                      />
-                    </label>
+	                    <label className="block text-xs font-semibold text-[#4f4674]">
+	                      Full-call transcript
+	                      <textarea
+	                        value={fullReviewTranscript}
+	                        onChange={(event) => {
+	                          setFullReviewTranscript(event.target.value);
+	                          setFullReviewSaveState("unsaved");
+	                          setFullReviewSaveError(null);
+	                        }}
+	                        rows={5}
+	                        className="oa-textarea mt-1 bg-white font-mono text-sm"
+	                        placeholder="Review or edit the complete call transcript here. This guide is saved separately from the segment transcript."
+	                      />
+	                    </label>
+	                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#6b6682]">
+	                      <span>{fullReviewSeedSourceSummary}</span>
+	                      {audioGroup.full_transcript_review_updated_at ? (
+	                        <span>Updated {new Date(audioGroup.full_transcript_review_updated_at).toLocaleString()}</span>
+	                      ) : null}
+	                    </div>
+	                    {fullReviewSaveError ? (
+	                      <p className="rounded-lg border border-[#fecaca] bg-[#fff1f2] px-3 py-2 text-xs text-[#b91c1c]">
+	                        {fullReviewSaveError}
+	                      </p>
+	                    ) : null}
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <select
                         value={task.id}
@@ -2557,43 +2676,46 @@ export default function TaskWorkspacePage() {
                         className="oa-input min-w-[260px] px-3 py-2 text-xs"
                         aria-label="Open a chunk from this recording"
                       >
-                        {audioGroup.chunks.map((chunk) => (
-                          <option key={chunk.task_id} value={chunk.task_id}>
-                            {chunk.position}. {chunk.filename} - {chunk.has_transcript ? "has transcript" : "missing transcript"}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFullReviewTouched(false);
-                          setFullReviewTranscript(assembledSegmentTranscript);
-                        }}
-                        className="oa-btn-secondary px-3 py-2 text-xs font-semibold"
-                      >
-                        Use segment transcript
-                      </button>
+	                        {audioGroup.chunks.map((chunk) => (
+	                          <option key={chunk.task_id} value={chunk.task_id}>
+	                            {chunk.position}. {chunk.filename} - {chunk.has_transcript ? "has transcript" : "missing transcript"} -{" "}
+	                            {chunk.seed_source_label ?? "no seed"}
+	                          </option>
+	                        ))}
+	                      </select>
+	                      <button
+	                        type="button"
+	                        onClick={() => {
+	                          setFullReviewTranscript(fullReviewSeedTranscript);
+	                          setFullReviewSaveState("unsaved");
+	                          setFullReviewSaveError(null);
+	                        }}
+	                        disabled={!fullReviewSeedTranscript.trim() && !fullReviewTranscript.trim()}
+	                        className="oa-btn-secondary px-3 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+	                      >
+	                        Reset to segment ASR seed
+	                      </button>
                     </div>
-                    {fullReviewHasConflict ? (
-                      <div className="rounded-lg border border-[#ffd9a8] bg-[#fff8ec] px-3 py-2 text-xs text-[#925b17]">
-                        <p className="font-semibold">Full transcript check does not match the segment transcripts.</p>
-                        <p className="mt-1">
-                          Review the nearby chunks, then correct the segment transcript that caused the mismatch.
-                        </p>
-                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                          <p>
-                            Missing from full check:{" "}
-                            {fullReviewComparison.missingWords.slice(0, 12).join(", ") || "none"}
-                          </p>
-                          <p>
-                            Extra in full check: {fullReviewComparison.extraWords.slice(0, 12).join(", ") || "none"}
-                          </p>
-                        </div>
-                      </div>
-                    ) : (
-                      <p className="rounded-lg border border-[#cdebd7] bg-[#f4fff7] px-3 py-2 text-xs text-[#2f6940]">
-                        Full transcript check matches the current segment transcripts.
-                      </p>
+	                    {fullReviewHasConflict ? (
+	                      <div className="rounded-lg border border-[#ffd9a8] bg-[#fff8ec] px-3 py-2 text-xs text-[#925b17]">
+	                        <p className="font-semibold">Full-call review does not match the current segment transcripts.</p>
+	                        <p className="mt-1">
+	                          This is only a warning. Open the nearby chunk below and correct the segment transcript if the full-call context shows a mistake.
+	                        </p>
+	                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+	                          <p>
+	                            Segment-only words:{" "}
+	                            {fullReviewComparison.missingWords.slice(0, 12).join(", ") || "none"}
+	                          </p>
+	                          <p>
+	                            Full-review-only words: {fullReviewComparison.extraWords.slice(0, 12).join(", ") || "none"}
+	                          </p>
+	                        </div>
+	                      </div>
+	                    ) : (
+	                      <p className="rounded-lg border border-[#cdebd7] bg-[#f4fff7] px-3 py-2 text-xs text-[#2f6940]">
+	                        Full-call review matches the current segment transcripts.
+	                      </p>
                     )}
                   </div>
                 ) : null}

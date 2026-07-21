@@ -32,6 +32,7 @@ from app.schemas.task import (
     TaskNextResponse,
     TaskPatchResponse,
     CreateAssignmentCopyRequest,
+    UpdateAudioGroupTranscriptRequest,
     UpdateAssigneeRequest,
     UpdateMetadataRequest,
     UpdateNotesRequest,
@@ -573,6 +574,43 @@ def get_audio_group(
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
             metadata={"chunk_count": response.chunk_count, "full_audio_available": response.full_audio_available},
+        )
+        return response
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.patch("/{task_id}/audio-group/full-transcript", response_model=TaskAudioGroupResponse)
+def update_audio_group_full_transcript(
+    task_id: str,
+    payload: UpdateAudioGroupTranscriptRequest,
+    request: Request,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
+):
+    service = TaskService(db)
+    try:
+        response = service.save_audio_group_full_transcript(
+            task_id,
+            payload=payload,
+            actor=current_user,
+            organization=organization,
+        )
+        SecurityAuditService(db).log_event(
+            action="SAVE_AUDIO_GROUP_FULL_TRANSCRIPT",
+            actor=current_user,
+            resource_type="audio_group",
+            resource_id=response.group_key,
+            task_id=task_id,
+            organization_id=organization.id,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            metadata={
+                "chunk_count": response.chunk_count,
+                "review_version": response.full_transcript_review_version,
+                "transcript_length": len(payload.transcript or ""),
+            },
         )
         return response
     except ServiceError as exc:

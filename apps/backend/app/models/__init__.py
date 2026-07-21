@@ -3,7 +3,13 @@ from app.models.hiring import HiringAssessment, HiringAssessmentItem, HiringAssi
 from app.models.organization import Organization, OrganizationMembership
 from app.models.pii_label import PIILabel
 from app.models.security import SecurityAuditEvent
-from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory, TaskTranscriptVariant
+from app.models.task import (
+    AnnotationTask,
+    TaskAudioGroupReview,
+    TaskAuditLog,
+    TaskStatusHistory,
+    TaskTranscriptVariant,
+)
 from app.models.upload import UploadFile, UploadJob, UploadJobError
 from app.models.user import User
 
@@ -23,6 +29,7 @@ __all__ = [
     "UploadJobError",
     "AnnotationTask",
     "TaskTranscriptVariant",
+    "TaskAudioGroupReview",
     "TaskStatusHistory",
     "TaskAuditLog",
 ]

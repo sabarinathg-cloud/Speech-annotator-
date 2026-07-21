@@ -359,6 +359,9 @@ class TaskAudioGroupChunkResponse(BaseModel):
     final_transcript: str | None = None
     has_transcript: bool
     duration_seconds: float | None = None
+    seed_transcript: str | None = None
+    seed_source_key: str | None = None
+    seed_source_label: str | None = None
 
 
 class TaskAudioGroupResponse(BaseModel):
@@ -370,11 +373,22 @@ class TaskAudioGroupResponse(BaseModel):
     completed_transcript_count: int
     missing_transcript_count: int
     assembled_transcript: str
+    full_transcript_text: str
+    full_transcript_source: Literal["saved_review", "segment_asr_seed"]
+    full_transcript_review_version: int | None = None
+    full_transcript_review_updated_at: datetime | None = None
+    full_transcript_seed_missing_count: int
+    full_transcript_seed_source_counts: dict[str, int] = Field(default_factory=dict)
     full_audio_url: str | None = None
     expires_in_seconds: int | None = None
     full_audio_available: bool
     message: str | None = None
     chunks: list[TaskAudioGroupChunkResponse]
+
+
+class UpdateAudioGroupTranscriptRequest(BaseModel):
+    transcript: str = ""
+    review_version: int | None = Field(default=None, ge=1)
 
 
 class TaskAudioAlignmentResponse(BaseModel):

@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -42,6 +43,7 @@ from app.schemas.task import (
     TaskListResponse,
     TaskMaskedAudioResponse,
     TaskPatchResponse,
+    UpdateAudioGroupTranscriptRequest,
 )
 from app.services.audio_alignment_service import AudioAlignmentService, transcript_hash
 from app.services.audio_group_service import audio_group_info, audio_group_sort_key
@@ -129,7 +131,10 @@ class TaskService:
     def get_next_task(self, *, actor: User, organization: Organization) -> str | None:
         if actor.role == RoleEnum.CANDIDATE:
             raise ServiceError("Candidates cannot access annotation tasks", status_code=403)
-        assignee_id = actor.id if actor.role != RoleEnum.ADMIN else None
+        if actor.role == RoleEnum.ADMIN:
+            assignee_id = task.assignee_id or "unassigned"
+        else:
+            assignee_id = actor.id
         return self.task_repo.get_next_unfinished_task(assignee_id=assignee_id, organization_id=organization.id)
 
     def save_combined_task(
@@ -847,12 +852,26 @@ class TaskService:
 
         chunks: list[TaskAudioGroupChunkResponse] = []
         transcript_parts: list[str] = []
+        seed_parts: list[str] = []
+        seed_missing_count = 0
+        seed_source_counts: dict[str, int] = {}
+        source_order, source_labels = self._transcript_seed_source_order(task)
         current_position = 1
         for position, group_task in enumerate(group_tasks, start=1):
             info = audio_group_info(group_task.file_location)
             text = (group_task.final_transcript or "").strip()
             if text:
                 transcript_parts.append(text)
+            seed_transcript, seed_source_key, seed_source_label = self._seed_transcript_for_task(
+                group_task,
+                source_order=source_order,
+                source_labels=source_labels,
+            )
+            if seed_transcript:
+                seed_parts.append(seed_transcript)
+            else:
+                seed_missing_count += 1
+            seed_source_counts[seed_source_key or "missing"] = seed_source_counts.get(seed_source_key or "missing", 0) + 1
             if group_task.id == task.id:
                 current_position = position
             chunks.append(
@@ -867,10 +886,16 @@ class TaskService:
                     final_transcript=group_task.final_transcript,
                     has_transcript=bool(text),
                     duration_seconds=float(group_task.duration_seconds) if group_task.duration_seconds is not None else None,
+                    seed_transcript=seed_transcript,
+                    seed_source_key=seed_source_key,
+                    seed_source_label=seed_source_label,
                 )
             )
 
         completed_count = sum(1 for chunk in chunks if chunk.has_transcript)
+        review = self._get_audio_group_review_for_task(task, actor=actor, group_key=group_info.group_key)
+        seed_text = "\n".join(seed_parts)
+        full_transcript_text = review.transcript if review else seed_text
         full_audio_url = None
         expires = None
         full_audio_available = len(chunks) > 1
@@ -889,12 +914,73 @@ class TaskService:
             completed_transcript_count=completed_count,
             missing_transcript_count=len(chunks) - completed_count,
             assembled_transcript="\n".join(transcript_parts),
+            full_transcript_text=full_transcript_text,
+            full_transcript_source="saved_review" if review else "segment_asr_seed",
+            full_transcript_review_version=review.version if review else None,
+            full_transcript_review_updated_at=review.updated_at if review else None,
+            full_transcript_seed_missing_count=seed_missing_count,
+            full_transcript_seed_source_counts=seed_source_counts,
             full_audio_url=full_audio_url,
             expires_in_seconds=expires,
             full_audio_available=full_audio_available,
             message=message,
             chunks=chunks,
         )
+
+    def save_audio_group_full_transcript(
+        self,
+        task_id: str,
+        *,
+        payload: UpdateAudioGroupTranscriptRequest,
+        actor: User,
+        organization: Organization,
+    ) -> TaskAudioGroupResponse:
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
+        group_info = audio_group_info(task.file_location)
+        if not group_info:
+            raise ServiceError("Full transcript review is available for WAV chunk folders only", status_code=422)
+
+        _raise_for_invalid_text(payload.transcript, "full transcript")
+        assignee_id, assignment_scope_key = self._audio_group_review_scope(task, actor)
+        group_hash = self._audio_group_hash(group_info.group_key)
+        review = self.task_repo.get_audio_group_review(
+            organization_id=organization.id,
+            upload_job_id=task.upload_job_id,
+            group_hash=group_hash,
+            assignment_scope_key=assignment_scope_key,
+        )
+
+        if review:
+            if payload.review_version != review.version:
+                raise ServiceError(
+                    "Full-call transcript changed in another session. Refresh and try again.",
+                    status_code=409,
+                    extra={"server_review_version": review.version},
+                )
+            if review.transcript != payload.transcript:
+                review.transcript = payload.transcript
+                review.version += 1
+                review.updated_at = datetime.now(timezone.utc)
+        else:
+            if payload.review_version is not None:
+                raise ServiceError(
+                    "Full-call transcript changed in another session. Refresh and try again.",
+                    status_code=409,
+                    extra={"server_review_version": None},
+                )
+            self.task_repo.create_audio_group_review(
+                organization_id=organization.id,
+                upload_job_id=task.upload_job_id,
+                group_key=group_info.group_key,
+                group_hash=group_hash,
+                assignee_id=assignee_id,
+                assignment_scope_key=assignment_scope_key,
+                transcript=payload.transcript,
+            )
+
+        self.db.flush()
+        self.db.commit()
+        return self.get_audio_group(task_id, actor=actor, organization=organization)
 
     def audio_group_file_locations_for_media(
         self,
@@ -1029,6 +1115,12 @@ class TaskService:
     ) -> TaskAudioGroupResponse:
         info = audio_group_info(task.file_location)
         text = (task.final_transcript or "").strip()
+        source_order, source_labels = self._transcript_seed_source_order(task)
+        seed_transcript, seed_source_key, seed_source_label = self._seed_transcript_for_task(
+            task,
+            source_order=source_order,
+            source_labels=source_labels,
+        )
         return TaskAudioGroupResponse(
             group_key=info.group_key if info else None,
             group_label=info.group_label if info else None,
@@ -1038,6 +1130,12 @@ class TaskService:
             completed_transcript_count=1 if text else 0,
             missing_transcript_count=0 if text else 1,
             assembled_transcript=text,
+            full_transcript_text=seed_transcript,
+            full_transcript_source="segment_asr_seed",
+            full_transcript_review_version=None,
+            full_transcript_review_updated_at=None,
+            full_transcript_seed_missing_count=0 if seed_transcript else 1,
+            full_transcript_seed_source_counts={seed_source_key or "missing": 1},
             full_audio_url=None,
             expires_in_seconds=None,
             full_audio_available=False,
@@ -1054,6 +1152,9 @@ class TaskService:
                     final_transcript=task.final_transcript,
                     has_transcript=bool(text),
                     duration_seconds=float(task.duration_seconds) if task.duration_seconds is not None else None,
+                    seed_transcript=seed_transcript,
+                    seed_source_key=seed_source_key,
+                    seed_source_label=seed_source_label,
                 )
             ],
         )
@@ -1087,6 +1188,75 @@ class TaskService:
         if task.file_location not in deduped:
             deduped[task.file_location] = task
         return sorted(deduped.values(), key=lambda item: audio_group_sort_key(item.file_location))
+
+    def _transcript_seed_source_order(self, task: AnnotationTask) -> tuple[list[str], dict[str, str]]:
+        mapping = task.upload_job.mapping_json if task.upload_job else None
+        transcript_columns = mapping.get("transcript_columns") if isinstance(mapping, dict) else None
+        if not isinstance(transcript_columns, list):
+            return [], {}
+
+        ordered_keys: list[str] = []
+        labels: dict[str, str] = {}
+        for column in transcript_columns:
+            if not isinstance(column, dict):
+                continue
+            source_key = str(column.get("source_key") or "").strip()
+            if not source_key or source_key in labels:
+                continue
+            ordered_keys.append(source_key)
+            source_label = str(column.get("source_label") or source_key).strip() or source_key
+            labels[source_key] = source_label
+        return ordered_keys, labels
+
+    def _seed_transcript_for_task(
+        self,
+        task: AnnotationTask,
+        *,
+        source_order: list[str],
+        source_labels: dict[str, str],
+    ) -> tuple[str, str | None, str | None]:
+        final_text = (task.final_transcript or "").strip()
+        if final_text:
+            return final_text, "final_transcript", "Current chunk transcript"
+
+        variants_by_key = {
+            variant.source_key: variant
+            for variant in task.transcript_variants
+            if (variant.transcript_text or "").strip()
+        }
+        for source_key in source_order:
+            variant = variants_by_key.get(source_key)
+            if variant:
+                return (
+                    variant.transcript_text.strip(),
+                    variant.source_key,
+                    source_labels.get(variant.source_key) or variant.source_label,
+                )
+
+        fallback_variants = sorted(
+            variants_by_key.values(),
+            key=lambda variant: (variant.source_key.lower(), variant.source_label.lower()),
+        )
+        if fallback_variants:
+            variant = fallback_variants[0]
+            return variant.transcript_text.strip(), variant.source_key, variant.source_label
+        return "", None, None
+
+    def _get_audio_group_review_for_task(self, task: AnnotationTask, *, actor: User, group_key: str):
+        _, assignment_scope_key = self._audio_group_review_scope(task, actor)
+        return self.task_repo.get_audio_group_review(
+            organization_id=task.organization_id,
+            upload_job_id=task.upload_job_id,
+            group_hash=self._audio_group_hash(group_key),
+            assignment_scope_key=assignment_scope_key,
+        )
+
+    def _audio_group_review_scope(self, task: AnnotationTask, actor: User) -> tuple[str | None, str]:
+        assignee_id = task.assignee_id if actor.role == RoleEnum.ADMIN else actor.id
+        return assignee_id, f"user:{assignee_id}" if assignee_id else "unassigned"
+
+    def _audio_group_hash(self, group_key: str) -> str:
+        return hashlib.sha256(group_key.encode("utf-8")).hexdigest()
 
     def _generate_audio_group_url(self, task: AnnotationTask, *, actor: User, organization: Organization) -> tuple[str, int]:
         from itsdangerous import URLSafeTimedSerializer

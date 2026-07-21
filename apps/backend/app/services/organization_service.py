@@ -10,6 +10,7 @@ from app.models.enums import RoleEnum
 from app.models.organization import Organization, OrganizationMembership
 from app.models.user import User
 from app.schemas.organization import (
+    DEFAULT_ORGANIZATION_INSTRUCTIONS,
     OrganizationMemberListResponse,
     OrganizationMemberResponse,
     OrganizationResponse,
@@ -39,6 +40,7 @@ def organization_access_response(organization: Organization) -> UserOrganization
             "transcript_redaction_enabled": organization.transcript_redaction_enabled,
             "audio_masking_enabled": organization.audio_masking_enabled,
             "hiring_enabled": organization.hiring_enabled,
+            "instructions": organization.instructions,
         },
     )
 
@@ -66,6 +68,7 @@ class OrganizationService:
             transcript_redaction_enabled=True,
             audio_masking_enabled=True,
             hiring_enabled=True,
+            instructions=DEFAULT_ORGANIZATION_INSTRUCTIONS,
         )
         self.db.add(organization)
         self.db.flush()
@@ -122,6 +125,7 @@ class OrganizationService:
         transcript_redaction_enabled: bool,
         audio_masking_enabled: bool,
         hiring_enabled: bool,
+        instructions: str | None,
     ) -> OrganizationResponse:
         organization = Organization(
             name=name.strip(),
@@ -132,6 +136,7 @@ class OrganizationService:
             transcript_redaction_enabled=transcript_redaction_enabled,
             audio_masking_enabled=audio_masking_enabled,
             hiring_enabled=hiring_enabled,
+            instructions=instructions,
         )
         self.db.add(organization)
         try:
@@ -148,6 +153,8 @@ class OrganizationService:
             organization.name = payload.name.strip()
         if "slug" in provided_fields and payload.slug is not None:
             organization.slug = normalize_slug(payload.slug)
+        if "instructions" in provided_fields:
+            organization.instructions = payload.instructions
         for field in [
             "is_active",
             "metadata_enabled",

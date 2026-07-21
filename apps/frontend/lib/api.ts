@@ -330,6 +330,18 @@ export async function fetchTaskAudioGroup(token: string, taskId: string): Promis
   return request<TaskAudioGroup>(`/tasks/${taskId}/audio-group`, { method: "GET" }, token);
 }
 
+export async function saveTaskAudioGroupFullTranscript(
+  token: string,
+  taskId: string,
+  payload: { transcript: string; review_version: number | null }
+): Promise<TaskAudioGroup> {
+  return request<TaskAudioGroup>(
+    `/tasks/${taskId}/audio-group/full-transcript`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+    token
+  );
+}
+
 export async function patchTranscript(
   token: string,
   taskId: string,

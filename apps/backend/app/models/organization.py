@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Boolean, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -22,6 +22,7 @@ class Organization(Base, TimestampMixin):
     transcript_redaction_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     audio_masking_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     hiring_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     memberships = relationship("OrganizationMembership", back_populates="organization", cascade="all, delete-orphan")
 

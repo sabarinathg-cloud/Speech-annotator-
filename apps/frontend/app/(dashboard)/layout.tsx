@@ -23,10 +23,23 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [ackChecked, setAckChecked] = useState(false);
   const [ackBusy, setAckBusy] = useState(false);
   const [ackError, setAckError] = useState<string | null>(null);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
   const isAdminRoute = pathname.startsWith("/admin");
   const isCandidateRoute = pathname.startsWith("/hiring");
+  const requiresConfidentialityAck = Boolean(user && user.confidentiality_acknowledged_for_session !== true);
+  const organizationInstructionText = (activeOrganization?.settings.instructions ?? "").trim();
+  const organizationInstructionKey =
+    activeOrganizationId && organizationInstructionText
+      ? organizationInstructionsSeenKey(activeOrganizationId, organizationInstructionText)
+      : null;
+  const showOrganizationInstructions = Boolean(
+    user &&
+      (user.role === "ANNOTATOR" || user.role === "REVIEWER") &&
+      activeOrganization &&
+      organizationInstructionText
+  );
   const shouldRedirectFromAdminRoute = Boolean(
     !isLoading && accessToken && user && user.role !== "ADMIN" && isAdminRoute
   );
@@ -60,6 +73,24 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.replace("/tasks");
     }
   }, [router, shouldRedirectNonCandidateFromHiring]);
+
+  useEffect(() => {
+    if (!showOrganizationInstructions || !organizationInstructionKey) {
+      setInstructionsOpen(false);
+      return;
+    }
+    if (requiresConfidentialityAck) return;
+    if (!hasSeenOrganizationInstructions(organizationInstructionKey)) {
+      setInstructionsOpen(true);
+    }
+  }, [organizationInstructionKey, requiresConfidentialityAck, showOrganizationInstructions]);
+
+  function closeOrganizationInstructions() {
+    if (organizationInstructionKey) {
+      markOrganizationInstructionsSeen(organizationInstructionKey);
+    }
+    setInstructionsOpen(false);
+  }
 
   if (isLoading || !accessToken) {
     return (
@@ -95,7 +126,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               ]
             : [])
         ];
-  const requiresConfidentialityAck = Boolean(user && user.confidentiality_acknowledged_for_session !== true);
   const strictSecurityGuardEnabled = Boolean(user && user.role !== "ADMIN" && user.role !== "CANDIDATE");
   const confidentialityBody =
     user?.role === "CANDIDATE"
@@ -179,6 +209,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   {activeOrganization.name}
                 </div>
               ) : null}
+              {showOrganizationInstructions ? (
+                <button
+                  type="button"
+                  onClick={() => setInstructionsOpen(true)}
+                  className="oa-btn-secondary px-3.5 py-2 text-sm font-medium"
+                >
+                  Instructions
+                </button>
+              ) : null}
               <AccountSummary user={user} />
               <button
                 type="button"
@@ -194,6 +233,39 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </div>
       </header>
+
+      {showOrganizationInstructions && instructionsOpen ? (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#1f1a35]/45 px-4 py-6 backdrop-blur-sm">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label="Organization instructions"
+            className="oa-card max-h-[86vh] w-full max-w-2xl overflow-hidden p-0"
+          >
+            <div className="border-b border-[#ece6f5] px-5 py-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#7a7395]">
+                Organization instructions
+              </p>
+              <h2 className="oa-title mt-1 text-xl font-semibold">{activeOrganization?.name}</h2>
+            </div>
+            <div className="max-h-[58vh] overflow-auto px-5 py-4">
+              <p className="whitespace-pre-wrap text-sm leading-6 text-[#3e385c]">{organizationInstructionText}</p>
+            </div>
+            <div className="flex flex-col gap-2 border-t border-[#ece6f5] bg-[#fbf8ff] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs leading-5 text-[#6f6a86]">
+                You can reopen these from the header at any time.
+              </p>
+              <button
+                type="button"
+                onClick={closeOrganizationInstructions}
+                className="oa-btn-primary px-4 py-2 text-sm font-semibold"
+              >
+                Got it
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {requiresConfidentialityAck ? (
         <main className="mx-auto flex min-h-[calc(100vh-120px)] max-w-[1360px] items-center justify-center px-4 py-5 sm:px-6">
@@ -245,4 +317,32 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       )}
     </div>
   );
+}
+
+function organizationInstructionsSeenKey(organizationId: string, instructions: string) {
+  return `outcomes_ai_org_instructions_seen:${organizationId}:${hashInstructionText(instructions)}`;
+}
+
+function hashInstructionText(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function hasSeenOrganizationInstructions(key: string) {
+  try {
+    return window.localStorage.getItem(key) === "seen";
+  } catch {
+    return false;
+  }
+}
+
+function markOrganizationInstructionsSeen(key: string) {
+  try {
+    window.localStorage.setItem(key, "seen");
+  } catch {
+    // If storage is unavailable, keep the prompt dismissible for this session.
+  }
 }

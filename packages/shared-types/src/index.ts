@@ -18,6 +18,7 @@ export interface OrganizationSettings {
   transcript_redaction_enabled: boolean;
   audio_masking_enabled: boolean;
   hiring_enabled: boolean;
+  instructions: string | null;
 }
 
 export interface Organization extends OrganizationSettings {
@@ -252,7 +253,12 @@ export interface TaskAudioGroupChunk {
   final_transcript: string | null;
   has_transcript: boolean;
   duration_seconds: number | null;
+  seed_transcript: string | null;
+  seed_source_key: string | null;
+  seed_source_label: string | null;
 }
+
+export type TaskFullTranscriptSource = "saved_review" | "segment_asr_seed";
 
 export interface TaskAudioGroup {
   group_key: string | null;
@@ -263,6 +269,12 @@ export interface TaskAudioGroup {
   completed_transcript_count: number;
   missing_transcript_count: number;
   assembled_transcript: string;
+  full_transcript_text: string;
+  full_transcript_source: TaskFullTranscriptSource;
+  full_transcript_review_version: number | null;
+  full_transcript_review_updated_at: string | null;
+  full_transcript_seed_missing_count: number;
+  full_transcript_seed_source_counts: Record<string, number>;
   full_audio_url: string | null;
   expires_in_seconds: number | null;
   full_audio_available: boolean;

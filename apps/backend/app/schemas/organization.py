@@ -2,6 +2,15 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+DEFAULT_ORGANIZATION_INSTRUCTIONS = """Please read these instructions before starting annotation work.
+
+- Work only on tasks assigned to you in this organization.
+- Listen to the full audio before finalizing transcript changes.
+- Correct the transcript exactly as spoken, including punctuation when it is clear.
+- Complete metadata or PII fields only when they are enabled for this organization.
+- Do not copy, download, screenshot, or share customer audio, transcripts, PII, or metadata outside the approved workspace.
+- Contact an admin if audio is missing, unclear, duplicated, or assigned incorrectly."""
+
 
 def normalize_slug(value: str) -> str:
     slug = value.strip().lower().replace("_", "-")
@@ -17,6 +26,7 @@ class OrganizationSettings(BaseModel):
     transcript_redaction_enabled: bool
     audio_masking_enabled: bool
     hiring_enabled: bool
+    instructions: str | None = None
 
 
 class OrganizationResponse(OrganizationSettings):
@@ -51,11 +61,20 @@ class OrganizationCreateRequest(BaseModel):
     transcript_redaction_enabled: bool = False
     audio_masking_enabled: bool = False
     hiring_enabled: bool = False
+    instructions: str | None = Field(default=DEFAULT_ORGANIZATION_INSTRUCTIONS, max_length=6000)
 
     @field_validator("slug")
     @classmethod
     def validate_slug(cls, value: str | None) -> str | None:
         return normalize_slug(value) if value else value
+
+    @field_validator("instructions")
+    @classmethod
+    def validate_instructions(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
 
 
 class OrganizationUpdateRequest(BaseModel):
@@ -67,11 +86,20 @@ class OrganizationUpdateRequest(BaseModel):
     transcript_redaction_enabled: bool | None = None
     audio_masking_enabled: bool | None = None
     hiring_enabled: bool | None = None
+    instructions: str | None = Field(default=None, max_length=6000)
 
     @field_validator("slug")
     @classmethod
     def validate_slug(cls, value: str | None) -> str | None:
         return normalize_slug(value) if value else value
+
+    @field_validator("instructions")
+    @classmethod
+    def validate_instructions(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
 
 
 class OrganizationMemberResponse(BaseModel):

@@ -48,6 +48,7 @@ def create_organization(
             transcript_redaction_enabled=payload.transcript_redaction_enabled,
             audio_masking_enabled=payload.audio_masking_enabled,
             hiring_enabled=payload.hiring_enabled,
+            instructions=payload.instructions,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc

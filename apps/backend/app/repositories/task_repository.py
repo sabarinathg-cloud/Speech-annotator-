@@ -8,7 +8,13 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.enums import TaskStatusEnum
-from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory, TaskTranscriptVariant
+from app.models.task import (
+    AnnotationTask,
+    TaskAudioGroupReview,
+    TaskAuditLog,
+    TaskStatusHistory,
+    TaskTranscriptVariant,
+)
 from app.models.user import User
 
 
@@ -348,6 +354,7 @@ class TaskRepository:
                 joinedload(AnnotationTask.transcript_variants),
                 joinedload(AnnotationTask.assignee),
                 joinedload(AnnotationTask.last_tagger),
+                joinedload(AnnotationTask.upload_job),
             )
             .where(AnnotationTask.id == task_id)
         )
@@ -366,7 +373,12 @@ class TaskRepository:
     ) -> list[AnnotationTask]:
         stmt = (
             select(AnnotationTask)
-            .options(joinedload(AnnotationTask.assignee), joinedload(AnnotationTask.last_tagger))
+            .options(
+                joinedload(AnnotationTask.transcript_variants),
+                joinedload(AnnotationTask.assignee),
+                joinedload(AnnotationTask.last_tagger),
+                joinedload(AnnotationTask.upload_job),
+            )
             .where(AnnotationTask.upload_job_id == upload_job_id)
             .where(AnnotationTask.organization_id == organization_id)
             .where(AnnotationTask.file_location.like(f"{_escape_like(location_prefix)}%", escape="\\"))
@@ -374,8 +386,54 @@ class TaskRepository:
             .limit(limit)
         )
         if assignee_id:
-            stmt = stmt.where(AnnotationTask.assignee_id == assignee_id)
+            if assignee_id == "unassigned":
+                stmt = stmt.where(AnnotationTask.assignee_id.is_(None))
+            else:
+                stmt = stmt.where(AnnotationTask.assignee_id == assignee_id)
         return list(self.db.execute(stmt).unique().scalars().all())
+
+    def get_audio_group_review(
+        self,
+        *,
+        organization_id: str,
+        upload_job_id: str,
+        group_hash: str,
+        assignment_scope_key: str,
+    ) -> TaskAudioGroupReview | None:
+        stmt = (
+            select(TaskAudioGroupReview)
+            .where(TaskAudioGroupReview.organization_id == organization_id)
+            .where(TaskAudioGroupReview.upload_job_id == upload_job_id)
+            .where(TaskAudioGroupReview.group_hash == group_hash)
+            .where(TaskAudioGroupReview.assignment_scope_key == assignment_scope_key)
+            .limit(1)
+        )
+        return self.db.execute(stmt).scalar_one_or_none()
+
+    def create_audio_group_review(
+        self,
+        *,
+        organization_id: str,
+        upload_job_id: str,
+        group_key: str,
+        group_hash: str,
+        assignee_id: str | None,
+        assignment_scope_key: str,
+        transcript: str,
+    ) -> TaskAudioGroupReview:
+        review = TaskAudioGroupReview(
+            organization_id=organization_id,
+            upload_job_id=upload_job_id,
+            group_key=group_key,
+            group_hash=group_hash,
+            assignee_id=assignee_id,
+            assignment_scope_key=assignment_scope_key,
+            transcript=transcript,
+            version=1,
+        )
+        self.db.add(review)
+        self.db.flush()
+        return review
 
     def get_prev_next_task_ids(
         self,

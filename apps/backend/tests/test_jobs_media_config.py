@@ -6,7 +6,7 @@ import wave
 from app.core.config import Settings
 from app.models.enums import TaskStatusEnum
 from app.models.job import BackgroundJob
-from app.models.task import AnnotationTask
+from app.models.task import AnnotationTask, TaskTranscriptVariant
 from app.models.upload import UploadFile, UploadJob
 from app.services.organization_service import OrganizationService
 from scripts.cleanup import run_cleanup
@@ -64,6 +64,7 @@ def _create_chunk_group(
         organization_id=organization.id,
         upload_file_id=upload_file.id,
         created_by_id=seed_users["admin"].id,
+        mapping_json=_mapping(),
     )
     db_session.add(upload_job)
     db_session.flush()
@@ -275,6 +276,141 @@ def test_audio_group_combines_wav_chunks_for_full_recording_playback(
         assert combined.getsampwidth() == 2
         assert combined.getframerate() == 8000
         assert combined.getnframes() == 5
+
+
+def test_audio_group_seeds_full_transcript_from_final_then_mapped_asr(
+    client, auth_headers, db_session, seed_users, tmp_path
+):
+    task_id, second_task_id = _create_chunk_group(db_session, seed_users, tmp_path)
+    task_one = db_session.get(AnnotationTask, task_id)
+    task_two = db_session.get(AnnotationTask, second_task_id)
+    task_one.final_transcript = None
+    task_two.final_transcript = "corrected second chunk"
+    db_session.add_all(
+        [
+            TaskTranscriptVariant(
+                task_id=task_one.id,
+                source_key="qwen",
+                source_label="Qwen",
+                transcript_text="qwen first chunk",
+            ),
+            TaskTranscriptVariant(
+                task_id=task_one.id,
+                source_key="whisper",
+                source_label="Whisper",
+                transcript_text="whisper first chunk",
+            ),
+            TaskTranscriptVariant(
+                task_id=task_two.id,
+                source_key="whisper",
+                source_label="Whisper",
+                transcript_text="ignored second chunk",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    group_response = client.get(f"/api/v1/tasks/{task_id}/audio-group", headers=auth_headers["annotator"])
+
+    assert group_response.status_code == 200
+    group = group_response.json()
+    assert group["full_transcript_source"] == "segment_asr_seed"
+    assert group["full_transcript_text"] == "whisper first chunk\ncorrected second chunk"
+    assert group["full_transcript_seed_missing_count"] == 0
+    assert group["full_transcript_seed_source_counts"] == {"whisper": 1, "final_transcript": 1}
+    assert group["chunks"][0]["seed_source_key"] == "whisper"
+    assert group["chunks"][1]["seed_source_key"] == "final_transcript"
+
+
+def test_audio_group_full_transcript_review_saves_reloads_and_conflicts(
+    client, auth_headers, db_session, seed_users, tmp_path
+):
+    task_id, second_task_id = _create_chunk_group(db_session, seed_users, tmp_path)
+
+    saved = client.patch(
+        f"/api/v1/tasks/{task_id}/audio-group/full-transcript",
+        headers=auth_headers["annotator"],
+        json={"transcript": "edited full call", "review_version": None},
+    )
+    assert saved.status_code == 200
+    payload = saved.json()
+    assert payload["full_transcript_source"] == "saved_review"
+    assert payload["full_transcript_text"] == "edited full call"
+    assert payload["full_transcript_review_version"] == 1
+
+    reloaded = client.get(f"/api/v1/tasks/{second_task_id}/audio-group", headers=auth_headers["annotator"])
+    assert reloaded.status_code == 200
+    assert reloaded.json()["full_transcript_text"] == "edited full call"
+
+    stale = client.patch(
+        f"/api/v1/tasks/{task_id}/audio-group/full-transcript",
+        headers=auth_headers["annotator"],
+        json={"transcript": "stale edit", "review_version": None},
+    )
+    assert stale.status_code == 409
+
+    updated = client.patch(
+        f"/api/v1/tasks/{task_id}/audio-group/full-transcript",
+        headers=auth_headers["annotator"],
+        json={"transcript": "edited again", "review_version": 1},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["full_transcript_review_version"] == 2
+    assert updated.json()["full_transcript_text"] == "edited again"
+
+
+def test_audio_group_full_transcript_reviews_are_scoped_by_assignee(
+    client, auth_headers, db_session, seed_users, tmp_path
+):
+    task_id, second_task_id = _create_chunk_group(db_session, seed_users, tmp_path)
+    source_task_one = db_session.get(AnnotationTask, task_id)
+    source_task_two = db_session.get(AnnotationTask, second_task_id)
+    reviewer_task_one = AnnotationTask(
+        organization_id=source_task_one.organization_id,
+        upload_job_id=source_task_one.upload_job_id,
+        external_id="reviewer-chunk-1",
+        file_location=source_task_one.file_location,
+        final_transcript=None,
+        status=TaskStatusEnum.IN_PROGRESS,
+        assignee_id=seed_users["reviewer"].id,
+        original_row={},
+    )
+    reviewer_task_two = AnnotationTask(
+        organization_id=source_task_two.organization_id,
+        upload_job_id=source_task_two.upload_job_id,
+        external_id="reviewer-chunk-2",
+        file_location=source_task_two.file_location,
+        final_transcript=None,
+        status=TaskStatusEnum.IN_PROGRESS,
+        assignee_id=seed_users["reviewer"].id,
+        original_row={},
+    )
+    db_session.add_all([reviewer_task_one, reviewer_task_two])
+    db_session.commit()
+
+    annotator_save = client.patch(
+        f"/api/v1/tasks/{task_id}/audio-group/full-transcript",
+        headers=auth_headers["annotator"],
+        json={"transcript": "annotator full call", "review_version": None},
+    )
+    reviewer_save = client.patch(
+        f"/api/v1/tasks/{reviewer_task_one.id}/audio-group/full-transcript",
+        headers=auth_headers["reviewer"],
+        json={"transcript": "reviewer full call", "review_version": None},
+    )
+
+    assert annotator_save.status_code == 200
+    assert reviewer_save.status_code == 200
+    assert annotator_save.json()["full_transcript_text"] == "annotator full call"
+    assert reviewer_save.json()["full_transcript_text"] == "reviewer full call"
+
+    annotator_reload = client.get(f"/api/v1/tasks/{second_task_id}/audio-group", headers=auth_headers["annotator"])
+    reviewer_reload = client.get(
+        f"/api/v1/tasks/{reviewer_task_two.id}/audio-group",
+        headers=auth_headers["reviewer"],
+    )
+    assert annotator_reload.json()["full_transcript_text"] == "annotator full call"
+    assert reviewer_reload.json()["full_transcript_text"] == "reviewer full call"
 
 
 def test_audio_group_rejects_incompatible_wav_chunks_without_crashing(
