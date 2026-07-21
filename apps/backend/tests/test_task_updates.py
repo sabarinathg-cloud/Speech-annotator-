@@ -5,11 +5,6 @@ from app.models.task import AnnotationTask
 from app.models.upload import UploadFile, UploadJob
 from app.services.audio_alignment_service import AudioAlignmentService, transcript_hash
 
-INVALID_TRANSCRIPT_MESSAGE = (
-    "Invalid characters in transcript: any printable text is allowed; raw control characters are not allowed."
-)
-
-
 def _mapping():
     return {
         "id_column": "id",
@@ -130,19 +125,22 @@ def test_transcript_update_accepts_grammatical_punctuation(client, auth_headers,
     assert save_response.json()["task"]["final_transcript"] == transcript
 
 
-def test_combined_task_save_rejects_invalid_transcript_characters(client, auth_headers, sample_excel_bytes):
+def test_combined_task_save_accepts_special_transcript_and_note_characters(client, auth_headers, sample_excel_bytes):
     task_id = _create_task(client, auth_headers, sample_excel_bytes)
     detail_response = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["annotator"])
     version = detail_response.json()["version"]
+    transcript = "Don't remove grammar: (A/B), ₹5.00, #VIP, “quoted text”, emoji 🙂."
+    notes = "Reviewer note: keep apostrophes, slashes /, brackets [], and symbols & %."
 
     save_response = client.patch(
         f"/api/v1/tasks/{task_id}",
         headers=auth_headers["annotator"],
-        json={"version": version, "final_transcript": "Combined corrected transcript \u0000"},
+        json={"version": version, "final_transcript": transcript, "notes": notes},
     )
 
-    assert save_response.status_code == 422
-    assert save_response.json()["detail"]["message"] == INVALID_TRANSCRIPT_MESSAGE
+    assert save_response.status_code == 200
+    assert save_response.json()["task"]["final_transcript"] == transcript
+    assert save_response.json()["task"]["notes"] == notes
 
 
 def test_combined_task_save_returns_conflict_for_stale_version(client, auth_headers, sample_excel_bytes):
