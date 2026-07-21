@@ -1,8 +1,9 @@
+import unicodedata
+
+
 ALLOWED_TEXT_DESCRIPTION = (
-    "only letters, numbers, spaces, line breaks and . , ? ! - @ are allowed."
+    "any printable text is allowed; raw control characters are not allowed."
 )
-ALLOWED_PUNCTUATION = set(".,?!-@")
-ALLOWED_WHITESPACE = {" ", "\n", "\r", "\t"}
 
 
 def invalid_text_message(field_label: str) -> str:
@@ -12,13 +13,13 @@ def invalid_text_message(field_label: str) -> str:
 def is_valid_annotation_text(value: str | None) -> bool:
     if not value:
         return True
-    return all(
-        character in ALLOWED_WHITESPACE
-        or character in ALLOWED_PUNCTUATION
-        or character.isalpha()
-        or character.isdecimal()
-        for character in value
-    )
+    return all(_is_allowed_annotation_character(character) for character in value)
+
+
+def _is_allowed_annotation_character(character: str) -> bool:
+    if character.isspace():
+        return True
+    return unicodedata.category(character)[0] != "C"
 
 
 def find_invalid_annotation_text(value: str | None, field_label: str) -> str | None:

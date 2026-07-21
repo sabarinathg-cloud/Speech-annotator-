@@ -6,8 +6,7 @@ from app.models.upload import UploadFile, UploadJob
 from app.services.audio_alignment_service import AudioAlignmentService, transcript_hash
 
 INVALID_TRANSCRIPT_MESSAGE = (
-    "Invalid characters in transcript: only letters, numbers, spaces, line breaks and "
-    ". , ? ! - @ are allowed."
+    "Invalid characters in transcript: any printable text is allowed; raw control characters are not allowed."
 )
 
 
@@ -115,6 +114,22 @@ def test_combined_task_save_updates_multiple_sections_once(client, auth_headers,
     assert task["last_tagger_email"] == "annotator@test.com"
 
 
+def test_transcript_update_accepts_grammatical_punctuation(client, auth_headers, sample_excel_bytes):
+    task_id = _create_task(client, auth_headers, sample_excel_bytes)
+    detail_response = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["annotator"])
+    version = detail_response.json()["version"]
+
+    transcript = "I don't know — she said, “that's John's ₹5.00 (maybe).” #VIP & ready 🙂"
+    save_response = client.patch(
+        f"/api/v1/tasks/{task_id}/transcript",
+        headers=auth_headers["annotator"],
+        json={"version": version, "final_transcript": transcript},
+    )
+
+    assert save_response.status_code == 200
+    assert save_response.json()["task"]["final_transcript"] == transcript
+
+
 def test_combined_task_save_rejects_invalid_transcript_characters(client, auth_headers, sample_excel_bytes):
     task_id = _create_task(client, auth_headers, sample_excel_bytes)
     detail_response = client.get(f"/api/v1/tasks/{task_id}", headers=auth_headers["annotator"])
@@ -123,7 +138,7 @@ def test_combined_task_save_rejects_invalid_transcript_characters(client, auth_h
     save_response = client.patch(
         f"/api/v1/tasks/{task_id}",
         headers=auth_headers["annotator"],
-        json={"version": version, "final_transcript": "Combined corrected transcript (draft)"},
+        json={"version": version, "final_transcript": "Combined corrected transcript \u0000"},
     )
 
     assert save_response.status_code == 422
