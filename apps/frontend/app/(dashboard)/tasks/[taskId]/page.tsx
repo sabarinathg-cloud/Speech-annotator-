@@ -543,6 +543,7 @@ function parseLocalDraft(rawValue: string | null): LocalTaskDraft | null {
 
 export default function TaskWorkspacePage() {
   const { accessToken, user, activeOrganization } = useAuth();
+  const activeOrganizationId = activeOrganization?.id ?? null;
   const params = useParams<{ taskId: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -962,7 +963,7 @@ export default function TaskWorkspacePage() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, taskId, backendBase, draftStorageKey, piiEnabled, user?.role]);
+  }, [accessToken, taskId, backendBase, draftStorageKey, piiEnabled, user?.role, activeOrganizationId]);
 
   useEffect(() => {
     if (!visibleInspectorTabs.some((tab) => tab.key === activeInspectorPanel)) {

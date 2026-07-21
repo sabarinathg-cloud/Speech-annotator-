@@ -95,7 +95,7 @@ function chooseAudioLocationColumn(columns: string[]): string {
 }
 
 export default function AdminUploadPage() {
-  const { accessToken, user } = useAuth();
+  const { accessToken, user, activeOrganizationId } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [sourcePath, setSourcePath] = useState("");
   const [uploadJobId, setUploadJobId] = useState<string | null>(null);
@@ -137,6 +137,20 @@ export default function AdminUploadPage() {
   const [busy, setBusy] = useState(false);
 
   const canUpload = user?.role === "ADMIN";
+
+  useEffect(() => {
+    setUploadJobId(null);
+    setColumns([]);
+    setSampleRows([]);
+    setValidationResult(null);
+    setImportResult(null);
+    setImportJob(null);
+    setExportJob(null);
+    setUsers([]);
+    setAllUsers([]);
+    setError(null);
+    setUserActionMessage(null);
+  }, [activeOrganizationId]);
   const mapping = useMemo<ColumnMappingRequest>(
     () => ({
       id_column: idColumn,
@@ -349,27 +363,35 @@ export default function AdminUploadPage() {
 
   useEffect(() => {
     if (!accessToken || !canUpload) return;
+    let cancelled = false;
     void (async () => {
       try {
         const response = await fetchUsers(accessToken, userFilterParams);
-        setUsers(response.items);
+        if (!cancelled) setUsers(response.items);
       } catch {
-        setUsers([]);
+        if (!cancelled) setUsers([]);
       }
     })();
-  }, [accessToken, canUpload, userFilterParams]);
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, canUpload, userFilterParams, activeOrganizationId]);
 
   useEffect(() => {
     if (!accessToken || !canUpload) return;
+    let cancelled = false;
     void (async () => {
       try {
         const response = await fetchUsers(accessToken);
-        setAllUsers(response.items);
+        if (!cancelled) setAllUsers(response.items);
       } catch {
-        setAllUsers([]);
+        if (!cancelled) setAllUsers([]);
       }
     })();
-  }, [accessToken, canUpload]);
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, canUpload, activeOrganizationId]);
 
   async function refreshUsers() {
     if (!accessToken) return;

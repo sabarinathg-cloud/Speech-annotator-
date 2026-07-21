@@ -291,7 +291,7 @@ function sortAssignmentsForAdmin(assignments: HiringAssignmentSummary[], sortKey
 }
 
 export default function AdminHiringPage() {
-  const { accessToken } = useAuth();
+  const { accessToken, activeOrganizationId } = useAuth();
   const [assessments, setAssessments] = useState<Awaited<ReturnType<typeof fetchHiringAssessments>>["items"]>([]);
   const [selectedAssessmentId, setSelectedAssessmentId] = useState<string | null>(null);
   const [detail, setDetail] = useState<HiringAssessmentDetail | null>(null);
@@ -354,8 +354,29 @@ export default function AdminHiringPage() {
 
   useEffect(() => {
     if (!accessToken) return;
-    void refreshAll();
-  }, [accessToken]);
+    let cancelled = false;
+    setAssessments([]);
+    setSelectedAssessmentId(null);
+    setDetail(null);
+    setAssignments([]);
+    setReview(null);
+    setCandidates([]);
+    setSelectedCandidateIds([]);
+    setRanking([]);
+    setInviteCredential(null);
+    setAuditEvents([]);
+    setAudioBuckets([]);
+    setAssignmentFolderDrafts({});
+    setDeepgramJob(null);
+    setAnswerViewerOpen(false);
+    setSelectedAnswerSubmissionId(null);
+    setError(null);
+    setMessage(null);
+    void refreshAll(null, () => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, activeOrganizationId]);
 
   useEffect(() => {
     if (!accessToken || !selectedAssessmentId) {
@@ -364,8 +385,12 @@ export default function AdminHiringPage() {
       setRanking([]);
       return;
     }
-    void loadAssessment(selectedAssessmentId);
-  }, [accessToken, selectedAssessmentId]);
+    let cancelled = false;
+    void loadAssessment(selectedAssessmentId, () => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, selectedAssessmentId, activeOrganizationId]);
 
   useEffect(() => {
     if (!detail) return;
@@ -512,7 +537,7 @@ export default function AdminHiringPage() {
         return null;
       });
     };
-  }, [accessToken, answerViewerOpen, selectedAnswerAssignmentId, selectedAnswerItemId]);
+  }, [accessToken, answerViewerOpen, selectedAnswerAssignmentId, selectedAnswerItemId, activeOrganizationId]);
 
   useEffect(() => {
     if (!accessToken || !detail || !deepgramJob || !["QUEUED", "RUNNING"].includes(deepgramJob.status)) return;
@@ -592,13 +617,17 @@ export default function AdminHiringPage() {
     return Math.round((suggestions.reduce((total, value) => total + value, 0) / suggestions.length) * 100) / 100;
   }, [review]);
 
-  async function refreshAll(preferredAssessmentId: string | null = selectedAssessmentId) {
+  async function refreshAll(
+    preferredAssessmentId: string | null = selectedAssessmentId,
+    isCancelled: () => boolean = () => false
+  ) {
     if (!accessToken) return;
     try {
       const [assessmentResponse, userResponse] = await Promise.all([
         fetchHiringAssessments(accessToken),
         fetchUsers(accessToken, { role: "CANDIDATE", status: "all" }),
       ]);
+      if (isCancelled()) return;
       setAssessments(assessmentResponse.items);
       setCandidates(userResponse.items);
       const preferredStillExists = assessmentResponse.items.some((assessment) => assessment.id === preferredAssessmentId);
@@ -614,11 +643,12 @@ export default function AdminHiringPage() {
         setAuditEvents([]);
       }
     } catch (err) {
+      if (isCancelled()) return;
       setError(err instanceof APIError ? err.message : "Could not load hiring data");
     }
   }
 
-  async function loadAssessment(assessmentId: string) {
+  async function loadAssessment(assessmentId: string, isCancelled: () => boolean = () => false) {
     if (!accessToken) return;
     try {
       const [assessment, assignmentResponse, rankingResponse] = await Promise.all([
@@ -626,11 +656,13 @@ export default function AdminHiringPage() {
         fetchHiringAssessmentAssignments(accessToken, assessmentId),
         fetchHiringAssessmentRanking(accessToken, assessmentId),
       ]);
+      if (isCancelled()) return;
       setDetail(assessment);
       setAssignments(assignmentResponse.items);
       setRanking(rankingResponse.items);
       setError(null);
     } catch (err) {
+      if (isCancelled()) return;
       setError(err instanceof APIError ? err.message : "Could not load assessment");
     }
   }

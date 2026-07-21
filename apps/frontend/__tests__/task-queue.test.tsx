@@ -22,6 +22,7 @@ const {
 } = vi.hoisted(() => ({
   push: vi.fn(),
   authState: {
+    activeOrganizationId: "org-1",
     user: {
       id: "admin-1",
       email: "admin@test.com",
@@ -97,6 +98,7 @@ vi.mock("@/components/auth-provider", () => ({
   useAuth: () => ({
     accessToken: "test-token",
     user: authState.user,
+    activeOrganizationId: authState.activeOrganizationId,
   }),
 }));
 
@@ -126,6 +128,7 @@ vi.mock("@/lib/api", () => ({
 
 describe("TasksPage queue workflows", () => {
   beforeEach(() => {
+    authState.activeOrganizationId = "org-1";
     authState.user = {
       id: "admin-1",
       email: "admin@test.com",
@@ -224,6 +227,33 @@ describe("TasksPage queue workflows", () => {
         expect.objectContaining({ assigneeId: "unassigned" })
       )
     );
+  });
+
+  it("reloads queue data immediately when the active organization changes", async () => {
+    fetchTasks
+      .mockResolvedValueOnce({
+        items: [task],
+        page: 1,
+        page_size: 25,
+        total: 1,
+        status_counts: { "Not Started": 1 },
+      })
+      .mockResolvedValueOnce({
+        items: [{ ...secondTask, external_id: "ORG-B-001" }],
+        page: 1,
+        page_size: 25,
+        total: 1,
+        status_counts: { "Not Started": 1 },
+      });
+
+    const { rerender } = render(<TasksPage />);
+    await screen.findByText("OUT-001");
+
+    authState.activeOrganizationId = "org-2";
+    rerender(<TasksPage />);
+
+    expect(await screen.findByText("ORG-B-001")).toBeInTheDocument();
+    expect(fetchTasks).toHaveBeenCalledTimes(2);
   });
 
   it("opens the next assigned task for annotators without claim controls", async () => {

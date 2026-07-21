@@ -59,7 +59,7 @@ function nextAssignmentLoad(openCount: number): AdminUser["assignment_load"] {
 }
 
 export default function TasksPage() {
-  const { accessToken, user } = useAuth();
+  const { accessToken, user, activeOrganizationId } = useAuth();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<TaskStatus | "All">("All");
   const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
@@ -107,10 +107,22 @@ export default function TasksPage() {
   useEffect(() => {
     setAllMatchingSelected(false);
     setSelectedTaskIds([]);
-  }, [search, statusFilter, assigneeFilter]);
+  }, [search, statusFilter, assigneeFilter, activeOrganizationId]);
+
+  useEffect(() => {
+    setData(null);
+    setAssigneeDraftByTask({});
+    setDueDateDraftByTask({});
+    setAllMatchingSelected(false);
+    setSelectedTaskIds([]);
+    setBulkResult(null);
+    setError(null);
+    setPage(1);
+  }, [activeOrganizationId]);
 
   useEffect(() => {
     if (!accessToken || (!isAdmin && !user?.id)) return;
+    let cancelled = false;
     startTransition(async () => {
       try {
         const effectiveAssigneeId = isAdmin
@@ -125,6 +137,7 @@ export default function TasksPage() {
           page,
           pageSize: 25
         });
+        if (cancelled) return;
         setData(response);
         setAssigneeDraftByTask((prev) => {
           const next = { ...prev };
@@ -147,6 +160,7 @@ export default function TasksPage() {
         setSelectedTaskIds((prev) => prev.filter((taskId) => response.items.some((task) => task.id === taskId)));
         setError(null);
       } catch (err) {
+        if (cancelled) return;
         if (err instanceof APIError) {
           setError(err.message);
           return;
@@ -154,7 +168,10 @@ export default function TasksPage() {
         setError("Failed to load tasks");
       }
     });
-  }, [accessToken, statusFilter, assigneeFilter, search, page, isAdmin, user?.id, reloadKey]);
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, statusFilter, assigneeFilter, search, page, isAdmin, user?.id, reloadKey, activeOrganizationId]);
 
   const visibleTasks = data?.items ?? [];
   const selectedVisibleTasks = useMemo(

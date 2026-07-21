@@ -103,7 +103,7 @@ function labelDraftFrom(label: PIILabel): LabelDraft {
 }
 
 export default function AdminMetricsPage() {
-  const { accessToken, user } = useAuth();
+  const { accessToken, user, activeOrganizationId } = useAuth();
   const [metrics, setMetrics] = useState<AdminMetricsResponse | null>(null);
   const [labels, setLabels] = useState<PIILabel[]>([]);
   const [labelDrafts, setLabelDrafts] = useState<Record<string, LabelDraft>>({});
@@ -120,6 +120,16 @@ export default function AdminMetricsPage() {
   const [message, setMessage] = useState<string | null>(null);
 
   const canAdmin = user?.role === "ADMIN";
+
+  useEffect(() => {
+    setMetrics(null);
+    setLabels([]);
+    setLabelDrafts({});
+    setUsers([]);
+    setMessage(null);
+    setError(null);
+    setLoadingMetrics(Boolean(accessToken && canAdmin));
+  }, [activeOrganizationId, accessToken, canAdmin]);
 
   const metricCards = useMemo(() => {
     const overview = metrics?.overview;
@@ -247,7 +257,7 @@ export default function AdminMetricsPage() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, canAdmin]);
+  }, [accessToken, canAdmin, activeOrganizationId]);
 
   useEffect(() => {
     if (!accessToken || !canAdmin) return;
@@ -277,7 +287,7 @@ export default function AdminMetricsPage() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, appliedFilters, canAdmin]);
+  }, [accessToken, appliedFilters, canAdmin, activeOrganizationId]);
 
   async function reloadLabels() {
     if (!accessToken) return;

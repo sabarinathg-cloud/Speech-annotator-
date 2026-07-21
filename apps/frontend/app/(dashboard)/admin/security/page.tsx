@@ -42,7 +42,7 @@ function metadataSummary(event: SecurityAuditEvent): string {
 }
 
 export default function AdminSecurityPage() {
-  const { accessToken, user } = useAuth();
+  const { accessToken, user, activeOrganizationId } = useAuth();
   const [action, setAction] = useState("all");
   const [riskLevel, setRiskLevel] = useState("all");
   const [page, setPage] = useState(1);
@@ -52,7 +52,14 @@ export default function AdminSecurityPage() {
   const isAdmin = user?.role === "ADMIN";
 
   useEffect(() => {
+    setData(null);
+    setError(null);
+    setPage(1);
+  }, [activeOrganizationId]);
+
+  useEffect(() => {
     if (!accessToken || !isAdmin) return;
+    let cancelled = false;
     startTransition(async () => {
       try {
         const response = await fetchSecurityAuditEvents(accessToken, {
@@ -61,13 +68,18 @@ export default function AdminSecurityPage() {
           page,
           pageSize: 25,
         });
+        if (cancelled) return;
         setData(response);
         setError(null);
       } catch (err) {
+        if (cancelled) return;
         setError(err instanceof APIError ? err.message : "Failed to load security events");
       }
     });
-  }, [accessToken, action, isAdmin, page, riskLevel]);
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, action, isAdmin, page, riskLevel, activeOrganizationId]);
 
   const totalPages = useMemo(() => {
     if (!data) return 1;

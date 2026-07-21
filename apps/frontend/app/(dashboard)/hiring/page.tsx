@@ -20,7 +20,7 @@ function progressLabel(item: HiringAssignmentSummary) {
 }
 
 export default function CandidateHiringPage() {
-  const { accessToken } = useAuth();
+  const { accessToken, activeOrganizationId } = useAuth();
   const [items, setItems] = useState<HiringAssignmentSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -28,6 +28,9 @@ export default function CandidateHiringPage() {
   useEffect(() => {
     if (!accessToken) return;
     let cancelled = false;
+    setLoading(true);
+    setItems([]);
+    setError(null);
     void (async () => {
       try {
         const response = await fetchCandidateHiringAssignments(accessToken);
@@ -44,7 +47,7 @@ export default function CandidateHiringPage() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken]);
+  }, [accessToken, activeOrganizationId]);
 
   return (
     <div className="space-y-5">
