@@ -11,6 +11,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [nextPath, setNextPath] = useState<string | null>(null);
 
@@ -20,6 +21,9 @@ export default function LoginPage() {
     const next = params.get("next");
     if (inviteEmail) setEmail(inviteEmail);
     if (next?.startsWith("/")) setNextPath(next);
+    if (params.get("passwordChanged") === "1") {
+      setSuccessMessage("Password changed. Sign in with your new password.");
+    }
   }, []);
 
   useEffect(() => {
@@ -31,7 +35,8 @@ export default function LoginPage() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
-      setSubmitting(true);
+    setSuccessMessage(null);
+    setSubmitting(true);
     try {
       const loggedIn = await login(email.trim(), password);
       router.replace(loggedIn.role === "CANDIDATE" ? nextPath ?? "/hiring" : "/tasks");
@@ -116,6 +121,11 @@ export default function LoginPage() {
 
           {error ? (
             <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+          ) : null}
+          {successMessage ? (
+            <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              {successMessage}
+            </p>
           ) : null}
 
           <button

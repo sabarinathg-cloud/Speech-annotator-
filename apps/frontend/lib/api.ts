@@ -5,6 +5,8 @@ import type {
   AudioMaskMode,
   BulkAutoBalanceRequest,
   BulkAutoBalanceResponse,
+  ChangePasswordRequest,
+  ChangePasswordResponse,
   ClientSecurityAction,
   ColumnMappingRequest,
   DetectPIIResponse,
@@ -232,6 +234,17 @@ export async function acknowledgeConfidentiality(token: string): Promise<TokenRe
     { method: "POST" },
     token,
     false
+  );
+}
+
+export async function changeOwnPassword(
+  token: string,
+  payload: ChangePasswordRequest
+): Promise<ChangePasswordResponse> {
+  return request<ChangePasswordResponse>(
+    "/auth/change-password",
+    { method: "POST", body: JSON.stringify(payload) },
+    token
   );
 }
 

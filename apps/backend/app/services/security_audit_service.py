@@ -27,6 +27,7 @@ RISK_BY_ACTION: dict[str, str] = {
     "EXPORT_TASKS": "high",
     "ENQUEUE_EXPORT_JOB": "high",
     "DOWNLOAD_JOB_OUTPUT": "high",
+    "PASSWORD_CHANGED": "medium",
 }
 
 SENSITIVE_METADATA_KEYS = {

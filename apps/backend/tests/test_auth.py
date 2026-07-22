@@ -1,4 +1,7 @@
+from sqlalchemy import select
+
 from app.core.security import create_access_token, create_refresh_token, get_password_hash, verify_password
+from app.models.security import SecurityAuditEvent
 
 
 def test_password_hashes_verify_and_support_existing_passlib_pbkdf2_hashes():
@@ -157,6 +160,102 @@ def test_mobile_device_cannot_refresh_or_use_existing_token(client, seed_users):
     )
     assert me_response.status_code == 403
     assert me_response.json()["detail"]["message"] == "This application can only be used from a laptop or desktop browser."
+
+
+def test_logged_in_user_can_change_password_and_must_sign_in_again(client, seed_users, db_session):
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "annotator@test.com", "password": "Annotator@123"},
+    )
+    assert login_response.status_code == 200
+    access_token = login_response.json()["access_token"]
+
+    change_response = client.post(
+        "/api/v1/auth/change-password",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"current_password": "Annotator@123", "new_password": "NewAnnotator@123"},
+    )
+
+    assert change_response.status_code == 200
+    assert change_response.json()["message"] == "Password changed. Sign in with your new password."
+
+    old_session_response = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert old_session_response.status_code == 401
+    assert old_session_response.json()["detail"]["message"] == "Session ended because this account signed in on another device."
+
+    old_password_login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "annotator@test.com", "password": "Annotator@123"},
+    )
+    assert old_password_login.status_code == 401
+
+    new_password_login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "annotator@test.com", "password": "NewAnnotator@123"},
+    )
+    assert new_password_login.status_code == 200
+
+    audit_event = db_session.execute(
+        select(SecurityAuditEvent).where(
+            SecurityAuditEvent.actor_user_id == seed_users["annotator"].id,
+            SecurityAuditEvent.action == "PASSWORD_CHANGED",
+        )
+    ).scalar_one()
+    assert audit_event.resource_type == "user"
+    assert audit_event.resource_id == seed_users["annotator"].id
+    assert audit_event.risk_level == "medium"
+
+
+def test_change_password_rejects_wrong_or_reused_current_password(client, seed_users, db_session):
+    original_hash = seed_users["reviewer"].password_hash
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "reviewer@test.com", "password": "Reviewer@123"},
+    )
+    assert login_response.status_code == 200
+    access_token = login_response.json()["access_token"]
+
+    wrong_current = client.post(
+        "/api/v1/auth/change-password",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"current_password": "WrongReviewer@123", "new_password": "NewReviewer@123"},
+    )
+    assert wrong_current.status_code == 400
+    assert wrong_current.json()["detail"]["message"] == "Current password is incorrect"
+
+    reused_password = client.post(
+        "/api/v1/auth/change-password",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"current_password": "Reviewer@123", "new_password": "Reviewer@123"},
+    )
+    assert reused_password.status_code == 400
+    assert reused_password.json()["detail"]["message"] == "New password must be different from current password"
+
+    db_session.refresh(seed_users["reviewer"])
+    assert seed_users["reviewer"].password_hash == original_hash
+
+
+def test_inactive_user_cannot_change_password_with_existing_token(client, seed_users, db_session):
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "candidate@test.com", "password": "Candidate@123"},
+    )
+    assert login_response.status_code == 200
+    access_token = login_response.json()["access_token"]
+
+    seed_users["candidate"].is_active = False
+    db_session.commit()
+
+    change_response = client.post(
+        "/api/v1/auth/change-password",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"current_password": "Candidate@123", "new_password": "NewCandidate@123"},
+    )
+
+    assert change_response.status_code == 401
 
 
 def test_failed_login_is_rate_limited(client, seed_users):

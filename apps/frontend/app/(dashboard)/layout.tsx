@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import clsx from "clsx";
 
 import { AccountSummary } from "@/components/account-summary";
 import { useAuth } from "@/components/auth-provider";
 import { SecurityActivityGuard } from "@/components/security-activity-guard";
+import { changeOwnPassword } from "@/lib/api";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const {
@@ -24,6 +25,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [ackBusy, setAckBusy] = useState(false);
   const [ackError, setAckError] = useState<string | null>(null);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const router = useRouter();
   const pathname = usePathname();
   const isAdminRoute = pathname.startsWith("/admin");
@@ -90,6 +97,47 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       markOrganizationInstructionsSeen(organizationInstructionKey);
     }
     setInstructionsOpen(false);
+  }
+
+  function closePasswordModal() {
+    if (passwordBusy) return;
+    setPasswordModalOpen(false);
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setPasswordError(null);
+  }
+
+  async function handlePasswordChange(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!accessToken) return;
+    setPasswordError(null);
+    if (newPassword.length < 8 || newPassword.length > 128) {
+      setPasswordError("New password must be 8 to 128 characters.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError("New password and confirmation do not match.");
+      return;
+    }
+    if (currentPassword === newPassword) {
+      setPasswordError("New password must be different from your current password.");
+      return;
+    }
+
+    setPasswordBusy(true);
+    try {
+      await changeOwnPassword(accessToken, {
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      logout();
+      router.replace("/login?passwordChanged=1");
+    } catch (error) {
+      setPasswordError(error instanceof Error ? error.message : "Could not change password. Please try again.");
+    } finally {
+      setPasswordBusy(false);
+    }
   }
 
   if (isLoading || !accessToken) {
@@ -221,6 +269,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <AccountSummary user={user} />
               <button
                 type="button"
+                onClick={() => setPasswordModalOpen(true)}
+                className="oa-btn-secondary px-3.5 py-2 text-sm font-medium"
+              >
+                Change password
+              </button>
+              <button
+                type="button"
                 onClick={() => {
                   logout();
                   router.replace("/login");
@@ -233,6 +288,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </div>
       </header>
+
+      {passwordModalOpen ? (
+        <PasswordChangeDialog
+          currentPassword={currentPassword}
+          newPassword={newPassword}
+          confirmPassword={confirmPassword}
+          busy={passwordBusy}
+          error={passwordError}
+          onCurrentPasswordChange={setCurrentPassword}
+          onNewPasswordChange={setNewPassword}
+          onConfirmPasswordChange={setConfirmPassword}
+          onClose={closePasswordModal}
+          onSubmit={handlePasswordChange}
+        />
+      ) : null}
 
       {showOrganizationInstructions && instructionsOpen ? (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#1f1a35]/45 px-4 py-6 backdrop-blur-sm">
@@ -315,6 +385,125 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       ) : (
         <main className="mx-auto max-w-[1360px] px-4 py-5 pb-12 sm:px-6">{children}</main>
       )}
+    </div>
+  );
+}
+
+type PasswordChangeDialogProps = {
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
+  busy: boolean;
+  error: string | null;
+  onCurrentPasswordChange: (value: string) => void;
+  onNewPasswordChange: (value: string) => void;
+  onConfirmPasswordChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+};
+
+function PasswordChangeDialog({
+  currentPassword,
+  newPassword,
+  confirmPassword,
+  busy,
+  error,
+  onCurrentPasswordChange,
+  onNewPasswordChange,
+  onConfirmPasswordChange,
+  onClose,
+  onSubmit,
+}: PasswordChangeDialogProps) {
+  const lengthValid = newPassword.length >= 8 && newPassword.length <= 128;
+  const confirmationMatches = confirmPassword.length > 0 && newPassword === confirmPassword;
+  const differentFromCurrent = currentPassword.length > 0 && newPassword !== currentPassword;
+  const canSubmit = Boolean(currentPassword) && lengthValid && confirmationMatches && differentFromCurrent && !busy;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1f1a35]/45 px-4 py-6 backdrop-blur-sm">
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label="Change password"
+        className="oa-card w-full max-w-md overflow-hidden p-0"
+      >
+        <div className="border-b border-[#ece6f5] px-5 py-4">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#7a7395]">Account security</p>
+          <h2 className="oa-title mt-1 text-xl font-semibold">Change password</h2>
+          <p className="mt-1 text-sm leading-5 text-[#6f6a86]">
+            You will sign in again after the password is changed.
+          </p>
+        </div>
+        <form className="space-y-4 px-5 py-4" onSubmit={onSubmit}>
+          <label className="block">
+            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[#6f6a86]">Current password</span>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={currentPassword}
+              onChange={(event) => onCurrentPasswordChange(event.target.value)}
+              className="mt-1 h-11 w-full rounded-xl border border-[#ddc9f2] bg-white px-3 text-sm text-[#241f43] outline-none focus:border-[#b57cdf] focus:ring-4 focus:ring-[#d8bbf1]/35"
+              required
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[#6f6a86]">New password</span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(event) => onNewPasswordChange(event.target.value)}
+              className="mt-1 h-11 w-full rounded-xl border border-[#ddc9f2] bg-white px-3 text-sm text-[#241f43] outline-none focus:border-[#b57cdf] focus:ring-4 focus:ring-[#d8bbf1]/35"
+              minLength={8}
+              maxLength={128}
+              required
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[#6f6a86]">Confirm new password</span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(event) => onConfirmPasswordChange(event.target.value)}
+              className="mt-1 h-11 w-full rounded-xl border border-[#ddc9f2] bg-white px-3 text-sm text-[#241f43] outline-none focus:border-[#b57cdf] focus:ring-4 focus:ring-[#d8bbf1]/35"
+              minLength={8}
+              maxLength={128}
+              required
+            />
+          </label>
+
+          <div className="rounded-xl border border-[#e8def5] bg-[#fbf8ff] px-3 py-2 text-xs leading-5 text-[#6f6a86]">
+            Password must be 8 to 128 characters and different from your current password.
+          </div>
+          {confirmPassword && !confirmationMatches ? (
+            <p className="rounded-lg border border-[#f2d6a4] bg-[#fff8ea] px-3 py-2 text-sm text-[#8a5a11]">
+              New password and confirmation do not match.
+            </p>
+          ) : null}
+          {currentPassword && newPassword && !differentFromCurrent ? (
+            <p className="rounded-lg border border-[#f2d6a4] bg-[#fff8ea] px-3 py-2 text-sm text-[#8a5a11]">
+              New password must be different from your current password.
+            </p>
+          ) : null}
+          {error ? (
+            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+          ) : null}
+
+          <div className="flex items-center justify-end gap-2 border-t border-[#ece6f5] pt-4">
+            <button type="button" onClick={onClose} disabled={busy} className="oa-btn-secondary px-4 py-2 text-sm font-medium">
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!canSubmit}
+              className="oa-btn-primary px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-55"
+            >
+              {busy ? "Changing..." : "Change password"}
+            </button>
+          </div>
+        </form>
+      </section>
     </div>
   );
 }

@@ -75,6 +75,15 @@ export interface TokenResponse {
   user: User;
 }
 
+export interface ChangePasswordRequest {
+  current_password: string;
+  new_password: string;
+}
+
+export interface ChangePasswordResponse {
+  message: string;
+}
+
 export interface TranscriptVariant {
   id: string;
   source_key: string;

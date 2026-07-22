@@ -4,7 +4,14 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_user, get_db_session
 from app.core.device_policy import require_laptop_or_desktop_device
 from app.models.user import User
-from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse, UserResponse
+from app.schemas.auth import (
+    ChangePasswordRequest,
+    ChangePasswordResponse,
+    LoginRequest,
+    RefreshRequest,
+    TokenResponse,
+    UserResponse,
+)
 from app.services.auth_service import AuthService
 from app.services.errors import ServiceError
 from app.services.organization_service import OrganizationService
@@ -61,3 +68,23 @@ def acknowledge_confidentiality(
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
     )
+
+
+@router.post("/change-password", response_model=ChangePasswordResponse)
+def change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+):
+    service = AuthService(db)
+    try:
+        return service.change_password(
+            user=current_user,
+            current_password=payload.current_password,
+            new_password=payload.new_password,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except ServiceError as exc:
+        raise _http_error(exc) from exc

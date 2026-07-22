@@ -7,11 +7,12 @@ from app.core.security import (
     create_access_token,
     create_refresh_token,
     decode_refresh_token,
+    get_password_hash,
     verify_password,
 )
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
-from app.schemas.auth import TokenResponse, UserResponse
+from app.schemas.auth import ChangePasswordResponse, TokenResponse, UserResponse
 from app.services.errors import ServiceError
 from app.services.organization_service import OrganizationService
 from app.services.rate_limit_service import LoginRateLimiter
@@ -91,6 +92,38 @@ class AuthService:
         self.db.commit()
         self.db.refresh(user)
         return self._build_token_response(user)
+
+    def change_password(
+        self,
+        *,
+        user: User,
+        current_password: str,
+        new_password: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> ChangePasswordResponse:
+        if not verify_password(current_password, user.password_hash):
+            raise ServiceError("Current password is incorrect", status_code=400)
+        if verify_password(new_password, user.password_hash):
+            raise ServiceError("New password must be different from current password", status_code=400)
+
+        user.password_hash = get_password_hash(new_password)
+        user.active_session_id = None
+        user.confidentiality_acknowledged_session_id = None
+        user.last_activity_at = datetime.now(timezone.utc)
+        self.db.flush()
+        SecurityAuditService(self.db).log_event(
+            action="PASSWORD_CHANGED",
+            actor=user,
+            resource_type="user",
+            resource_id=user.id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            metadata={"method": "self_service"},
+            commit=False,
+        )
+        self.db.commit()
+        return ChangePasswordResponse(message="Password changed. Sign in with your new password.")
 
     def _build_token_response(self, user: User) -> TokenResponse:
         access_token = create_access_token(user.id, user.role.value, session_id=user.active_session_id)

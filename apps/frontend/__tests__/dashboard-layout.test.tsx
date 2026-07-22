@@ -1,13 +1,15 @@
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import DashboardLayout from "@/app/(dashboard)/layout";
 
-const { replace, acknowledgeConfidentiality, setActiveOrganizationId, authState, pathnameState } = vi.hoisted(() => ({
+const { replace, acknowledgeConfidentiality, setActiveOrganizationId, logout, changeOwnPassword, authState, pathnameState } = vi.hoisted(() => ({
   replace: vi.fn(),
   acknowledgeConfidentiality: vi.fn(),
   setActiveOrganizationId: vi.fn(),
+  logout: vi.fn(),
+  changeOwnPassword: vi.fn(),
   authState: {
     user: {
       id: "annotator-1",
@@ -54,9 +56,13 @@ vi.mock("@/components/auth-provider", () => ({
     activeOrganization: authState.activeOrganization,
     activeOrganizationId: authState.activeOrganizationId,
     setActiveOrganizationId,
-    logout: vi.fn(),
+    logout,
     acknowledgeConfidentiality,
   }),
+}));
+
+vi.mock("@/lib/api", () => ({
+  changeOwnPassword: (...args: unknown[]) => changeOwnPassword(...args),
 }));
 
 describe("DashboardLayout role navigation", () => {
@@ -64,6 +70,8 @@ describe("DashboardLayout role navigation", () => {
     replace.mockReset();
     acknowledgeConfidentiality.mockReset();
     setActiveOrganizationId.mockReset();
+    logout.mockReset();
+    changeOwnPassword.mockReset();
     window.localStorage.clear();
     authState.user = {
       id: "annotator-1",
@@ -167,6 +175,69 @@ describe("DashboardLayout role navigation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Instructions" }));
     expect(screen.getByRole("dialog", { name: "Organization instructions" })).toBeInTheDocument();
+  });
+
+  it("lets signed-in users change password and returns them to login", async () => {
+    changeOwnPassword.mockResolvedValueOnce({ message: "Password changed. Sign in with your new password." });
+
+    render(
+      <DashboardLayout>
+        <div>Assigned work</div>
+      </DashboardLayout>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Change password" }));
+    const dialog = screen.getByRole("dialog", { name: "Change password" });
+    const submit = within(dialog).getByRole("button", { name: "Change password" });
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(within(dialog).getByLabelText("Current password"), {
+      target: { value: "OldPass@123" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("New password"), {
+      target: { value: "NewPass@123" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Confirm new password"), {
+      target: { value: "NewPass@123" },
+    });
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
+
+    await waitFor(() =>
+      expect(changeOwnPassword).toHaveBeenCalledWith("test-token", {
+        current_password: "OldPass@123",
+        new_password: "NewPass@123",
+      })
+    );
+    expect(logout).toHaveBeenCalled();
+    expect(replace).toHaveBeenCalledWith("/login?passwordChanged=1");
+  });
+
+  it("shows password change errors without logging out", async () => {
+    changeOwnPassword.mockRejectedValueOnce(new Error("Current password is incorrect"));
+
+    render(
+      <DashboardLayout>
+        <div>Assigned work</div>
+      </DashboardLayout>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Change password" }));
+    const dialog = screen.getByRole("dialog", { name: "Change password" });
+    fireEvent.change(within(dialog).getByLabelText("Current password"), {
+      target: { value: "WrongPass@123" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("New password"), {
+      target: { value: "NewPass@123" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Confirm new password"), {
+      target: { value: "NewPass@123" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change password" }));
+
+    expect(await within(dialog).findByText("Current password is incorrect")).toBeInTheDocument();
+    expect(logout).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalledWith("/login?passwordChanged=1");
   });
 
   it("blocks the dashboard behind a confidentiality acknowledgement until accepted", async () => {

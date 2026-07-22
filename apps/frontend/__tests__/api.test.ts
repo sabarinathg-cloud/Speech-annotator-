@@ -6,6 +6,7 @@ import {
   bulkAutoBalanceTasks,
   bulkUpdateTaskDueDates,
   bulkUpdateTaskStatuses,
+  changeOwnPassword,
   detectTaskPII,
   downloadTaskExport,
   fetchAdminMetrics,
@@ -316,6 +317,27 @@ describe("API client error handling", () => {
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
     expect((fetchMock.mock.calls[0]?.[1]?.headers as Headers).get("Authorization")).toBe(
       "Bearer access-token"
+    );
+    fetchMock.mockRestore();
+  });
+
+  it("changes the signed-in user's password through the auth endpoint", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: "Password changed. Sign in with your new password." }), { status: 200 })
+    );
+
+    await expect(
+      changeOwnPassword("access-token", {
+        current_password: "OldPass@123",
+        new_password: "NewPass@123",
+      })
+    ).resolves.toEqual({ message: "Password changed. Sign in with your new password." });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toContain("/api/v1/auth/change-password");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect((fetchMock.mock.calls[0]?.[1]?.headers as Headers).get("Authorization")).toBe("Bearer access-token");
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(
+      JSON.stringify({ current_password: "OldPass@123", new_password: "NewPass@123" })
     );
     fetchMock.mockRestore();
   });
