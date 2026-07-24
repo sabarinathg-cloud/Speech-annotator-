@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.enums import RoleEnum, TaskStatusEnum
 from app.models.organization import Organization, OrganizationMembership
-from app.models.task import AnnotationTask, TaskStatusHistory
+from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory
 from app.models.user import User
 from app.repositories.task_repository import TaskRepository
 
@@ -24,6 +24,27 @@ DONE_STATUSES = {
     TaskStatusEnum.NEEDS_REVIEW,
     TaskStatusEnum.REVIEWED,
     TaskStatusEnum.APPROVED,
+}
+
+ANSWER_FIELDS = {
+    "final_transcript",
+    "notes",
+    "speaker_gender",
+    "speaker_role",
+    "language",
+    "channel",
+    "duration_seconds",
+    "custom_metadata",
+    "pii_annotations",
+}
+
+ANSWER_AUDIT_ACTIONS = {
+    "UPDATE_TASK",
+    "UPDATE_TRANSCRIPT",
+    "UPDATE_METADATA",
+    "UPDATE_NOTES",
+    "UPDATE_PII_ANNOTATIONS",
+    "SYNC_FROM_ORGANIZATION",
 }
 
 
@@ -42,6 +63,7 @@ class SyncOptions:
     skip_status: bool = False
     skip_metadata: bool = False
     skip_pii: bool = False
+    transcript_only: bool = False
     limit: int | None = None
     sample_limit: int = 10
 
@@ -136,8 +158,30 @@ def task_is_copyable(task: AnnotationTask, *, done_status_only: bool) -> bool:
     return bool(task.last_tagger_id)
 
 
-def destination_has_work(task: AnnotationTask) -> bool:
-    return bool(task.last_tagger_id) or task.status != TaskStatusEnum.NOT_STARTED or task.version > 1
+def _audit_changed_answer_fields(changed_fields: Any) -> bool:
+    if not isinstance(changed_fields, dict):
+        return False
+    return any(field_name in ANSWER_FIELDS and bool(changed_fields.get(field_name)) for field_name in changed_fields)
+
+
+def _load_destination_answer_task_ids(session: Session, dest_org_id: str) -> set[str]:
+    rows = session.execute(
+        select(TaskAuditLog.task_id, TaskAuditLog.action, TaskAuditLog.changed_fields)
+        .join(AnnotationTask, AnnotationTask.id == TaskAuditLog.task_id)
+        .where(AnnotationTask.organization_id == dest_org_id)
+        .where(TaskAuditLog.action.in_(ANSWER_AUDIT_ACTIONS))
+    ).all()
+    return {
+        task_id
+        for task_id, action, changed_fields in rows
+        if action == "SYNC_FROM_ORGANIZATION" or _audit_changed_answer_fields(changed_fields)
+    }
+
+
+def destination_has_work(task: AnnotationTask, *, answer_task_ids: set[str]) -> bool:
+    if task.id in answer_task_ids:
+        return True
+    return task.status in DONE_STATUSES and bool(task.last_tagger_id)
 
 
 def _source_sort_key(task: AnnotationTask) -> tuple[int, datetime, int]:
@@ -231,11 +275,13 @@ def _copy_fields(
     previous: dict[str, Any] = {}
     new_values: dict[str, Any] = {}
 
-    fields: list[str] = ["final_transcript", "notes"]
-    if not options.skip_metadata and dest_org.metadata_enabled:
-        fields.extend(["speaker_gender", "speaker_role", "language", "channel", "duration_seconds", "custom_metadata"])
-    if not options.skip_pii and dest_org.pii_enabled:
-        fields.append("pii_annotations")
+    fields: list[str] = ["final_transcript"]
+    if not options.transcript_only:
+        fields.append("notes")
+        if not options.skip_metadata and dest_org.metadata_enabled:
+            fields.extend(["speaker_gender", "speaker_role", "language", "channel", "duration_seconds", "custom_metadata"])
+        if not options.skip_pii and dest_org.pii_enabled:
+            fields.append("pii_annotations")
 
     for field_name in fields:
         source_value = copy.deepcopy(getattr(source, field_name))
@@ -305,6 +351,7 @@ def sync_annotations(session: Session, options: SyncOptions) -> SyncResult:
     source_tasks = _load_source_tasks(session, source_org.id, done_status_only=options.done_status_only)
     result.source_candidates = len(source_tasks)
     source_index = _build_source_index(source_tasks, options=options, result=result)
+    destination_answer_task_ids = _load_destination_answer_task_ids(session, dest_org.id)
 
     dest_tasks = _load_dest_tasks(session, dest_org.id, options.limit)
     result.destination_tasks = len(dest_tasks)
@@ -321,7 +368,7 @@ def sync_annotations(session: Session, options: SyncOptions) -> SyncResult:
             continue
         result.matched_destination_tasks += 1
 
-        if destination_has_work(dest) and not options.overwrite_worked:
+        if destination_has_work(dest, answer_task_ids=destination_answer_task_ids) and not options.overwrite_worked:
             result.skipped_destination_worked += 1
             if len(result.skipped_samples) < options.sample_limit:
                 result.skipped_samples.append(
@@ -403,6 +450,7 @@ def parse_args() -> SyncOptions:
     parser.add_argument("--skip-status", action="store_true", help="Copy content but leave destination status unchanged.")
     parser.add_argument("--skip-metadata", action="store_true", help="Do not copy metadata fields.")
     parser.add_argument("--skip-pii", action="store_true", help="Do not copy PII annotations.")
+    parser.add_argument("--transcript-only", action="store_true", help="Copy corrected transcript only, plus status unless --skip-status is set.")
     parser.add_argument("--limit", type=int, help="Limit destination tasks processed, useful for testing.")
     parser.add_argument("--sample-limit", type=int, default=10, help="Number of sample rows to print.")
     args = parser.parse_args()

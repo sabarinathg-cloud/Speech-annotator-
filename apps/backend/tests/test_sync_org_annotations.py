@@ -90,6 +90,26 @@ def _create_task(
     return task
 
 
+def _add_audit_log(
+    db_session: Session,
+    *,
+    task: AnnotationTask,
+    actor_id: str,
+    action: str,
+    changed_fields: dict,
+) -> None:
+    db_session.add(
+        TaskAuditLog(
+            task_id=task.id,
+            actor_user_id=actor_id,
+            action=action,
+            changed_fields=changed_fields,
+            previous_values={},
+            new_values={},
+        )
+    )
+
+
 def test_sync_org_annotations_dry_run_and_apply(db_session: Session, seed_users):
     source_org = _create_org(db_session, name="Org One", slug="org-one")
     dest_org = _create_org(db_session, name="Org Two", slug="org-two")
@@ -135,6 +155,7 @@ def test_sync_org_annotations_dry_run_and_apply(db_session: Session, seed_users)
         file_location=file_one,
         status=TaskStatusEnum.NOT_STARTED,
         final_transcript="import seed",
+        version=3,
     )
     protected_dest_task = _create_task(
         db_session,
@@ -147,6 +168,20 @@ def test_sync_org_annotations_dry_run_and_apply(db_session: Session, seed_users)
         last_tagger_id=seed_users["annotator"].id,
         version=2,
     )
+    _add_audit_log(
+        db_session,
+        task=dest_task,
+        actor_id=seed_users["admin"].id,
+        action="BULK_AUTO_BALANCE_ASSIGNEE",
+        changed_fields={"assignee_id": True},
+    )
+    _add_audit_log(
+        db_session,
+        task=protected_dest_task,
+        actor_id=seed_users["annotator"].id,
+        action="UPDATE_TRANSCRIPT",
+        changed_fields={"final_transcript": True},
+    )
     db_session.commit()
 
     dry_result = sync_annotations(
@@ -155,6 +190,7 @@ def test_sync_org_annotations_dry_run_and_apply(db_session: Session, seed_users)
             source_org=source_org.slug,
             dest_org=dest_org.slug,
             actor_email=seed_users["admin"].email,
+            transcript_only=True,
         ),
     )
 
@@ -171,6 +207,7 @@ def test_sync_org_annotations_dry_run_and_apply(db_session: Session, seed_users)
             dest_org=dest_org.slug,
             actor_email=seed_users["admin"].email,
             apply=True,
+            transcript_only=True,
         ),
     )
 
@@ -179,15 +216,17 @@ def test_sync_org_annotations_dry_run_and_apply(db_session: Session, seed_users)
     db_session.refresh(protected_dest_task)
     assert dest_task.final_transcript == source_task.final_transcript
     assert dest_task.status == TaskStatusEnum.COMPLETED
-    assert dest_task.notes == "source note"
-    assert dest_task.speaker_gender == "female"
-    assert dest_task.custom_metadata == {"audio_quality": "clean"}
-    assert dest_task.pii_annotations[0]["label"] == "NAME"
+    assert dest_task.notes is None
+    assert dest_task.speaker_gender is None
+    assert dest_task.custom_metadata == {}
+    assert dest_task.pii_annotations == []
     assert dest_task.last_tagger_id == seed_users["annotator"].id
     assert protected_dest_task.final_transcript == "already edited"
 
     audit = db_session.execute(
-        select(TaskAuditLog).where(TaskAuditLog.task_id == dest_task.id)
+        select(TaskAuditLog)
+        .where(TaskAuditLog.task_id == dest_task.id)
+        .where(TaskAuditLog.action == "SYNC_FROM_ORGANIZATION")
     ).scalar_one()
     assert audit.action == "SYNC_FROM_ORGANIZATION"
     assert audit.new_values["source_task_id"] == source_task.id
