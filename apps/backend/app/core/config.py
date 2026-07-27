@@ -110,7 +110,7 @@ class Settings(BaseSettings):
 
     @property
     def task_manifest_import_root_list(self) -> list[Path]:
-        return [Path(value).expanduser() for value in self.task_manifest_import_roots.split(",") if value.strip()]
+        return [Path(value.strip()).expanduser() for value in self.task_manifest_import_roots.split(",") if value.strip()]
 
     @property
     def hiring_audio_import_root_list(self) -> list[Path]:

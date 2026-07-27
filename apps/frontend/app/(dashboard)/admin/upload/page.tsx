@@ -25,6 +25,7 @@ type TranscriptMapDraft = {
   source_label: string;
   column_name: string;
 };
+type SourceLimitMode = "none" | "call_ids" | "rows";
 
 const taskStatuses: Array<TaskStatus | "All"> = [
   "All",
@@ -40,7 +41,7 @@ const roleOptions: Role[] = ["ANNOTATOR", "REVIEWER", "CANDIDATE", "ADMIN"];
 
 function inferTranscriptMaps(columns: string[]): TranscriptMapDraft[] {
   return columns
-    .filter((column) => /transcript/i.test(column) && !/final|corrected/i.test(column))
+    .filter((column) => /transcript/i.test(column) && !/final|corrected|normalized/i.test(column))
     .map((column) => {
       const sourceKey = column
         .replace(/_?transcript$/i, "")
@@ -79,6 +80,10 @@ function chooseColumn(columns: string[], preferredNames: string[], fallback = ""
 
 function chooseAudioLocationColumn(columns: string[]): string {
   const exact = chooseColumn(columns, [
+    "segment_audio_path_abs",
+    "redacted_audio_path_abs",
+    "segment_audio_path_rel",
+    "redacted_audio_path_rel",
     "file_location",
     "audio",
     "audio_path",
@@ -88,6 +93,7 @@ function chooseAudioLocationColumn(columns: string[]): string {
     "path",
     "wav_path",
     "wav_file",
+    "source_path_abs",
   ]);
   if (exact) return exact;
 
@@ -98,6 +104,9 @@ export default function AdminUploadPage() {
   const { accessToken, user, activeOrganizationId } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [sourcePath, setSourcePath] = useState("");
+  const [sourceLimitMode, setSourceLimitMode] = useState<SourceLimitMode>("none");
+  const [sourceLimitValue, setSourceLimitValue] = useState("");
+  const [sourceCallIdColumn, setSourceCallIdColumn] = useState("call_id");
   const [uploadJobId, setUploadJobId] = useState<string | null>(null);
   const [columns, setColumns] = useState<string[]>([]);
   const [sampleRows, setSampleRows] = useState<Record<string, unknown>[]>([]);
@@ -190,20 +199,24 @@ export default function AdminUploadPage() {
     const audioLocationColumn = chooseAudioLocationColumn(preview.columns);
     setColumns(preview.columns);
     setSampleRows(preview.sample_rows);
-    setIdColumn(chooseColumn(preview.columns, ["id", "task_id", "external_id", "row_id"], audioLocationColumn || preview.columns[0] || ""));
+    setIdColumn(
+      chooseColumn(
+        preview.columns,
+        ["segment_id", "id", "task_id", "external_id", "row_id"],
+        audioLocationColumn || preview.columns[0] || ""
+      )
+    );
     setFileLocationColumn(audioLocationColumn || preview.columns[0] || "");
-    setFinalTranscriptColumn("");
+    setFinalTranscriptColumn(
+      chooseColumn(preview.columns, ["final_transcript", "corrected_transcript", "normalized_final_transcript"], "")
+    );
     setNotesColumn(preview.columns.includes("notes") ? "notes" : "");
     setSpeakerGenderColumn(preview.columns.includes("speaker_gender") ? "speaker_gender" : "");
     setSpeakerRoleColumn(preview.columns.includes("speaker_role") ? "speaker_role" : "");
     setLanguageColumn(preview.columns.includes("language") ? "language" : "");
     setChannelColumn(preview.columns.includes("channel") ? "channel" : "");
     setDurationColumn(
-      preview.columns.includes("duration_seconds")
-        ? "duration_seconds"
-        : preview.columns.includes("duration")
-          ? "duration"
-          : ""
+      chooseColumn(preview.columns, ["duration_seconds", "duration_sec", "duration"], "")
     );
     setTranscriptMaps(inferTranscriptMaps(preview.columns));
   }
@@ -228,12 +241,36 @@ export default function AdminUploadPage() {
 
   async function handleSourcePathLoad() {
     if (!accessToken || !sourcePath.trim()) return;
+    const parsedLimit = sourceLimitMode !== "none" && sourceLimitValue.trim() ? Number(sourceLimitValue.trim()) : null;
+    if (
+      parsedLimit !== null &&
+      (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > (sourceLimitMode === "rows" ? 1000000 : 100000))
+    ) {
+      setError(
+        sourceLimitMode === "rows"
+          ? "Row limit must be a whole number between 1 and 1000000."
+          : "Call ID limit must be a whole number between 1 and 100000."
+      );
+      return;
+    }
+    if (sourceLimitMode !== "none" && parsedLimit === null) {
+      setError("Enter a limit value or choose No limit.");
+      return;
+    }
+    if (sourceLimitMode === "call_ids" && !sourceCallIdColumn.trim()) {
+      setError("Call ID column is required when limiting by call IDs.");
+      return;
+    }
     setBusy(true);
     setError(null);
     setValidationResult(null);
     setImportResult(null);
     try {
-      const upload = await uploadSourceFromPath(accessToken, sourcePath.trim());
+      const upload = await uploadSourceFromPath(accessToken, sourcePath.trim(), {
+        call_id_limit: sourceLimitMode === "call_ids" ? parsedLimit : null,
+        call_id_column: sourceCallIdColumn.trim() || "call_id",
+        row_limit: sourceLimitMode === "rows" ? parsedLimit : null,
+      });
       setUploadJobId(upload.upload_job_id);
       const preview = await previewUpload(accessToken, upload.upload_job_id);
       applyPreviewDefaults(preview);
@@ -506,7 +543,7 @@ export default function AdminUploadPage() {
         <div className="oa-card p-5">
           <h2 className="oa-title text-lg font-semibold">Upload Annotation Jobs</h2>
           <p className="oa-subtext mt-1 text-sm">
-            Upload Excel, map columns, validate row-level errors, and import tasks.
+            Upload manifests, map columns, validate row-level errors, and import tasks.
           </p>
         </div>
         <div className="rounded-xl border border-[#f0c8c8] bg-[#fff3f3] px-4 py-3 text-sm text-[#a13a3a]">
@@ -524,7 +561,7 @@ export default function AdminUploadPage() {
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#787390]">Admin Operations</p>
             <h2 className="oa-title mt-1 text-xl font-semibold">Upload Annotation Jobs</h2>
             <p className="oa-subtext mt-1 text-sm">
-              Upload Excel, map columns, validate row-level errors, and import tasks safely.
+              Upload manifests, map columns, validate row-level errors, and import tasks safely.
             </p>
           </div>
         </div>
@@ -876,7 +913,9 @@ export default function AdminUploadPage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 className="oa-title text-base font-semibold">Step 1: Load Source File</h3>
-              <p className="oa-subtext mt-1 text-sm">Use a CSV/XLSX file from your browser or a backend-accessible path.</p>
+              <p className="oa-subtext mt-1 text-sm">
+                Use CSV, Excel, or Parquet from your browser or a backend-accessible path.
+              </p>
             </div>
             <button
               type="button"
@@ -892,7 +931,7 @@ export default function AdminUploadPage() {
               <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">Browser file</p>
               <input
                 type="file"
-                accept=".csv,.xlsx,.xls"
+                accept=".csv,.xlsx,.xls,.parquet"
                 onChange={(event) => setFile(event.target.files?.[0] ?? null)}
                 className="mt-3 w-full text-sm text-[#5f5a79] file:mr-3 file:rounded-md file:border-0 file:bg-[#e9def6] file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-[#3b315e] hover:file:bg-[#dcccf0]"
               />
@@ -913,10 +952,47 @@ export default function AdminUploadPage() {
                 value={sourcePath}
                 onChange={(event) => setSourcePath(event.target.value)}
                 className="oa-input mt-3"
-                placeholder="/mnt/amc-data/stt-train-related-files/transcripts_test_150.csv"
+                placeholder="/mnt/amc-data/amc-runs/2022-full/outputs/shard-0/manifests/all_segments.parquet"
               />
+              <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-[#676280]">Limit mode</span>
+                  <select
+                    value={sourceLimitMode}
+                    onChange={(event) => setSourceLimitMode(event.target.value as SourceLimitMode)}
+                    className="oa-select bg-white"
+                  >
+                    <option value="none">No limit</option>
+                    <option value="call_ids">First N call IDs</option>
+                    <option value="rows">First N rows</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-[#676280]">Limit</span>
+                  <input
+                    value={sourceLimitValue}
+                    onChange={(event) => setSourceLimitValue(event.target.value)}
+                    className="oa-input bg-white"
+                    disabled={sourceLimitMode === "none"}
+                    inputMode="numeric"
+                    placeholder={sourceLimitMode === "none" ? "All" : sourceLimitMode === "rows" ? "Rows" : "Calls"}
+                  />
+                </label>
+                {sourceLimitMode === "call_ids" ? (
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium text-[#676280]">Call ID column</span>
+                    <input
+                      value={sourceCallIdColumn}
+                      onChange={(event) => setSourceCallIdColumn(event.target.value)}
+                      className="oa-input bg-white"
+                      placeholder="call_id"
+                    />
+                  </label>
+                ) : null}
+              </div>
               <p className="mt-2 text-xs text-[#7a7494]">
-                Path must be readable by the backend and inside `TASK_MANIFEST_IMPORT_ROOTS`.
+                Path must be readable by the backend and inside `TASK_MANIFEST_IMPORT_ROOTS`. Use call-ID limit when
+                a manifest has grouped calls; use row limit for files without call IDs or quick test imports.
               </p>
               <button
                 type="button"
@@ -944,7 +1020,7 @@ export default function AdminUploadPage() {
           <ul className="mt-3 space-y-2 text-sm text-[#403c5d]">
             <li className="oa-card-soft px-3 py-2">Ensure one unique ID per row.</li>
             <li className="oa-card-soft px-3 py-2">
-              Confirm `file_location` points to playable media.
+              Confirm the mapped audio column points to playable media.
             </li>
             <li className="oa-card-soft px-3 py-2">
               Map at least one transcript source before validation.

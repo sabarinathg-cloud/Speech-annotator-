@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.enums import TaskStatusEnum
 
@@ -166,6 +166,29 @@ class UserProductivityMetric(BaseModel):
     active_session_started_at: datetime | None
     active_session_minutes: int | None
     idle_minutes: int | None
+    tracked_active_minutes: int
+    tracked_task_active_minutes: int
+    tracked_idle_minutes: int
+    tracked_total_minutes: int
+    completed_tasks_in_period: int
+    completed_tasks_today: int
+    average_active_minutes_per_segment: float | None
+    efficiency_segments_per_active_hour: float | None
+    focus_rate: float | None
+
+
+class ActivityHeartbeatRequest(BaseModel):
+    task_id: str | None = None
+    route: str | None = Field(default=None, max_length=500)
+    active_seconds: int = Field(default=0, ge=0, le=300)
+    idle_seconds: int = Field(default=0, ge=0, le=300)
+    event_count: int = Field(default=0, ge=0, le=10000)
+    started_at: datetime
+    ended_at: datetime
+
+
+class ActivityHeartbeatResponse(BaseModel):
+    recorded: bool
 
 
 class TaskSourceErrorMetric(BaseModel):

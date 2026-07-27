@@ -6,6 +6,7 @@ import { FormEvent, useEffect, useState } from "react";
 import clsx from "clsx";
 
 import { AccountSummary } from "@/components/account-summary";
+import { ActivityTracker } from "@/components/activity-tracker";
 import { useAuth } from "@/components/auth-provider";
 import { SecurityActivityGuard } from "@/components/security-activity-guard";
 import { changeOwnPassword } from "@/lib/api";
@@ -191,6 +192,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <div className={clsx("oa-page", strictSecurityGuardEnabled && "strict-confidential-workspace")}>
       <SecurityActivityGuard accessToken={accessToken} enabled={strictSecurityGuardEnabled} />
+      <ActivityTracker enabled={!requiresConfidentialityAck} />
       {strictSecurityGuardEnabled ? (
         <div className="strict-print-warning" role="note">
           Printing is disabled for this confidential workspace.

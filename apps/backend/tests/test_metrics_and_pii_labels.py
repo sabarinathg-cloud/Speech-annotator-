@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import select
+
+from app.models.activity import UserActivityEntry
 from app.models.enums import TaskStatusEnum, UploadJobStatusEnum
 from app.models.security import SecurityAuditEvent
 from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory, TaskTranscriptVariant
@@ -410,6 +413,32 @@ def test_admin_metrics_include_user_productivity_and_session_metrics(
             created_at=now - timedelta(minutes=4),
         )
     )
+    db_session.add_all(
+        [
+            UserActivityEntry(
+                organization_id=task.organization_id,
+                user_id=annotator.id,
+                task_id=task.id,
+                route=f"/tasks/{task.id}",
+                active_seconds=600,
+                idle_seconds=120,
+                event_count=18,
+                started_at=now - timedelta(minutes=20),
+                ended_at=now - timedelta(minutes=8),
+            ),
+            UserActivityEntry(
+                organization_id=task.organization_id,
+                user_id=annotator.id,
+                task_id=None,
+                route="/tasks",
+                active_seconds=300,
+                idle_seconds=60,
+                event_count=7,
+                started_at=now - timedelta(minutes=7),
+                ended_at=now - timedelta(minutes=1),
+            ),
+        ]
+    )
     db_session.commit()
 
     response = client.get("/api/v1/metrics/admin?language=en", headers=auth_headers["admin"])
@@ -430,6 +459,60 @@ def test_admin_metrics_include_user_productivity_and_session_metrics(
     assert annotator_metrics["active_session_minutes"] >= 94
     assert annotator_metrics["idle_minutes"] is not None
     assert annotator_metrics["idle_minutes"] >= 6
+    assert annotator_metrics["tracked_active_minutes"] == 15
+    assert annotator_metrics["tracked_task_active_minutes"] == 10
+    assert annotator_metrics["tracked_idle_minutes"] == 3
+    assert annotator_metrics["tracked_total_minutes"] == 18
+    assert annotator_metrics["completed_tasks_in_period"] == 1
+    assert annotator_metrics["completed_tasks_today"] == 1
+    assert annotator_metrics["average_active_minutes_per_segment"] == 10
+    assert annotator_metrics["efficiency_segments_per_active_hour"] == 6
+    assert annotator_metrics["focus_rate"] == 0.8333
+
+
+def test_activity_heartbeat_records_time_against_authorized_task(
+    client,
+    auth_headers,
+    db_session,
+    seed_users,
+):
+    now = datetime.now(timezone.utc)
+    upload_job = _create_metrics_upload_job(db_session, seed_users["admin"])
+    task = _create_metrics_task(
+        db_session,
+        upload_job=upload_job,
+        external_id="ACTIVITY-001",
+        final_transcript="hello",
+        variants=[("model_a", "Model A", "hello")],
+        status=TaskStatusEnum.IN_PROGRESS,
+        last_tagger_id=seed_users["annotator"].id,
+    )
+    task.assignee_id = seed_users["annotator"].id
+    db_session.commit()
+
+    response = client.post(
+        "/api/v1/metrics/activity",
+        headers=auth_headers["annotator"],
+        json={
+            "task_id": task.id,
+            "route": f"/tasks/{task.id}",
+            "active_seconds": 120,
+            "idle_seconds": 30,
+            "event_count": 12,
+            "started_at": (now - timedelta(seconds=150)).isoformat(),
+            "ended_at": now.isoformat(),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"recorded": True}
+
+    entries = db_session.execute(select(UserActivityEntry).where(UserActivityEntry.task_id == task.id)).scalars().all()
+    assert len(entries) == 1
+    assert entries[0].user_id == seed_users["annotator"].id
+    assert entries[0].organization_id == task.organization_id
+    assert entries[0].active_seconds == 120
+    assert entries[0].idle_seconds == 30
 
 
 def test_admin_metrics_normalize_punctuation_and_average_pair_error_rates(

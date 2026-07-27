@@ -30,7 +30,14 @@ from app.schemas.upload import (
 )
 from app.services.errors import ServiceError
 from app.storage.audio_resolver import AudioResolver
-from app.utils.excel import SUPPORTED_TABULAR_SUFFIXES, dataframe_preview, load_tabular_as_dataframe, normalize_cell
+from app.utils.excel import (
+    SUPPORTED_TABULAR_SUFFIXES,
+    dataframe_preview,
+    load_tabular_file_as_dataframe,
+    normalize_cell,
+    write_first_call_ids_subset,
+    write_first_rows_subset,
+)
 
 settings = get_settings()
 ALLOWED_CORE_METADATA_FIELDS = {"speaker_gender", "speaker_role", "language", "channel", "duration_seconds"}
@@ -72,7 +79,7 @@ class UploadService:
             raise ServiceError("File name is required")
         suffix = Path(file.filename).suffix.lower()
         if suffix not in SUPPORTED_TABULAR_SUFFIXES:
-            raise ServiceError("Only .csv/.xlsx/.xls files are supported", status_code=422)
+            raise ServiceError("Only .csv/.xlsx/.xls/.parquet files are supported", status_code=422)
 
         content = file.file.read()
         if not content:
@@ -109,24 +116,60 @@ class UploadService:
         source_path: str,
         current_user: User,
         organization: Organization,
+        call_id_limit: int | None = None,
+        call_id_column: str = "call_id",
+        row_limit: int | None = None,
     ) -> UploadFileResponse:
+        if call_id_limit and row_limit:
+            raise ServiceError("Use either a call ID limit or a row limit, not both", status_code=422)
+
         resolved_source = self._resolve_allowed_source_path(source_path)
         suffix = resolved_source.suffix.lower()
         if suffix not in SUPPORTED_TABULAR_SUFFIXES:
-            raise ServiceError("Only .csv/.xlsx/.xls source files are supported", status_code=422)
+            raise ServiceError("Only .csv/.xlsx/.xls/.parquet source files are supported", status_code=422)
 
-        stored_name = f"{uuid.uuid4()}{suffix}"
+        should_filter = bool(call_id_limit or row_limit)
+        stored_suffix = ".xlsx" if suffix == ".xls" and should_filter else suffix
+        stored_name = f"{uuid.uuid4()}{stored_suffix}"
         destination = settings.upload_path / stored_name
-        try:
-            shutil.copy2(resolved_source, destination)
-        except OSError as exc:
-            raise ServiceError("Unable to copy source file into managed upload storage", status_code=422) from exc
+        if call_id_limit:
+            try:
+                copied_rows = write_first_call_ids_subset(
+                    resolved_source,
+                    destination,
+                    call_id_column=call_id_column,
+                    limit=call_id_limit,
+                )
+            except (RuntimeError, ValueError) as exc:
+                raise ServiceError(str(exc), status_code=422) from exc
+            except Exception as exc:
+                raise ServiceError("Unable to filter source file by call IDs", status_code=422) from exc
+            if copied_rows <= 0:
+                raise ServiceError("No rows matched the requested call ID limit", status_code=422)
+        elif row_limit:
+            try:
+                copied_rows = write_first_rows_subset(
+                    resolved_source,
+                    destination,
+                    limit=row_limit,
+                )
+            except RuntimeError as exc:
+                raise ServiceError(str(exc), status_code=422) from exc
+            except Exception as exc:
+                raise ServiceError("Unable to filter source file by row limit", status_code=422) from exc
+            if copied_rows <= 0:
+                raise ServiceError("No rows matched the requested row limit", status_code=422)
+        else:
+            try:
+                shutil.copy2(resolved_source, destination)
+            except OSError as exc:
+                raise ServiceError("Unable to copy source file into managed upload storage", status_code=422) from exc
 
         upload_file = self.upload_repo.create_upload_file(
             organization_id=organization.id,
             original_filename=resolved_source.name,
             stored_path=str(destination),
-            content_type=mimetypes.guess_type(str(resolved_source))[0],
+            content_type=mimetypes.guess_type(str(destination))[0],
             uploaded_by_id=current_user.id,
         )
         upload_job = self.upload_repo.create_upload_job(
@@ -322,7 +365,11 @@ class UploadService:
     def _load_job_dataframe(self, job) -> Any:
         file_path = Path(job.upload_file.stored_path)
         try:
-            return load_tabular_as_dataframe(file_path.read_bytes(), file_path.suffix.lower())
+            return load_tabular_file_as_dataframe(file_path)
+        except ImportError as exc:
+            if file_path.suffix.lower() == ".parquet":
+                raise ServiceError("Parquet support requires pyarrow to be installed", status_code=422) from exc
+            raise ServiceError("Unable to read source file", status_code=422) from exc
         except Exception as exc:
             raise ServiceError("Unable to read source file", status_code=422) from exc
 
@@ -902,5 +949,5 @@ class UploadService:
             old_status=None,
             new_status=task.status,
             changed_by_id=actor_user_id,
-            comment="Task imported from Excel",
+            comment="Task imported from manifest",
         )

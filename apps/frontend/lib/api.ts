@@ -1,6 +1,8 @@
 import type {
   AdminUser,
   AdminMetricsResponse,
+  ActivityHeartbeatRequest,
+  ActivityHeartbeatResponse,
   AudioMaskInterval,
   AudioMaskMode,
   BulkAutoBalanceRequest,
@@ -695,6 +697,17 @@ export async function fetchAdminMetrics(
   return request<AdminMetricsResponse>(`/metrics/admin${suffix ? `?${suffix}` : ""}`, { method: "GET" }, token);
 }
 
+export async function recordActivityHeartbeat(
+  token: string,
+  payload: ActivityHeartbeatRequest
+): Promise<ActivityHeartbeatResponse> {
+  return request<ActivityHeartbeatResponse>(
+    "/metrics/activity",
+    { method: "POST", body: JSON.stringify(payload) },
+    token
+  );
+}
+
 export async function fetchSecurityAuditEvents(
   token: string,
   params: {
@@ -1172,11 +1185,20 @@ export async function uploadExcel(
 
 export async function uploadSourceFromPath(
   token: string,
-  path: string
+  path: string,
+  options?: { call_id_limit?: number | null; call_id_column?: string | null; row_limit?: number | null }
 ): Promise<{ id: string; upload_job_id: string; filename: string; status: string }> {
+  const payload: { path: string; call_id_limit?: number; call_id_column?: string; row_limit?: number } = { path };
+  if (options?.call_id_limit) {
+    payload.call_id_limit = options.call_id_limit;
+    payload.call_id_column = options.call_id_column?.trim() || "call_id";
+  }
+  if (options?.row_limit) {
+    payload.row_limit = options.row_limit;
+  }
   return request<{ id: string; upload_job_id: string; filename: string; status: string }>(
     "/uploads/from-path",
-    { method: "POST", body: JSON.stringify({ path }) },
+    { method: "POST", body: JSON.stringify(payload) },
     token
   );
 }

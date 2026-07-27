@@ -4,15 +4,18 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.models.enums import TaskStatusEnum
+from app.models.activity import UserActivityEntry
+from app.models.enums import RoleEnum, TaskStatusEnum
 from app.models.organization import OrganizationMembership
 from app.models.security import SecurityAuditEvent
 from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory
 from app.models.user import User
 from app.schemas.metrics import (
+    ActivityHeartbeatRequest,
+    ActivityHeartbeatResponse,
     AdminMetricsResponse,
     MaskingIntervalMetric,
     MaskingMetrics,
@@ -28,9 +31,11 @@ from app.schemas.metrics import (
     UserProductivityMetric,
     WorstTaskMetric,
 )
+from app.services.errors import ServiceError
 from app.services.organization_service import DEFAULT_ORGANIZATION_ID
 
 LOW_CONFIDENCE_THRESHOLD = 0.8
+MAX_HEARTBEAT_SECONDS = 300
 
 
 def _normalize_transcript(text: str) -> str:
@@ -224,6 +229,14 @@ def _minutes_between(start: datetime | None, end: datetime | None) -> float | No
     return round((end_utc - start_utc).total_seconds() / 60, 1)
 
 
+def _datetime_in_window(value: datetime, start: datetime | None, end: datetime | None) -> bool:
+    if start and value < start:
+        return False
+    if end and value > end:
+        return False
+    return True
+
+
 def _new_model_accumulator(
     *,
     source_key: str,
@@ -318,6 +331,57 @@ def _rank_grouped_model_accumulators(accumulators: list[dict[str, Any]]) -> list
 class MetricsService:
     def __init__(self, db: Session):
         self.db = db
+
+    def record_activity_heartbeat(
+        self,
+        *,
+        payload: ActivityHeartbeatRequest,
+        actor: User,
+        organization_id: str,
+    ) -> ActivityHeartbeatResponse:
+        started_at = _as_aware_utc(payload.started_at)
+        ended_at = _as_aware_utc(payload.ended_at)
+        if not started_at or not ended_at or ended_at <= started_at:
+            raise ServiceError("Heartbeat timestamps are invalid", status_code=422)
+
+        active_seconds = max(0, min(payload.active_seconds, MAX_HEARTBEAT_SECONDS))
+        idle_seconds = max(0, min(payload.idle_seconds, MAX_HEARTBEAT_SECONDS))
+        reported_seconds = active_seconds + idle_seconds
+        if reported_seconds <= 0:
+            return ActivityHeartbeatResponse(recorded=False)
+
+        elapsed_seconds = max(1, int(round((ended_at - started_at).total_seconds())))
+        allowed_seconds = min(MAX_HEARTBEAT_SECONDS, elapsed_seconds)
+        if reported_seconds > allowed_seconds:
+            active_ratio = active_seconds / reported_seconds if reported_seconds else 0
+            active_seconds = int(round(allowed_seconds * active_ratio))
+            idle_seconds = allowed_seconds - active_seconds
+
+        task_id = payload.task_id
+        if task_id:
+            task = self.db.get(AnnotationTask, task_id)
+            if not task or task.organization_id != organization_id:
+                raise ServiceError("Task not found in selected organization", status_code=404)
+            if actor.role != RoleEnum.ADMIN and task.assignee_id != actor.id:
+                raise ServiceError("Cannot track time against a task assigned to another user", status_code=403)
+
+        self.db.add(
+            UserActivityEntry(
+                organization_id=organization_id,
+                user_id=actor.id,
+                task_id=task_id,
+                route=payload.route,
+                active_seconds=active_seconds,
+                idle_seconds=idle_seconds,
+                event_count=payload.event_count,
+                started_at=started_at,
+                ended_at=ended_at,
+            )
+        )
+        if active_seconds > 0:
+            actor.last_activity_at = ended_at
+        self.db.commit()
+        return ActivityHeartbeatResponse(recorded=True)
 
     def get_admin_metrics(
         self,
@@ -479,7 +543,12 @@ class MetricsService:
         pii_metrics = self._build_pii_metrics(tasks)
         masking_metrics, worst_masking_tasks, masking_interval_drilldowns = self._build_masking_metrics(tasks)
         tagger_metrics = self._build_tagger_metrics(tasks)
-        user_metrics = self._build_user_metrics(tasks, organization_id=organization_id)
+        user_metrics = self._build_user_metrics(
+            tasks,
+            organization_id=organization_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
         model_metrics = [
             ModelTranscriptMetric(
                 source_key=item["source_key"],
@@ -830,7 +899,14 @@ class MetricsService:
         metrics.sort(key=lambda item: item.tasks_touched, reverse=True)
         return metrics
 
-    def _build_user_metrics(self, tasks: list[AnnotationTask], *, organization_id: str) -> list[UserProductivityMetric]:
+    def _build_user_metrics(
+        self,
+        tasks: list[AnnotationTask],
+        *,
+        organization_id: str,
+        date_from: date | None,
+        date_to: date | None,
+    ) -> list[UserProductivityMetric]:
         users = list(
             self.db.execute(
                 select(User)
@@ -852,7 +928,15 @@ class MetricsService:
         completed_task_ids: dict[str, set[str]] = defaultdict(set)
         reviewed_task_ids: dict[str, set[str]] = defaultdict(set)
         approved_task_ids: dict[str, set[str]] = defaultdict(set)
+        completed_period_task_ids: dict[str, set[str]] = defaultdict(set)
+        completed_today_task_ids: dict[str, set[str]] = defaultdict(set)
         pii_annotation_counts: Counter[str] = Counter()
+        period_start = (
+            datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc) if date_from else None
+        )
+        period_end = datetime.combine(date_to, datetime.max.time(), tzinfo=timezone.utc) if date_to else None
+        today_start = datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc)
+        today_end = datetime.combine(now.date(), datetime.max.time(), tzinfo=timezone.utc)
 
         for task in tasks:
             if task.assignee_id:
@@ -894,6 +978,12 @@ class MetricsService:
             touched_task_ids[log.actor_user_id].add(log.task_id)
             activity_times[(log.actor_user_id, log.task_id)].append(log.created_at)
 
+        terminal_statuses = {
+            TaskStatusEnum.COMPLETED,
+            TaskStatusEnum.NEEDS_REVIEW,
+            TaskStatusEnum.REVIEWED,
+            TaskStatusEnum.APPROVED,
+        }
         for history in status_history:
             touched_task_ids[history.changed_by_id].add(history.task_id)
             activity_times[(history.changed_by_id, history.task_id)].append(history.changed_at)
@@ -904,12 +994,12 @@ class MetricsService:
             if history.new_status == TaskStatusEnum.APPROVED:
                 approved_task_ids[history.changed_by_id].add(history.task_id)
 
-        terminal_statuses = {
-            TaskStatusEnum.COMPLETED,
-            TaskStatusEnum.NEEDS_REVIEW,
-            TaskStatusEnum.REVIEWED,
-            TaskStatusEnum.APPROVED,
-        }
+            changed_at = _as_aware_utc(history.changed_at)
+            if history.new_status in terminal_statuses and changed_at:
+                if _datetime_in_window(changed_at, period_start, period_end):
+                    completed_period_task_ids[history.changed_by_id].add(history.task_id)
+                if today_start <= changed_at <= today_end:
+                    completed_today_task_ids[history.changed_by_id].add(history.task_id)
         turnaround_minutes: dict[str, list[float]] = defaultdict(list)
         for history in status_history:
             if history.new_status not in terminal_statuses:
@@ -953,11 +1043,58 @@ class MetricsService:
             if event.risk_level == "high":
                 high_risk_security_event_counts[event.actor_user_id] += 1
 
+        activity_stats: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"active_seconds": 0, "task_active_seconds": 0, "idle_seconds": 0}
+        )
+        if user_ids:
+            activity_filters = [
+                UserActivityEntry.organization_id == organization_id,
+                UserActivityEntry.user_id.in_(user_ids),
+            ]
+            if period_start:
+                activity_filters.append(UserActivityEntry.started_at >= period_start)
+            if period_end:
+                activity_filters.append(UserActivityEntry.started_at <= period_end)
+            activity_rows = self.db.execute(
+                select(
+                    UserActivityEntry.user_id,
+                    func.coalesce(func.sum(UserActivityEntry.active_seconds), 0).label("active_seconds"),
+                    func.coalesce(func.sum(UserActivityEntry.idle_seconds), 0).label("idle_seconds"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (UserActivityEntry.task_id.is_not(None), UserActivityEntry.active_seconds),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("task_active_seconds"),
+                )
+                .where(and_(*activity_filters))
+                .group_by(UserActivityEntry.user_id)
+            ).all()
+            for row in activity_rows:
+                activity_stats[row.user_id] = {
+                    "active_seconds": int(row.active_seconds or 0),
+                    "idle_seconds": int(row.idle_seconds or 0),
+                    "task_active_seconds": int(row.task_active_seconds or 0),
+                }
+
         metrics: list[UserProductivityMetric] = []
         for user in users:
             completion_values = turnaround_minutes[user.id]
             active_session_minutes = _minutes_between(user.active_session_started_at, now)
             idle_minutes = _minutes_between(user.last_activity_at, now)
+            stats = activity_stats[user.id]
+            active_seconds = stats["active_seconds"]
+            task_active_seconds = stats["task_active_seconds"]
+            idle_seconds = stats["idle_seconds"]
+            total_tracked_seconds = active_seconds + idle_seconds
+            completed_in_period = len(completed_period_task_ids[user.id])
+            if not period_start and not period_end:
+                completed_in_period = max(completed_in_period, len(completed_task_ids[user.id]))
+            active_seconds_for_segment_metrics = task_active_seconds or active_seconds
+            active_hours_for_efficiency = active_seconds_for_segment_metrics / 3600
             metrics.append(
                 UserProductivityMetric(
                     user_id=user.id,
@@ -984,6 +1121,22 @@ class MetricsService:
                     active_session_started_at=user.active_session_started_at,
                     active_session_minutes=int(active_session_minutes) if active_session_minutes is not None else None,
                     idle_minutes=int(idle_minutes) if idle_minutes is not None else None,
+                    tracked_active_minutes=int(round(active_seconds / 60)),
+                    tracked_task_active_minutes=int(round(task_active_seconds / 60)),
+                    tracked_idle_minutes=int(round(idle_seconds / 60)),
+                    tracked_total_minutes=int(round(total_tracked_seconds / 60)),
+                    completed_tasks_in_period=completed_in_period,
+                    completed_tasks_today=len(completed_today_task_ids[user.id]),
+                    average_active_minutes_per_segment=round(
+                        (active_seconds_for_segment_metrics / 60) / completed_in_period,
+                        1,
+                    )
+                    if completed_in_period and active_seconds_for_segment_metrics
+                    else None,
+                    efficiency_segments_per_active_hour=round(completed_in_period / active_hours_for_efficiency, 2)
+                    if completed_in_period and active_hours_for_efficiency
+                    else None,
+                    focus_rate=round(active_seconds / total_tracked_seconds, 4) if total_tracked_seconds else None,
                 )
             )
 

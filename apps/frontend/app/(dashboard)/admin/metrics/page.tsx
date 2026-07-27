@@ -77,6 +77,14 @@ function formatMinutes(value: number | null | undefined): string {
   return `${formatInteger(value)} min`;
 }
 
+function formatMinutesDecimal(value: number): string {
+  return `${value.toFixed(1)} min`;
+}
+
+function formatSegmentsPerHour(value: number): string {
+  return `${value.toFixed(2)}/hr`;
+}
+
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return "-";
   const parsed = new Date(value);
@@ -230,6 +238,48 @@ export default function AdminMetricsPage() {
         value: masking?.alignment_expanded_duration_ms ?? 0,
         format: formatMilliseconds,
         detail: "PII added beyond auto timing",
+      },
+    ];
+  }, [metrics]);
+
+  const productivityCards = useMemo(() => {
+    const userMetrics = metrics?.user_metrics ?? [];
+    const trackedActiveMinutes = userMetrics.reduce((total, item) => total + item.tracked_active_minutes, 0);
+    const trackedTaskActiveMinutes = userMetrics.reduce((total, item) => total + item.tracked_task_active_minutes, 0);
+    const trackedIdleMinutes = userMetrics.reduce((total, item) => total + item.tracked_idle_minutes, 0);
+    const completedInPeriod = userMetrics.reduce((total, item) => total + item.completed_tasks_in_period, 0);
+    const completedToday = userMetrics.reduce((total, item) => total + item.completed_tasks_today, 0);
+    const totalTrackedMinutes = trackedActiveMinutes + trackedIdleMinutes;
+    return [
+      {
+        label: "Active Time",
+        value: trackedActiveMinutes,
+        format: formatMinutes,
+        detail: `${formatMinutes(trackedTaskActiveMinutes)} linked to task pages`,
+      },
+      {
+        label: "Idle Time",
+        value: trackedIdleMinutes,
+        format: formatMinutes,
+        detail: totalTrackedMinutes ? `${formatPercentValue((trackedActiveMinutes / totalTrackedMinutes) * 100)} focus rate` : "No tracked time yet",
+      },
+      {
+        label: "Segments Done",
+        value: completedInPeriod,
+        format: formatInteger,
+        detail: `${formatInteger(completedToday)} completed today`,
+      },
+      {
+        label: "Avg / Segment",
+        value: completedInPeriod && trackedTaskActiveMinutes ? trackedTaskActiveMinutes / completedInPeriod : null,
+        format: formatMinutesDecimal,
+        detail: "task active time per completed segment",
+      },
+      {
+        label: "Efficiency",
+        value: trackedTaskActiveMinutes ? completedInPeriod / (trackedTaskActiveMinutes / 60) : null,
+        format: formatSegmentsPerHour,
+        detail: "segments completed per active hour",
       },
     ];
   }, [metrics]);
@@ -408,6 +458,26 @@ export default function AdminMetricsPage() {
           emptyMessage="No tasks match these filters."
           formatValue={formatInteger}
         />
+      </section>
+
+      <section className="space-y-3">
+        <SectionHeading
+          eyebrow="Work Time"
+          title="Annotator Time and Efficiency"
+          description="Tracked from active browser work, audio playback, and idle intervals for the current organization and filters."
+        />
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-5">
+          {productivityCards.map((card) => (
+            <MetricSummaryCard
+              key={card.label}
+              label={card.label}
+              value={card.value}
+              format={card.format}
+              detail={card.detail}
+              loading={loadingMetrics}
+            />
+          ))}
+        </div>
       </section>
 
       <section className="oa-card p-4">
@@ -854,11 +924,11 @@ export default function AdminMetricsPage() {
                 <th className="px-3 py-2">User</th>
                 <th className="px-3 py-2">Assigned</th>
                 <th className="px-3 py-2">Touched</th>
-                <th className="px-3 py-2">Completed</th>
-                <th className="px-3 py-2">Reviewed</th>
-                <th className="px-3 py-2">Approved</th>
-                <th className="px-3 py-2">Avg Time</th>
-                <th className="px-3 py-2">Session</th>
+                <th className="px-3 py-2">Done</th>
+                <th className="px-3 py-2">Review</th>
+                <th className="px-3 py-2">Avg / Segment</th>
+                <th className="px-3 py-2">Tracked Time</th>
+                <th className="px-3 py-2">Efficiency</th>
                 <th className="px-3 py-2">Security</th>
                 <th className="px-3 py-2">Last Active</th>
               </tr>
@@ -876,16 +946,44 @@ export default function AdminMetricsPage() {
                     {item.assigned_tasks} total / {item.open_assigned_tasks} open
                   </td>
                   <td className="px-3 py-2 text-[#4b5563]">{item.tasks_touched}</td>
-                  <td className="px-3 py-2 text-[#4b5563]">{item.completed_tasks}</td>
-                  <td className="px-3 py-2 text-[#4b5563]">{item.reviewed_tasks}</td>
-                  <td className="px-3 py-2 text-[#4b5563]">{item.approved_tasks}</td>
                   <td className="px-3 py-2 text-[#4b5563]">
-                    <div>{formatMinutes(item.average_completion_minutes)}</div>
-                    <div className="text-xs text-[#6b7280]">{item.completed_turnaround_count} timed</div>
+                    <div>{item.completed_tasks} current</div>
+                    <div className="text-xs text-[#6b7280]">
+                      {item.completed_tasks_in_period} in period / {item.completed_tasks_today} today
+                    </div>
                   </td>
                   <td className="px-3 py-2 text-[#4b5563]">
-                    <div>{formatMinutes(item.active_session_minutes)}</div>
-                    <div className="text-xs text-[#6b7280]">Idle {formatMinutes(item.idle_minutes)}</div>
+                    <div>{item.reviewed_tasks} reviewed</div>
+                    <div className="text-xs text-[#6b7280]">{item.approved_tasks} approved</div>
+                  </td>
+                  <td className="px-3 py-2 text-[#4b5563]">
+                    <div>
+                      {item.average_active_minutes_per_segment === null
+                        ? "-"
+                        : formatMinutesDecimal(item.average_active_minutes_per_segment)}
+                    </div>
+                    <div className="text-xs text-[#6b7280]">
+                      Turnaround {formatMinutes(item.average_completion_minutes)}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-[#4b5563]">
+                    <div>{formatMinutes(item.tracked_active_minutes)} active</div>
+                    <div className="text-xs text-[#6b7280]">
+                      {formatMinutes(item.tracked_task_active_minutes)} task / {formatMinutes(item.tracked_idle_minutes)} idle
+                    </div>
+                    <div className="text-xs text-[#6b7280]">
+                      Focus {item.focus_rate === null ? "-" : formatPercentValue(item.focus_rate * 100)}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-[#4b5563]">
+                    <div>
+                      {item.efficiency_segments_per_active_hour === null
+                        ? "-"
+                        : formatSegmentsPerHour(item.efficiency_segments_per_active_hour)}
+                    </div>
+                    <div className="text-xs text-[#6b7280]">
+                      Session {formatMinutes(item.active_session_minutes)} / idle {formatMinutes(item.idle_minutes)}
+                    </div>
                   </td>
                   <td className="px-3 py-2 text-[#4b5563]">
                     <div>{item.security_events} events</div>

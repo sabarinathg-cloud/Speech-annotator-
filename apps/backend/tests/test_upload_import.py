@@ -236,6 +236,227 @@ def test_upload_source_file_from_allowed_server_csv_path(client, auth_headers, t
         settings.task_manifest_import_roots = original_roots
 
 
+def test_upload_source_file_from_allowed_server_parquet_path_with_call_id_limit(client, auth_headers, tmp_path):
+    import wave
+
+    import pandas as pd
+    import pytest
+
+    pytest.importorskip("pyarrow")
+
+    settings = get_settings()
+    original_roots = settings.task_manifest_import_roots
+    settings.task_manifest_import_roots = str(tmp_path)
+    try:
+        audio_paths = []
+        for index in range(3):
+            wav_path = tmp_path / f"segment-{index}.wav"
+            with wave.open(str(wav_path), "wb") as writer:
+                writer.setnchannels(1)
+                writer.setsampwidth(2)
+                writer.setframerate(8000)
+                writer.writeframes(b"\x00\x00" * 8000)
+            audio_paths.append(wav_path)
+
+        parquet_path = tmp_path / "all_segments.parquet"
+        dataframe = pd.DataFrame(
+            [
+                {
+                    "segment_id": "SEG-A-0000",
+                    "call_id": "CALL-A",
+                    "segment_audio_path_abs": str(audio_paths[0]),
+                    "whisper_transcript": "hello from call a zero",
+                    "qwen_transcript": "hello from call a zero alt",
+                    "final_transcript": "hello from call a zero final",
+                    "duration_sec": "1.0",
+                    "language": "en",
+                    "channel": "channel1",
+                },
+                {
+                    "segment_id": "SEG-A-0001",
+                    "call_id": "CALL-A",
+                    "segment_audio_path_abs": str(audio_paths[1]),
+                    "whisper_transcript": "hello from call a one",
+                    "qwen_transcript": "hello from call a one alt",
+                    "final_transcript": "hello from call a one final",
+                    "duration_sec": "1.0",
+                    "language": "en",
+                    "channel": "channel1",
+                },
+                {
+                    "segment_id": "SEG-B-0000",
+                    "call_id": "CALL-B",
+                    "segment_audio_path_abs": str(audio_paths[2]),
+                    "whisper_transcript": "hello from call b zero",
+                    "qwen_transcript": "hello from call b zero alt",
+                    "final_transcript": "hello from call b zero final",
+                    "duration_sec": "1.0",
+                    "language": "en",
+                    "channel": "channel2",
+                },
+            ]
+        )
+        dataframe.to_parquet(parquet_path, index=False, engine="pyarrow")
+
+        upload_response = client.post(
+            "/api/v1/uploads/from-path",
+            headers=auth_headers["admin"],
+            json={"path": str(parquet_path), "call_id_limit": 1, "call_id_column": "call_id"},
+        )
+
+        assert upload_response.status_code == 200
+        assert upload_response.json()["filename"] == "all_segments.parquet"
+        upload_job_id = upload_response.json()["upload_job_id"]
+
+        preview_response = client.get(f"/api/v1/uploads/{upload_job_id}/preview", headers=auth_headers["admin"])
+        assert preview_response.status_code == 200
+        preview_payload = preview_response.json()
+        assert preview_payload["row_count"] == 2
+        assert preview_payload["sample_rows"][0]["call_id"] == "CALL-A"
+        assert preview_payload["columns"][:3] == ["segment_id", "call_id", "segment_audio_path_abs"]
+
+        mapping = {
+            "id_column": "segment_id",
+            "file_location_column": "segment_audio_path_abs",
+            "transcript_columns": [
+                {"source_key": "whisper", "column_name": "whisper_transcript", "source_label": "Whisper"},
+                {"source_key": "qwen", "column_name": "qwen_transcript", "source_label": "Qwen"},
+            ],
+            "final_transcript_column": "final_transcript",
+            "core_metadata_columns": {
+                "duration_seconds": "duration_sec",
+                "language": "language",
+                "channel": "channel",
+            },
+        }
+        validate_response = client.post(
+            f"/api/v1/uploads/{upload_job_id}/validate",
+            headers=auth_headers["admin"],
+            json=mapping,
+        )
+        assert validate_response.status_code == 200
+        assert validate_response.json()["valid_rows"] == 2
+        assert validate_response.json()["import_allowed"] is True
+
+        import_response = client.post(
+            f"/api/v1/uploads/{upload_job_id}/import",
+            headers=auth_headers["admin"],
+            json=mapping,
+        )
+        assert import_response.status_code == 200
+        assert import_response.json()["imported_tasks"] == 2
+    finally:
+        settings.task_manifest_import_roots = original_roots
+
+
+def test_upload_source_file_from_allowed_server_parquet_without_call_id_uses_row_limit(client, auth_headers, tmp_path):
+    import wave
+
+    import pandas as pd
+    import pytest
+
+    pytest.importorskip("pyarrow")
+
+    settings = get_settings()
+    original_roots = settings.task_manifest_import_roots
+    settings.task_manifest_import_roots = str(tmp_path)
+    try:
+        audio_paths = []
+        for index in range(3):
+            wav_path = tmp_path / f"row-limit-segment-{index}.wav"
+            with wave.open(str(wav_path), "wb") as writer:
+                writer.setnchannels(1)
+                writer.setsampwidth(2)
+                writer.setframerate(8000)
+                writer.writeframes(b"\x00\x00" * 8000)
+            audio_paths.append(wav_path)
+
+        parquet_path = tmp_path / "segments_without_call_id.parquet"
+        dataframe = pd.DataFrame(
+            [
+                {
+                    "segment_id": "ROW-LIMIT-0000",
+                    "segment_audio_path_abs": str(audio_paths[0]),
+                    "whisper_transcript": "row zero transcript",
+                    "final_transcript": "row zero final",
+                    "duration_sec": "1.0",
+                    "language": "en",
+                },
+                {
+                    "segment_id": "ROW-LIMIT-0001",
+                    "segment_audio_path_abs": str(audio_paths[1]),
+                    "whisper_transcript": "row one transcript",
+                    "final_transcript": "row one final",
+                    "duration_sec": "1.0",
+                    "language": "en",
+                },
+                {
+                    "segment_id": "ROW-LIMIT-0002",
+                    "segment_audio_path_abs": str(audio_paths[2]),
+                    "whisper_transcript": "row two transcript",
+                    "final_transcript": "row two final",
+                    "duration_sec": "1.0",
+                    "language": "en",
+                },
+            ]
+        )
+        dataframe.to_parquet(parquet_path, index=False, engine="pyarrow")
+
+        missing_call_id_response = client.post(
+            "/api/v1/uploads/from-path",
+            headers=auth_headers["admin"],
+            json={"path": str(parquet_path), "call_id_limit": 1, "call_id_column": "call_id"},
+        )
+        assert missing_call_id_response.status_code == 422
+        assert "Call ID column 'call_id' was not found" in missing_call_id_response.json()["detail"]["message"]
+
+        upload_response = client.post(
+            "/api/v1/uploads/from-path",
+            headers=auth_headers["admin"],
+            json={"path": str(parquet_path), "row_limit": 2},
+        )
+
+        assert upload_response.status_code == 200
+        upload_job_id = upload_response.json()["upload_job_id"]
+
+        preview_response = client.get(f"/api/v1/uploads/{upload_job_id}/preview", headers=auth_headers["admin"])
+        assert preview_response.status_code == 200
+        preview_payload = preview_response.json()
+        assert preview_payload["row_count"] == 2
+        assert [row["segment_id"] for row in preview_payload["sample_rows"]] == ["ROW-LIMIT-0000", "ROW-LIMIT-0001"]
+
+        mapping = {
+            "id_column": "segment_id",
+            "file_location_column": "segment_audio_path_abs",
+            "transcript_columns": [
+                {"source_key": "whisper", "column_name": "whisper_transcript", "source_label": "Whisper"},
+            ],
+            "final_transcript_column": "final_transcript",
+            "core_metadata_columns": {
+                "duration_seconds": "duration_sec",
+                "language": "language",
+            },
+        }
+        validate_response = client.post(
+            f"/api/v1/uploads/{upload_job_id}/validate",
+            headers=auth_headers["admin"],
+            json=mapping,
+        )
+        assert validate_response.status_code == 200
+        assert validate_response.json()["valid_rows"] == 2
+        assert validate_response.json()["import_allowed"] is True
+
+        import_response = client.post(
+            f"/api/v1/uploads/{upload_job_id}/import",
+            headers=auth_headers["admin"],
+            json=mapping,
+        )
+        assert import_response.status_code == 200
+        assert import_response.json()["imported_tasks"] == 2
+    finally:
+        settings.task_manifest_import_roots = original_roots
+
+
 def test_upload_source_file_from_path_rejects_unconfigured_or_outside_roots(client, auth_headers, tmp_path):
     settings = get_settings()
     original_roots = settings.task_manifest_import_roots

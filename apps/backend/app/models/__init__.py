@@ -1,3 +1,4 @@
+from app.models.activity import UserActivityEntry
 from app.models.job import BackgroundJob
 from app.models.hiring import HiringAssessment, HiringAssessmentItem, HiringAssignment, HiringSubmission
 from app.models.organization import Organization, OrganizationMembership
@@ -15,6 +16,7 @@ from app.models.user import User
 
 __all__ = [
     "User",
+    "UserActivityEntry",
     "BackgroundJob",
     "HiringAssessment",
     "HiringAssessmentItem",

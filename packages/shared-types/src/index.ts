@@ -574,6 +574,29 @@ export interface UserProductivityMetric {
   active_session_started_at: string | null;
   active_session_minutes: number | null;
   idle_minutes: number | null;
+  tracked_active_minutes: number;
+  tracked_task_active_minutes: number;
+  tracked_idle_minutes: number;
+  tracked_total_minutes: number;
+  completed_tasks_in_period: number;
+  completed_tasks_today: number;
+  average_active_minutes_per_segment: number | null;
+  efficiency_segments_per_active_hour: number | null;
+  focus_rate: number | null;
+}
+
+export interface ActivityHeartbeatRequest {
+  task_id?: string | null;
+  route?: string | null;
+  active_seconds: number;
+  idle_seconds: number;
+  event_count: number;
+  started_at: string;
+  ended_at: string;
+}
+
+export interface ActivityHeartbeatResponse {
+  recorded: boolean;
 }
 
 export interface TaskSourceErrorMetric {

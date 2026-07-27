@@ -54,6 +54,9 @@ def upload_file_from_path(
             source_path=payload.path,
             current_user=current_user,
             organization=organization,
+            call_id_limit=payload.call_id_limit,
+            call_id_column=payload.call_id_column,
+            row_limit=payload.row_limit,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc

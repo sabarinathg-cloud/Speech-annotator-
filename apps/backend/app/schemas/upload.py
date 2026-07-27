@@ -31,6 +31,15 @@ class ColumnMappingRequest(BaseModel):
 
 class UploadFromPathRequest(BaseModel):
     path: str = Field(min_length=1, max_length=2000)
+    call_id_limit: int | None = Field(default=None, ge=1, le=100_000)
+    call_id_column: str = Field(default="call_id", min_length=1, max_length=255)
+    row_limit: int | None = Field(default=None, ge=1, le=1_000_000)
+
+    @model_validator(mode="after")
+    def validate_limit_mode(self) -> "UploadFromPathRequest":
+        if self.call_id_limit is not None and self.row_limit is not None:
+            raise ValueError("Use either call_id_limit or row_limit, not both")
+        return self
 
 
 class UploadFileResponse(BaseModel):
