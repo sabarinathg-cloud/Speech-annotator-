@@ -35,8 +35,8 @@ from app.utils.excel import (
     dataframe_preview,
     load_tabular_file_as_dataframe,
     normalize_cell,
-    write_first_call_ids_subset,
-    write_first_rows_subset,
+    write_call_id_window_subset,
+    write_row_window_subset,
 )
 
 settings = get_settings()
@@ -117,8 +117,11 @@ class UploadService:
         current_user: User,
         organization: Organization,
         call_id_limit: int | None = None,
+        call_id_offset: int = 0,
         call_id_column: str = "call_id",
+        start_after_call_id: str | None = None,
         row_limit: int | None = None,
+        row_offset: int = 0,
     ) -> UploadFileResponse:
         if call_id_limit and row_limit:
             raise ServiceError("Use either a call ID limit or a row limit, not both", status_code=422)
@@ -134,31 +137,34 @@ class UploadService:
         destination = settings.upload_path / stored_name
         if call_id_limit:
             try:
-                copied_rows = write_first_call_ids_subset(
+                copied_rows = write_call_id_window_subset(
                     resolved_source,
                     destination,
                     call_id_column=call_id_column,
                     limit=call_id_limit,
+                    offset=call_id_offset,
+                    start_after_call_id=start_after_call_id,
                 )
             except (RuntimeError, ValueError) as exc:
                 raise ServiceError(str(exc), status_code=422) from exc
             except Exception as exc:
-                raise ServiceError("Unable to filter source file by call IDs", status_code=422) from exc
+                raise ServiceError("Unable to filter source file by call ID batch", status_code=422) from exc
             if copied_rows <= 0:
-                raise ServiceError("No rows matched the requested call ID limit", status_code=422)
+                raise ServiceError("No rows matched the requested call ID batch", status_code=422)
         elif row_limit:
             try:
-                copied_rows = write_first_rows_subset(
+                copied_rows = write_row_window_subset(
                     resolved_source,
                     destination,
                     limit=row_limit,
+                    offset=row_offset,
                 )
             except RuntimeError as exc:
                 raise ServiceError(str(exc), status_code=422) from exc
             except Exception as exc:
-                raise ServiceError("Unable to filter source file by row limit", status_code=422) from exc
+                raise ServiceError("Unable to filter source file by row batch", status_code=422) from exc
             if copied_rows <= 0:
-                raise ServiceError("No rows matched the requested row limit", status_code=422)
+                raise ServiceError("No rows matched the requested row batch", status_code=422)
         else:
             try:
                 shutil.copy2(resolved_source, destination)

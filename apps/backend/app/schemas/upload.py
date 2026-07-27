@@ -32,13 +32,29 @@ class ColumnMappingRequest(BaseModel):
 class UploadFromPathRequest(BaseModel):
     path: str = Field(min_length=1, max_length=2000)
     call_id_limit: int | None = Field(default=None, ge=1, le=100_000)
+    call_id_offset: int = Field(default=0, ge=0, le=10_000_000)
     call_id_column: str = Field(default="call_id", min_length=1, max_length=255)
+    start_after_call_id: str | None = Field(default=None, max_length=500)
     row_limit: int | None = Field(default=None, ge=1, le=1_000_000)
+    row_offset: int = Field(default=0, ge=0, le=10_000_000)
 
     @model_validator(mode="after")
     def validate_limit_mode(self) -> "UploadFromPathRequest":
+        if self.start_after_call_id is not None:
+            trimmed_start_after = self.start_after_call_id.strip()
+            self.start_after_call_id = trimmed_start_after or None
         if self.call_id_limit is not None and self.row_limit is not None:
             raise ValueError("Use either call_id_limit or row_limit, not both")
+        if self.call_id_limit is None and (self.call_id_offset or self.start_after_call_id is not None):
+            raise ValueError("call_id_offset and start_after_call_id require call_id_limit")
+        if self.row_limit is None and self.row_offset:
+            raise ValueError("row_offset requires row_limit")
+        if self.call_id_limit is not None and self.row_offset:
+            raise ValueError("row_offset can only be used with row_limit")
+        if self.row_limit is not None and (self.call_id_offset or self.start_after_call_id is not None):
+            raise ValueError("call_id_offset and start_after_call_id can only be used with call_id_limit")
+        if self.call_id_offset and self.start_after_call_id is not None:
+            raise ValueError("Use either call_id_offset or start_after_call_id, not both")
         return self
 
 

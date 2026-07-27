@@ -1186,15 +1186,39 @@ export async function uploadExcel(
 export async function uploadSourceFromPath(
   token: string,
   path: string,
-  options?: { call_id_limit?: number | null; call_id_column?: string | null; row_limit?: number | null }
+  options?: {
+    call_id_limit?: number | null;
+    call_id_offset?: number | null;
+    call_id_column?: string | null;
+    start_after_call_id?: string | null;
+    row_limit?: number | null;
+    row_offset?: number | null;
+  }
 ): Promise<{ id: string; upload_job_id: string; filename: string; status: string }> {
-  const payload: { path: string; call_id_limit?: number; call_id_column?: string; row_limit?: number } = { path };
+  const payload: {
+    path: string;
+    call_id_limit?: number;
+    call_id_offset?: number;
+    call_id_column?: string;
+    start_after_call_id?: string;
+    row_limit?: number;
+    row_offset?: number;
+  } = { path };
   if (options?.call_id_limit) {
     payload.call_id_limit = options.call_id_limit;
     payload.call_id_column = options.call_id_column?.trim() || "call_id";
+    if (options.call_id_offset && options.call_id_offset > 0) {
+      payload.call_id_offset = options.call_id_offset;
+    }
+    if (options.start_after_call_id?.trim()) {
+      payload.start_after_call_id = options.start_after_call_id.trim();
+    }
   }
   if (options?.row_limit) {
     payload.row_limit = options.row_limit;
+    if (options.row_offset && options.row_offset > 0) {
+      payload.row_offset = options.row_offset;
+    }
   }
   return request<{ id: string; upload_job_id: string; filename: string; status: string }>(
     "/uploads/from-path",

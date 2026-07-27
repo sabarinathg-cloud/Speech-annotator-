@@ -315,6 +315,38 @@ def test_upload_source_file_from_allowed_server_parquet_path_with_call_id_limit(
         assert preview_payload["sample_rows"][0]["call_id"] == "CALL-A"
         assert preview_payload["columns"][:3] == ["segment_id", "call_id", "segment_audio_path_abs"]
 
+        batch_two_response = client.post(
+            "/api/v1/uploads/from-path",
+            headers=auth_headers["admin"],
+            json={"path": str(parquet_path), "call_id_limit": 1, "call_id_offset": 1, "call_id_column": "call_id"},
+        )
+        assert batch_two_response.status_code == 200
+        batch_two_job_id = batch_two_response.json()["upload_job_id"]
+        batch_two_preview = client.get(f"/api/v1/uploads/{batch_two_job_id}/preview", headers=auth_headers["admin"])
+        assert batch_two_preview.status_code == 200
+        assert batch_two_preview.json()["row_count"] == 1
+        assert batch_two_preview.json()["sample_rows"][0]["call_id"] == "CALL-B"
+
+        start_after_response = client.post(
+            "/api/v1/uploads/from-path",
+            headers=auth_headers["admin"],
+            json={
+                "path": str(parquet_path),
+                "call_id_limit": 1,
+                "start_after_call_id": "CALL-A",
+                "call_id_column": "call_id",
+            },
+        )
+        assert start_after_response.status_code == 200
+        start_after_job_id = start_after_response.json()["upload_job_id"]
+        start_after_preview = client.get(
+            f"/api/v1/uploads/{start_after_job_id}/preview",
+            headers=auth_headers["admin"],
+        )
+        assert start_after_preview.status_code == 200
+        assert start_after_preview.json()["row_count"] == 1
+        assert start_after_preview.json()["sample_rows"][0]["call_id"] == "CALL-B"
+
         mapping = {
             "id_column": "segment_id",
             "file_location_column": "segment_audio_path_abs",
@@ -424,6 +456,21 @@ def test_upload_source_file_from_allowed_server_parquet_without_call_id_uses_row
         preview_payload = preview_response.json()
         assert preview_payload["row_count"] == 2
         assert [row["segment_id"] for row in preview_payload["sample_rows"]] == ["ROW-LIMIT-0000", "ROW-LIMIT-0001"]
+
+        offset_upload_response = client.post(
+            "/api/v1/uploads/from-path",
+            headers=auth_headers["admin"],
+            json={"path": str(parquet_path), "row_limit": 1, "row_offset": 2},
+        )
+        assert offset_upload_response.status_code == 200
+        offset_upload_job_id = offset_upload_response.json()["upload_job_id"]
+        offset_preview_response = client.get(
+            f"/api/v1/uploads/{offset_upload_job_id}/preview",
+            headers=auth_headers["admin"],
+        )
+        assert offset_preview_response.status_code == 200
+        assert offset_preview_response.json()["row_count"] == 1
+        assert offset_preview_response.json()["sample_rows"][0]["segment_id"] == "ROW-LIMIT-0002"
 
         mapping = {
             "id_column": "segment_id",

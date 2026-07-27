@@ -106,7 +106,9 @@ export default function AdminUploadPage() {
   const [sourcePath, setSourcePath] = useState("");
   const [sourceLimitMode, setSourceLimitMode] = useState<SourceLimitMode>("none");
   const [sourceLimitValue, setSourceLimitValue] = useState("");
+  const [sourceBatchNumber, setSourceBatchNumber] = useState("1");
   const [sourceCallIdColumn, setSourceCallIdColumn] = useState("call_id");
+  const [sourceStartAfterCallId, setSourceStartAfterCallId] = useState("");
   const [uploadJobId, setUploadJobId] = useState<string | null>(null);
   const [columns, setColumns] = useState<string[]>([]);
   const [sampleRows, setSampleRows] = useState<Record<string, unknown>[]>([]);
@@ -242,6 +244,8 @@ export default function AdminUploadPage() {
   async function handleSourcePathLoad() {
     if (!accessToken || !sourcePath.trim()) return;
     const parsedLimit = sourceLimitMode !== "none" && sourceLimitValue.trim() ? Number(sourceLimitValue.trim()) : null;
+    const parsedBatchNumber =
+      sourceLimitMode !== "none" && sourceBatchNumber.trim() ? Number(sourceBatchNumber.trim()) : 1;
     if (
       parsedLimit !== null &&
       (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > (sourceLimitMode === "rows" ? 1000000 : 100000))
@@ -257,10 +261,19 @@ export default function AdminUploadPage() {
       setError("Enter a limit value or choose No limit.");
       return;
     }
+    if (
+      sourceLimitMode !== "none" &&
+      (!Number.isInteger(parsedBatchNumber) || parsedBatchNumber < 1 || parsedBatchNumber > 100000)
+    ) {
+      setError("Batch number must be a whole number between 1 and 100000.");
+      return;
+    }
     if (sourceLimitMode === "call_ids" && !sourceCallIdColumn.trim()) {
       setError("Call ID column is required when limiting by call IDs.");
       return;
     }
+    const batchOffset = parsedLimit ? (parsedBatchNumber - 1) * parsedLimit : 0;
+    const startAfterCallId = sourceStartAfterCallId.trim();
     setBusy(true);
     setError(null);
     setValidationResult(null);
@@ -268,8 +281,11 @@ export default function AdminUploadPage() {
     try {
       const upload = await uploadSourceFromPath(accessToken, sourcePath.trim(), {
         call_id_limit: sourceLimitMode === "call_ids" ? parsedLimit : null,
+        call_id_offset: sourceLimitMode === "call_ids" && !startAfterCallId ? batchOffset : null,
         call_id_column: sourceCallIdColumn.trim() || "call_id",
+        start_after_call_id: sourceLimitMode === "call_ids" ? startAfterCallId || null : null,
         row_limit: sourceLimitMode === "rows" ? parsedLimit : null,
+        row_offset: sourceLimitMode === "rows" ? batchOffset : null,
       });
       setUploadJobId(upload.upload_job_id);
       const preview = await previewUpload(accessToken, upload.upload_job_id);
@@ -954,7 +970,7 @@ export default function AdminUploadPage() {
                 className="oa-input mt-3"
                 placeholder="/mnt/amc-data/amc-runs/2022-full/outputs/shard-0/manifests/all_segments.parquet"
               />
-              <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-5">
                 <label className="flex flex-col gap-1.5">
                   <span className="text-xs font-medium text-[#676280]">Limit mode</span>
                   <select
@@ -963,36 +979,59 @@ export default function AdminUploadPage() {
                     className="oa-select bg-white"
                   >
                     <option value="none">No limit</option>
-                    <option value="call_ids">First N call IDs</option>
-                    <option value="rows">First N rows</option>
+                    <option value="call_ids">Call ID batch</option>
+                    <option value="rows">Row batch</option>
                   </select>
                 </label>
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-medium text-[#676280]">Limit</span>
+                  <span className="text-xs font-medium text-[#676280]">Batch size</span>
                   <input
                     value={sourceLimitValue}
                     onChange={(event) => setSourceLimitValue(event.target.value)}
                     className="oa-input bg-white"
                     disabled={sourceLimitMode === "none"}
                     inputMode="numeric"
-                    placeholder={sourceLimitMode === "none" ? "All" : sourceLimitMode === "rows" ? "Rows" : "Calls"}
+                    placeholder={sourceLimitMode === "none" ? "All" : sourceLimitMode === "rows" ? "100 rows" : "100 calls"}
+                  />
+                </label>
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-[#676280]">Batch number</span>
+                  <input
+                    value={sourceBatchNumber}
+                    onChange={(event) => setSourceBatchNumber(event.target.value)}
+                    className="oa-input bg-white"
+                    disabled={sourceLimitMode === "none"}
+                    inputMode="numeric"
+                    placeholder="1"
                   />
                 </label>
                 {sourceLimitMode === "call_ids" ? (
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-[#676280]">Call ID column</span>
-                    <input
-                      value={sourceCallIdColumn}
-                      onChange={(event) => setSourceCallIdColumn(event.target.value)}
-                      className="oa-input bg-white"
-                      placeholder="call_id"
-                    />
-                  </label>
+                  <>
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-xs font-medium text-[#676280]">Call ID column</span>
+                      <input
+                        value={sourceCallIdColumn}
+                        onChange={(event) => setSourceCallIdColumn(event.target.value)}
+                        className="oa-input bg-white"
+                        placeholder="call_id"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-xs font-medium text-[#676280]">Start after call ID</span>
+                      <input
+                        value={sourceStartAfterCallId}
+                        onChange={(event) => setSourceStartAfterCallId(event.target.value)}
+                        className="oa-input bg-white"
+                        placeholder="Optional exact resume"
+                      />
+                    </label>
+                  </>
                 ) : null}
               </div>
               <p className="mt-2 text-xs text-[#7a7494]">
-                Path must be readable by the backend and inside `TASK_MANIFEST_IMPORT_ROOTS`. Use call-ID limit when
-                a manifest has grouped calls; use row limit for files without call IDs or quick test imports.
+                Path must be readable by the backend and inside `TASK_MANIFEST_IMPORT_ROOTS`. Use batch size 100 and
+                batch number 1 for the first 100 calls, then batch number 2 for the next 100. Use row batch when the
+                file has no call ID column.
               </p>
               <button
                 type="button"
