@@ -67,6 +67,7 @@ def filter_dataframe_to_call_id_window(
     limit: int,
     offset: int = 0,
     start_after_call_id: str | None = None,
+    excluded_call_ids: set[str] | None = None,
 ) -> pd.DataFrame:
     if call_id_column not in df.columns:
         raise ValueError(f"Call ID column '{call_id_column}' was not found in the source file")
@@ -74,6 +75,7 @@ def filter_dataframe_to_call_id_window(
     call_ids = df[call_id_column].fillna("").astype(str).str.strip()
     selected_call_ids = []
     seen = set()
+    excluded = excluded_call_ids or set()
     found_start = start_after_call_id is None
     remaining_offset = offset
     for call_id in call_ids:
@@ -87,6 +89,8 @@ def filter_dataframe_to_call_id_window(
         if remaining_offset > 0:
             remaining_offset -= 1
             continue
+        if call_id in excluded:
+            continue
         selected_call_ids.append(call_id)
         if len(selected_call_ids) >= limit:
             break
@@ -96,6 +100,8 @@ def filter_dataframe_to_call_id_window(
     if not selected_call_ids:
         if not seen:
             raise ValueError(f"Call ID column '{call_id_column}' does not contain any non-empty call IDs")
+        if excluded:
+            raise ValueError("No new call IDs remain after skipping already imported calls")
         raise ValueError("No call IDs remain after the requested batch position")
 
     return df.loc[call_ids.isin(selected_call_ids)].copy()
@@ -138,6 +144,7 @@ def write_call_id_window_subset(
     limit: int,
     offset: int = 0,
     start_after_call_id: str | None = None,
+    excluded_call_ids: set[str] | None = None,
 ) -> int:
     if source_path.suffix.lower() == ".parquet":
         return _write_parquet_call_id_window_subset(
@@ -147,6 +154,7 @@ def write_call_id_window_subset(
             limit=limit,
             offset=offset,
             start_after_call_id=start_after_call_id,
+            excluded_call_ids=excluded_call_ids,
         )
 
     df = load_tabular_file_as_dataframe(source_path)
@@ -156,6 +164,7 @@ def write_call_id_window_subset(
         limit=limit,
         offset=offset,
         start_after_call_id=start_after_call_id,
+        excluded_call_ids=excluded_call_ids,
     )
     write_dataframe_to_tabular_file(filtered, destination_path)
     return len(filtered.index)
@@ -169,6 +178,7 @@ def _write_parquet_call_id_window_subset(
     limit: int,
     offset: int = 0,
     start_after_call_id: str | None = None,
+    excluded_call_ids: set[str] | None = None,
 ) -> int:
     try:
         import pyarrow as pa
@@ -183,6 +193,7 @@ def _write_parquet_call_id_window_subset(
 
     selected_call_ids: list[str] = []
     seen = set()
+    excluded = excluded_call_ids or set()
     found_start = start_after_call_id is None
     remaining_offset = offset
     for batch in parquet_file.iter_batches(columns=[call_id_column], batch_size=65_536):
@@ -198,6 +209,8 @@ def _write_parquet_call_id_window_subset(
             if remaining_offset > 0:
                 remaining_offset -= 1
                 continue
+            if call_id in excluded:
+                continue
             selected_call_ids.append(call_id)
             if len(selected_call_ids) >= limit:
                 break
@@ -209,6 +222,8 @@ def _write_parquet_call_id_window_subset(
     if not selected_call_ids:
         if not seen:
             raise ValueError(f"Call ID column '{call_id_column}' does not contain any non-empty call IDs")
+        if excluded:
+            raise ValueError("No new call IDs remain after skipping already imported calls")
         raise ValueError("No call IDs remain after the requested batch position")
 
     selected = set(selected_call_ids)

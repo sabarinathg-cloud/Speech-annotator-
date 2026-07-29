@@ -377,6 +377,23 @@ def test_upload_source_file_from_allowed_server_parquet_path_with_call_id_limit(
         )
         assert import_response.status_code == 200
         assert import_response.json()["imported_tasks"] == 2
+
+        next_new_response = client.post(
+            "/api/v1/uploads/from-path",
+            headers=auth_headers["admin"],
+            json={
+                "path": str(parquet_path),
+                "call_id_limit": 1,
+                "call_id_column": "call_id",
+                "skip_existing_call_ids": True,
+            },
+        )
+        assert next_new_response.status_code == 200
+        next_new_job_id = next_new_response.json()["upload_job_id"]
+        next_new_preview = client.get(f"/api/v1/uploads/{next_new_job_id}/preview", headers=auth_headers["admin"])
+        assert next_new_preview.status_code == 200
+        assert next_new_preview.json()["row_count"] == 1
+        assert next_new_preview.json()["sample_rows"][0]["call_id"] == "CALL-B"
     finally:
         settings.task_manifest_import_roots = original_roots
 

@@ -10,12 +10,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import UploadFile
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models.enums import TaskStatusEnum, UploadJobStatusEnum
 from app.models.organization import Organization
+from app.models.task import AnnotationTask
 from app.models.user import User
 from app.repositories.task_repository import TaskRepository
 from app.repositories.upload_repository import UploadRepository
@@ -120,11 +122,16 @@ class UploadService:
         call_id_offset: int = 0,
         call_id_column: str = "call_id",
         start_after_call_id: str | None = None,
+        skip_existing_call_ids: bool = False,
         row_limit: int | None = None,
         row_offset: int = 0,
     ) -> UploadFileResponse:
         if call_id_limit and row_limit:
             raise ServiceError("Use either a call ID limit or a row limit, not both", status_code=422)
+        if skip_existing_call_ids and not call_id_limit:
+            raise ServiceError("Skipping already imported call IDs requires a call ID limit", status_code=422)
+        if skip_existing_call_ids and (call_id_offset or start_after_call_id):
+            raise ServiceError("Use next-new call IDs without a manual offset or start-after value", status_code=422)
 
         resolved_source = self._resolve_allowed_source_path(source_path)
         suffix = resolved_source.suffix.lower()
@@ -136,6 +143,14 @@ class UploadService:
         stored_name = f"{uuid.uuid4()}{stored_suffix}"
         destination = settings.upload_path / stored_name
         if call_id_limit:
+            excluded_call_ids = (
+                self._existing_call_ids_for_organization(
+                    organization_id=organization.id,
+                    call_id_column=call_id_column,
+                )
+                if skip_existing_call_ids
+                else None
+            )
             try:
                 copied_rows = write_call_id_window_subset(
                     resolved_source,
@@ -144,6 +159,7 @@ class UploadService:
                     limit=call_id_limit,
                     offset=call_id_offset,
                     start_after_call_id=start_after_call_id,
+                    excluded_call_ids=excluded_call_ids,
                 )
             except (RuntimeError, ValueError) as exc:
                 raise ServiceError(str(exc), status_code=422) from exc
@@ -405,6 +421,20 @@ class UploadService:
             )
 
         return resolved
+
+    def _existing_call_ids_for_organization(self, *, organization_id: str, call_id_column: str) -> set[str]:
+        existing_call_ids: set[str] = set()
+        rows = self.db.execute(
+            select(AnnotationTask.original_row).where(AnnotationTask.organization_id == organization_id)
+        ).scalars()
+        for original_row in rows:
+            if not isinstance(original_row, dict):
+                continue
+            raw_value = original_row.get(call_id_column)
+            value = str(normalize_cell(raw_value)).strip()
+            if value:
+                existing_call_ids.add(value)
+        return existing_call_ids
 
     def _validate_dataframe(self, df, mapping: ColumnMappingRequest) -> ValidationArtifacts:
         columns = set(str(col) for col in df.columns.tolist())

@@ -58,6 +58,7 @@ def upload_file_from_path(
             call_id_offset=payload.call_id_offset,
             call_id_column=payload.call_id_column,
             start_after_call_id=payload.start_after_call_id,
+            skip_existing_call_ids=payload.skip_existing_call_ids,
             row_limit=payload.row_limit,
             row_offset=payload.row_offset,
         )

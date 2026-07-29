@@ -1197,6 +1197,7 @@ export async function uploadSourceFromPath(
     call_id_offset?: number | null;
     call_id_column?: string | null;
     start_after_call_id?: string | null;
+    skip_existing_call_ids?: boolean | null;
     row_limit?: number | null;
     row_offset?: number | null;
   }
@@ -1207,6 +1208,7 @@ export async function uploadSourceFromPath(
     call_id_offset?: number;
     call_id_column?: string;
     start_after_call_id?: string;
+    skip_existing_call_ids?: boolean;
     row_limit?: number;
     row_offset?: number;
   } = { path };
@@ -1218,6 +1220,9 @@ export async function uploadSourceFromPath(
     }
     if (options.start_after_call_id?.trim()) {
       payload.start_after_call_id = options.start_after_call_id.trim();
+    }
+    if (options.skip_existing_call_ids) {
+      payload.skip_existing_call_ids = true;
     }
   }
   if (options?.row_limit) {

@@ -25,7 +25,7 @@ type TranscriptMapDraft = {
   source_label: string;
   column_name: string;
 };
-type SourceLimitMode = "none" | "call_ids" | "rows";
+type SourceLimitMode = "none" | "next_new_call_ids" | "call_ids" | "rows";
 
 const taskStatuses: Array<TaskStatus | "All"> = [
   "All",
@@ -243,9 +243,11 @@ export default function AdminUploadPage() {
 
   async function handleSourcePathLoad() {
     if (!accessToken || !sourcePath.trim()) return;
+    const isCallIdLimitMode = sourceLimitMode === "call_ids" || sourceLimitMode === "next_new_call_ids";
+    const usesManualBatchNumber = sourceLimitMode === "call_ids" || sourceLimitMode === "rows";
     const parsedLimit = sourceLimitMode !== "none" && sourceLimitValue.trim() ? Number(sourceLimitValue.trim()) : null;
     const parsedBatchNumber =
-      sourceLimitMode !== "none" && sourceBatchNumber.trim() ? Number(sourceBatchNumber.trim()) : 1;
+      usesManualBatchNumber && sourceBatchNumber.trim() ? Number(sourceBatchNumber.trim()) : 1;
     if (
       parsedLimit !== null &&
       (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > (sourceLimitMode === "rows" ? 1000000 : 100000))
@@ -262,17 +264,17 @@ export default function AdminUploadPage() {
       return;
     }
     if (
-      sourceLimitMode !== "none" &&
+      usesManualBatchNumber &&
       (!Number.isInteger(parsedBatchNumber) || parsedBatchNumber < 1 || parsedBatchNumber > 100000)
     ) {
       setError("Batch number must be a whole number between 1 and 100000.");
       return;
     }
-    if (sourceLimitMode === "call_ids" && !sourceCallIdColumn.trim()) {
+    if (isCallIdLimitMode && !sourceCallIdColumn.trim()) {
       setError("Call ID column is required when limiting by call IDs.");
       return;
     }
-    const batchOffset = parsedLimit ? (parsedBatchNumber - 1) * parsedLimit : 0;
+    const batchOffset = parsedLimit && usesManualBatchNumber ? (parsedBatchNumber - 1) * parsedLimit : 0;
     const startAfterCallId = sourceStartAfterCallId.trim();
     setBusy(true);
     setError(null);
@@ -280,10 +282,11 @@ export default function AdminUploadPage() {
     setImportResult(null);
     try {
       const upload = await uploadSourceFromPath(accessToken, sourcePath.trim(), {
-        call_id_limit: sourceLimitMode === "call_ids" ? parsedLimit : null,
+        call_id_limit: isCallIdLimitMode ? parsedLimit : null,
         call_id_offset: sourceLimitMode === "call_ids" && !startAfterCallId ? batchOffset : null,
         call_id_column: sourceCallIdColumn.trim() || "call_id",
         start_after_call_id: sourceLimitMode === "call_ids" ? startAfterCallId || null : null,
+        skip_existing_call_ids: sourceLimitMode === "next_new_call_ids",
         row_limit: sourceLimitMode === "rows" ? parsedLimit : null,
         row_offset: sourceLimitMode === "rows" ? batchOffset : null,
       });
@@ -979,6 +982,7 @@ export default function AdminUploadPage() {
                     className="oa-select bg-white"
                   >
                     <option value="none">No limit</option>
+                    <option value="next_new_call_ids">Next new calls</option>
                     <option value="call_ids">Call ID batch</option>
                     <option value="rows">Row batch</option>
                   </select>
@@ -1000,12 +1004,12 @@ export default function AdminUploadPage() {
                     value={sourceBatchNumber}
                     onChange={(event) => setSourceBatchNumber(event.target.value)}
                     className="oa-input bg-white"
-                    disabled={sourceLimitMode === "none"}
+                    disabled={sourceLimitMode === "none" || sourceLimitMode === "next_new_call_ids"}
                     inputMode="numeric"
-                    placeholder="1"
+                    placeholder={sourceLimitMode === "next_new_call_ids" ? "Auto" : "1"}
                   />
                 </label>
-                {sourceLimitMode === "call_ids" ? (
+                {sourceLimitMode === "call_ids" || sourceLimitMode === "next_new_call_ids" ? (
                   <>
                     <label className="flex flex-col gap-1.5">
                       <span className="text-xs font-medium text-[#676280]">Call ID column</span>
@@ -1016,22 +1020,24 @@ export default function AdminUploadPage() {
                         placeholder="call_id"
                       />
                     </label>
-                    <label className="flex flex-col gap-1.5">
-                      <span className="text-xs font-medium text-[#676280]">Start after call ID</span>
-                      <input
-                        value={sourceStartAfterCallId}
-                        onChange={(event) => setSourceStartAfterCallId(event.target.value)}
-                        className="oa-input bg-white"
-                        placeholder="Optional exact resume"
-                      />
-                    </label>
+                    {sourceLimitMode === "call_ids" ? (
+                      <label className="flex flex-col gap-1.5">
+                        <span className="text-xs font-medium text-[#676280]">Start after call ID</span>
+                        <input
+                          value={sourceStartAfterCallId}
+                          onChange={(event) => setSourceStartAfterCallId(event.target.value)}
+                          className="oa-input bg-white"
+                          placeholder="Optional exact resume"
+                        />
+                      </label>
+                    ) : null}
                   </>
                 ) : null}
               </div>
               <p className="mt-2 text-xs text-[#7a7494]">
-                Path must be readable by the backend and inside `TASK_MANIFEST_IMPORT_ROOTS`. Use batch size 100 and
-                batch number 1 for the first 100 calls, then batch number 2 for the next 100. Use row batch when the
-                file has no call ID column.
+                Path must be readable by the backend and inside `TASK_MANIFEST_IMPORT_ROOTS`. Use Next new calls with a
+                batch size like 100, 1000, or 10000 to skip call IDs already imported in this org and load the next N
+                calls automatically. Use row batch when the file has no call ID column.
               </p>
               <button
                 type="button"
