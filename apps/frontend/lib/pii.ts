@@ -37,6 +37,11 @@ const NAME_PATTERNS: RegExp[] = [
   /\bmy name is\s+([a-z]+(?:\s+[a-z]+){0,2}?)(?=\s+(?:i am|i'm|calling|from|with|and|on behalf|about)\b|[.,;!?]|$)/gi,
   /\bthis is\s+([a-z]+(?:\s+[a-z]+){0,2}?)(?=\s+(?:i am|i'm|calling|from|with|and|on behalf|about)\b|[.,;!?]|$)/gi,
   /\bspeaking with\s+([a-z]+(?:\s+[a-z]+){0,2}?)(?=\s+(?:from|at|and|about)\b|[.,;!?]|$)/gi,
+  /\b(?:note says|says|for|patient|client)\s+([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2})(?=\s+(?:lives?|is|was|has|needs|called|from|near|at|in|on|with|and)\b|[.,;!?]|$)/g,
+];
+
+const LOCATION_PATTERNS: RegExp[] = [
+  /\b(?:near|at|in|from|around|inside|outside)\s+([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,3})(?=\s+(?:and|or|near|at|in|on|from|with|for|by|to|around|inside|outside)\b|[.,;!?]|$)/g,
 ];
 
 const NAME_BLACKLIST = new Set([
@@ -51,6 +56,58 @@ const NAME_BLACKLIST = new Set([
   "patient",
   "phone",
   "service",
+]);
+
+const LOCATION_BLACKLIST = new Set([
+  ...Array.from(NAME_BLACKLIST),
+  "am",
+  "pm",
+  "jan",
+  "january",
+  "feb",
+  "february",
+  "mar",
+  "march",
+  "apr",
+  "april",
+  "may",
+  "jun",
+  "june",
+  "jul",
+  "july",
+  "aug",
+  "august",
+  "sep",
+  "september",
+  "oct",
+  "october",
+  "nov",
+  "november",
+  "dec",
+  "december",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+  "english",
+  "spanish",
+  "hindi",
+  "tamil",
+  "telugu",
+  "kannada",
+  "malayalam",
+  "marathi",
+  "bengali",
+  "morning",
+  "afternoon",
+  "evening",
+  "night",
+  "today",
+  "tomorrow",
+  "yesterday",
 ]);
 
 function createId(): string {
@@ -178,6 +235,31 @@ export function detectPIIAnnotations(transcript: string): PIIAnnotation[] {
     }
   }
 
+  for (const pattern of LOCATION_PATTERNS) {
+    const regex = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(transcript)) !== null) {
+      const value = match[1]?.replace(/\s+/g, " ").trim();
+      if (!value || !likelyLocationName(value)) {
+        continue;
+      }
+      const rawStart = match.index + match[0].indexOf(match[1]);
+      const [start, end] = trimTerminalPunctuation(transcript, rawStart, rawStart + match[1].length);
+      detected.push({
+        id: createId(),
+        label: "LOCATION",
+        start,
+        end,
+        value: transcript.slice(start, end),
+        source: "auto",
+        confidence: 0.78
+      });
+      if (regex.lastIndex === match.index) {
+        regex.lastIndex += 1;
+      }
+    }
+  }
+
   detected.sort((a, b) => a.start - b.start || b.end - a.end);
   const nonOverlapping: PIIAnnotation[] = [];
   for (const annotation of detected) {
@@ -202,4 +284,24 @@ function likelyPersonName(value: string): boolean {
   const tokens = value.trim().toLowerCase().split(/\s+/);
   if (tokens.length === 0 || tokens.length > 3) return false;
   return tokens.every((token) => token.length >= 2 && !NAME_BLACKLIST.has(token));
+}
+
+function likelyLocationName(value: string): boolean {
+  const tokens = value
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .map((token) => token.replace(/[^a-z]/g, ""))
+    .filter(Boolean);
+  if (tokens.length === 0 || tokens.length > 4) return false;
+  if (tokens.some((token) => token.length < 2)) return false;
+  return !tokens.every((token) => LOCATION_BLACKLIST.has(token));
+}
+
+function trimTerminalPunctuation(text: string, start: number, end: number): [number, number] {
+  let trimmedEnd = end;
+  while (trimmedEnd > start && /[.,;!?]/.test(text[trimmedEnd - 1] ?? "")) {
+    trimmedEnd -= 1;
+  }
+  return [start, trimmedEnd];
 }

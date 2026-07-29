@@ -18,6 +18,7 @@ from app.storage.audio_resolver import AudioResolver
 settings = get_settings()
 
 ALIGNMENT_MODEL_NAME = "torchaudio.WAV2VEC2_ASR_BASE_960H"
+ESTIMATED_ALIGNMENT_MODEL_NAME = "estimated.audio_duration_word_timing"
 MASK_PADDING_SECONDS = 0.08
 MASK_MIN_DURATION_SECONDS = 0.25
 ALIGNMENT_ENERGY_MARGIN_SECONDS = 0.025
@@ -334,7 +335,7 @@ class AudioAlignmentService:
             not force
             and task.alignment_words
             and task.alignment_transcript_hash == current_hash
-            and task.alignment_model == ALIGNMENT_MODEL_NAME
+            and task.alignment_model in {ALIGNMENT_MODEL_NAME, ESTIMATED_ALIGNMENT_MODEL_NAME}
         ):
             return task.alignment_words
 
@@ -342,13 +343,20 @@ class AudioAlignmentService:
         if not words:
             raise ServiceError("Final transcript has no alignable words", status_code=422)
 
-        aligned_words = self._run_wav2vec_alignment(task.file_location, words)
+        alignment_model = ALIGNMENT_MODEL_NAME
+        try:
+            aligned_words = self._run_wav2vec_alignment(task.file_location, words)
+        except ServiceError as exc:
+            if exc.status_code != 503:
+                raise
+            aligned_words = self._estimate_word_alignment(task.file_location, words)
+            alignment_model = ESTIMATED_ALIGNMENT_MODEL_NAME
         if not aligned_words:
             raise ServiceError("Forced alignment produced no word timings", status_code=422)
 
         task.alignment_words = [word.to_dict() for word in aligned_words]
         task.alignment_transcript_hash = current_hash
-        task.alignment_model = ALIGNMENT_MODEL_NAME
+        task.alignment_model = alignment_model
         task.alignment_updated_at = datetime.now(timezone.utc)
         return task.alignment_words
 
@@ -545,6 +553,45 @@ class AudioAlignmentService:
                 )
             )
         return _refine_aligned_word_boundaries(aligned, waveform[0].cpu(), sample_rate)
+
+    def _estimate_word_alignment(self, file_location: str, words: list[TranscriptWord]) -> list[AlignedWord]:
+        with self._materialized_audio_path(file_location) as audio_path:
+            duration = self._get_audio_duration(audio_path)
+        if duration is None or duration <= 0:
+            duration = max(0.5, len(words) * 0.35)
+
+        total_weight = sum(max(1, len(word.normalized_text)) for word in words)
+        if total_weight <= 0:
+            return []
+
+        aligned: list[AlignedWord] = []
+        cursor = 0.0
+        for index, word in enumerate(words):
+            remaining_words = len(words) - index
+            remaining_duration = max(0.0, duration - cursor)
+            weight = max(1, len(word.normalized_text))
+            if index == len(words) - 1:
+                end_seconds = duration
+            else:
+                proportional_duration = duration * (weight / total_weight)
+                minimum_duration = min(ALIGNMENT_MIN_WORD_SECONDS, remaining_duration / remaining_words)
+                end_seconds = min(duration, cursor + max(minimum_duration, proportional_duration))
+            if end_seconds <= cursor:
+                end_seconds = min(duration, cursor + ALIGNMENT_MIN_WORD_SECONDS)
+            aligned.append(
+                AlignedWord(
+                    index=word.index,
+                    text=word.text,
+                    normalized_text=word.normalized_text,
+                    start_char=word.start_char,
+                    end_char=word.end_char,
+                    start_seconds=cursor,
+                    end_seconds=end_seconds,
+                    score=0.25,
+                )
+            )
+            cursor = end_seconds
+        return aligned
 
     def _load_torch_audio(self):
         try:

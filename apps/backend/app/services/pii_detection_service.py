@@ -123,6 +123,56 @@ NAME_BLACKLIST = {
     "account",
     "address",
 }
+LOCATION_BLACKLIST = NAME_BLACKLIST | {
+    "am",
+    "pm",
+    "january",
+    "jan",
+    "february",
+    "feb",
+    "march",
+    "mar",
+    "april",
+    "apr",
+    "may",
+    "june",
+    "jun",
+    "july",
+    "jul",
+    "august",
+    "aug",
+    "september",
+    "sep",
+    "october",
+    "oct",
+    "november",
+    "nov",
+    "december",
+    "dec",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "english",
+    "spanish",
+    "hindi",
+    "tamil",
+    "telugu",
+    "kannada",
+    "malayalam",
+    "marathi",
+    "bengali",
+    "morning",
+    "afternoon",
+    "evening",
+    "night",
+    "today",
+    "tomorrow",
+    "yesterday",
+}
 
 EMAIL_RE = re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[A-Za-z]{2,}\b")
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}(?!\d)")
@@ -168,6 +218,19 @@ NAME_PATTERNS = [
         r"\bspeaking with\s+([a-z]+(?:\s+[a-z]+){0,2}?)(?=\s+(?:from|at|and|about)\b|[.,;!?]|$)",
         flags=re.IGNORECASE,
     ),
+    re.compile(
+        r"\b(?:note says|says|for|patient|client)\s+"
+        r"([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2})"
+        r"(?=\s+(?:lives?|is|was|has|needs|called|from|near|at|in|on|with|and)\b|[.,;!?]|$)",
+    ),
+]
+
+LOCATION_PATTERNS = [
+    re.compile(
+        r"\b(?:near|at|in|from|around|inside|outside)\s+"
+        r"([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,3})"
+        r"(?=\s+(?:and|or|near|at|in|on|from|with|for|by|to|around|inside|outside)\b|[.,;!?]|$)",
+    ),
 ]
 
 
@@ -185,6 +248,7 @@ def detect_pii_ensemble(
     candidates: list[dict[str, Any]] = []
     candidates.extend(_detect_regex(transcript))
     candidates.extend(_detect_rule_person_names(transcript))
+    candidates.extend(_detect_rule_locations(transcript))
     if include_ml or get_settings().pii_ml_detection_enabled:
         ml_start = time.perf_counter()
         logger.info("Running ML PII detectors for transcript length=%s", len(transcript))
@@ -273,6 +337,24 @@ def _detect_rule_person_names(text: str) -> list[dict[str, Any]]:
                 continue
             entities.append(_entity("PERSON", match.start(1), match.end(1), text, 0.96, "rule_name"))
     return entities
+
+
+def _detect_rule_locations(text: str) -> list[dict[str, Any]]:
+    entities: list[dict[str, Any]] = []
+    for pattern in LOCATION_PATTERNS:
+        for match in pattern.finditer(text):
+            start, end = _trim_terminal_punctuation(text, match.start(1), match.end(1))
+            span_text = re.sub(r"\s+", " ", text[start:end].strip())
+            if not _likely_location_name(span_text):
+                continue
+            entities.append(_entity("LOCATION", start, end, text, 0.78, "rule_location"))
+    return entities
+
+
+def _trim_terminal_punctuation(text: str, start: int, end: int) -> tuple[int, int]:
+    while end > start and text[end - 1] in ".,;!?":
+        end -= 1
+    return start, end
 
 
 def _detect_gliner(text: str, *, threshold: float) -> list[dict[str, Any]]:
@@ -497,6 +579,18 @@ def _likely_person_name(span_text: str) -> bool:
     if any(len(token) < 2 for token in tokens):
         return False
     if any(token in NAME_BLACKLIST for token in tokens):
+        return False
+    return True
+
+
+def _likely_location_name(span_text: str) -> bool:
+    tokens = [re.sub(r"[^a-z]", "", token.lower()) for token in str(span_text).strip().split()]
+    tokens = [token for token in tokens if token]
+    if not tokens or len(tokens) > 4:
+        return False
+    if any(len(token) < 2 for token in tokens):
+        return False
+    if all(token in LOCATION_BLACKLIST for token in tokens):
         return False
     return True
 

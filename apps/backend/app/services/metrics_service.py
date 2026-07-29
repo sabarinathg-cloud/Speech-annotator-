@@ -5,13 +5,13 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import and_, case, func, or_, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, load_only, selectinload
 
 from app.models.activity import UserActivityEntry
 from app.models.enums import RoleEnum, TaskStatusEnum
 from app.models.organization import OrganizationMembership
 from app.models.security import SecurityAuditEvent
-from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory
+from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory, TaskTranscriptVariant
 from app.models.user import User
 from app.schemas.metrics import (
     ActivityHeartbeatRequest,
@@ -403,7 +403,15 @@ class MetricsService:
             date_to=date_to,
             organization_id=organization_id,
         )
-        tasks = self._load_tasks(filters)
+        tasks = self._load_tasks(filters, include_variants=False)
+        comparison_tasks = self._load_tasks(
+            [
+                *filters,
+                AnnotationTask.final_transcript.is_not(None),
+                func.length(func.trim(AnnotationTask.final_transcript)) > 0,
+            ],
+            include_variants=True,
+        )
         status_counts = Counter(task.status.value for task in tasks)
 
         model_accumulators: dict[str, dict[str, Any]] = {}
@@ -419,7 +427,7 @@ class MetricsService:
         pair_wer_values: list[float] = []
         pair_cer_values: list[float] = []
 
-        for task in tasks:
+        for task in comparison_tasks:
             reference = task.final_transcript or ""
             reference_words = _word_tokens(reference)
             normalized_reference = _normalize_transcript(reference)
@@ -608,14 +616,39 @@ class MetricsService:
             masking_interval_drilldowns=masking_interval_drilldowns[:50],
         )
 
-    def _load_tasks(self, filters: list[Any]) -> list[AnnotationTask]:
+    def _load_tasks(self, filters: list[Any], *, include_variants: bool) -> list[AnnotationTask]:
+        options = [
+            load_only(
+                AnnotationTask.id,
+                AnnotationTask.external_id,
+                AnnotationTask.upload_job_id,
+                AnnotationTask.final_transcript,
+                AnnotationTask.status,
+                AnnotationTask.language,
+                AnnotationTask.duration_seconds,
+                AnnotationTask.pii_annotations,
+                AnnotationTask.masked_audio_location,
+                AnnotationTask.masked_audio_intervals,
+                AnnotationTask.masked_audio_reference_intervals,
+                AnnotationTask.masked_audio_alignment_intervals,
+                AnnotationTask.assignee_id,
+                AnnotationTask.last_tagger_id,
+                AnnotationTask.updated_at,
+            ),
+            joinedload(AnnotationTask.assignee).load_only(User.id, User.full_name, User.email),
+            joinedload(AnnotationTask.last_tagger).load_only(User.id, User.full_name, User.email),
+        ]
+        if include_variants:
+            options.append(
+                selectinload(AnnotationTask.transcript_variants).load_only(
+                    TaskTranscriptVariant.source_key,
+                    TaskTranscriptVariant.source_label,
+                    TaskTranscriptVariant.transcript_text,
+                )
+            )
         stmt = (
             select(AnnotationTask)
-            .options(
-                joinedload(AnnotationTask.transcript_variants),
-                joinedload(AnnotationTask.assignee),
-                joinedload(AnnotationTask.last_tagger),
-            )
+            .options(*options)
             .order_by(AnnotationTask.updated_at.desc())
         )
         if filters:

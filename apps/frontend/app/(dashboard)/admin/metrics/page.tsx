@@ -324,6 +324,7 @@ export default function AdminMetricsPage() {
           language: appliedFilters.language.trim() || null,
           dateFrom: appliedFilters.dateFrom || null,
           dateTo: appliedFilters.dateTo || null,
+          organizationId: activeOrganizationId,
         });
         if (!cancelled) setMetrics(data);
       } catch (err) {

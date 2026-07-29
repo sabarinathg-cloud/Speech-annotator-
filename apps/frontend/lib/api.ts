@@ -684,6 +684,7 @@ export async function fetchAdminMetrics(
     language?: string | null;
     dateFrom?: string | null;
     dateTo?: string | null;
+    organizationId?: string | null;
   } = {}
 ): Promise<AdminMetricsResponse> {
   const query = new URLSearchParams();
@@ -694,7 +695,12 @@ export async function fetchAdminMetrics(
   if (params.dateFrom) query.set("date_from", params.dateFrom);
   if (params.dateTo) query.set("date_to", params.dateTo);
   const suffix = query.toString();
-  return request<AdminMetricsResponse>(`/metrics/admin${suffix ? `?${suffix}` : ""}`, { method: "GET" }, token);
+  const headers = params.organizationId ? { "X-Organization-ID": params.organizationId } : undefined;
+  return request<AdminMetricsResponse>(
+    `/metrics/admin${suffix ? `?${suffix}` : ""}`,
+    { method: "GET", headers },
+    token
+  );
 }
 
 export async function recordActivityHeartbeat(

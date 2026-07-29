@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from app.models.activity import UserActivityEntry
 from app.models.enums import TaskStatusEnum, UploadJobStatusEnum
+from app.models.organization import Organization
 from app.models.security import SecurityAuditEvent
 from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory, TaskTranscriptVariant
 from app.models.upload import UploadFile, UploadJob
@@ -44,8 +45,9 @@ def _import_sample_tasks(client, auth_headers, sample_excel_bytes):
     return upload_job_id, tasks
 
 
-def _create_metrics_upload_job(db_session, admin_user):
+def _create_metrics_upload_job(db_session, admin_user, *, organization_id="00000000-0000-0000-0000-000000000001"):
     upload_file = UploadFile(
+        organization_id=organization_id,
         original_filename="metrics.xlsx",
         stored_path="/tmp/metrics.xlsx",
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -54,6 +56,7 @@ def _create_metrics_upload_job(db_session, admin_user):
     db_session.add(upload_file)
     db_session.flush()
     upload_job = UploadJob(
+        organization_id=organization_id,
         upload_file_id=upload_file.id,
         created_by_id=admin_user.id,
         status=UploadJobStatusEnum.IMPORTED,
@@ -80,6 +83,7 @@ def _create_metrics_task(
     last_tagger_id=None,
 ):
     task = AnnotationTask(
+        organization_id=upload_job.organization_id,
         upload_job_id=upload_job.id,
         external_id=external_id,
         file_location=f"local:///{external_id}.wav",
@@ -214,6 +218,58 @@ def test_admin_metrics_compare_model_transcripts_against_corrected_ground_truth(
 def test_metrics_endpoint_is_admin_only(client, auth_headers):
     response = client.get("/api/v1/metrics/admin", headers=auth_headers["annotator"])
     assert response.status_code == 403
+
+
+def test_admin_metrics_scope_counts_to_selected_organization(client, auth_headers, db_session, seed_users):
+    iris2 = Organization(
+        name="Iris2",
+        slug="iris2",
+        is_active=True,
+        metadata_enabled=False,
+        pii_enabled=False,
+        transcript_redaction_enabled=False,
+        audio_masking_enabled=False,
+        hiring_enabled=False,
+    )
+    db_session.add(iris2)
+    db_session.flush()
+    default_job = _create_metrics_upload_job(db_session, seed_users["admin"])
+    iris2_job = _create_metrics_upload_job(db_session, seed_users["admin"], organization_id=iris2.id)
+    _create_metrics_task(
+        db_session,
+        upload_job=default_job,
+        external_id="DEFAULT-001",
+        final_transcript="default transcript",
+        variants=[("model_a", "Model A", "default transcript")],
+    )
+    _create_metrics_task(
+        db_session,
+        upload_job=iris2_job,
+        external_id="IRIS2-001",
+        final_transcript="iris transcript",
+        variants=[("model_a", "Model A", "iris transcript")],
+    )
+    _create_metrics_task(
+        db_session,
+        upload_job=iris2_job,
+        external_id="IRIS2-002",
+        final_transcript="",
+        variants=[("model_a", "Model A", "unused transcript")],
+        status=TaskStatusEnum.NOT_STARTED,
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/metrics/admin",
+        headers={**auth_headers["admin"], "X-Organization-ID": iris2.id},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["overview"]["total_tasks"] == 2
+    assert payload["overview"]["scored_tasks"] == 1
+    assert payload["status_counts"] == {"Completed": 1, "Not Started": 1}
+    assert {item["external_id"] for item in payload["worst_tasks"]} == {"IRIS2-001"}
 
 
 def test_admin_metrics_use_macro_average_error_rates_and_real_pii_counts(

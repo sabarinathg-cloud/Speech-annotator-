@@ -213,9 +213,11 @@ describe("API client error handling", () => {
       language: "en",
       dateFrom: "2026-04-01",
       dateTo: "2026-04-24",
+      organizationId: "org-iris2",
     });
 
     const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
     expect(url.pathname).toBe("/api/v1/metrics/admin");
     expect(url.searchParams.get("status")).toBe("Approved");
     expect(url.searchParams.get("assignee_id")).toBe("unassigned");
@@ -223,6 +225,7 @@ describe("API client error handling", () => {
     expect(url.searchParams.get("language")).toBe("en");
     expect(url.searchParams.get("date_from")).toBe("2026-04-01");
     expect(url.searchParams.get("date_to")).toBe("2026-04-24");
+    expect(headers.get("X-Organization-ID")).toBe("org-iris2");
 
     fetchMock.mockRestore();
   });

@@ -7,6 +7,13 @@ def spans_by_label(annotations):
     return {annotation["label"]: annotation for annotation in annotations}
 
 
+def values_by_label(annotations):
+    grouped = {}
+    for annotation in annotations:
+        grouped.setdefault(annotation["label"], []).append(annotation["value"])
+    return grouped
+
+
 def test_hybrid_detector_finds_numeric_context_pii_without_ml_models():
     text = (
         "Hello, this is Priya Raman calling about account 4829. "
@@ -20,6 +27,17 @@ def test_hybrid_detector_finds_numeric_context_pii_without_ml_models():
     assert by_label["ACCOUNT_NUMBER"]["value"] == "4829"
     assert by_label["EMAIL"]["value"] == "priya.raman@example.com"
     assert by_label["PHONE"]["value"] == "415-555-0198"
+
+
+def test_hybrid_detector_finds_context_names_and_locations_without_ml_models():
+    text = "The Spanish note says Maria Lopez lives near Plaza Mayor in Madrid."
+
+    annotations = detect_pii_ensemble(text)
+    by_label = values_by_label(annotations)
+
+    assert "Maria Lopez" in by_label["PERSON"]
+    assert "Plaza Mayor" in by_label["LOCATION"]
+    assert "Madrid" in by_label["LOCATION"]
 
 
 def test_hybrid_detector_finds_address_and_dates_for_masking():
