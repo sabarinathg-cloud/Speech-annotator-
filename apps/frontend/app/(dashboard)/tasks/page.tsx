@@ -59,6 +59,21 @@ function nextAssignmentLoad(openCount: number): AdminUser["assignment_load"] {
   return "heavy";
 }
 
+function taskCallKey(task: TaskListItem): string {
+  const location = task.file_location || task.external_id;
+  const normalized = location.replace(/^local:\/\//, "");
+  const parts = normalized.split(/[\\/]+/).filter(Boolean);
+  const filename = parts.at(-1) ?? "";
+  if (!/(^|[_-])chunk[_-]?\d+\.wav$/i.test(filename)) {
+    return location;
+  }
+  const parent = parts.at(-2) ?? "";
+  if (parent.toLowerCase().startsWith("channel") && parts.length >= 3) {
+    return parts.slice(0, -2).join("/");
+  }
+  return parts.slice(0, -1).join("/") || location;
+}
+
 export default function TasksPage() {
   const { accessToken, user, activeOrganizationId } = useAuth();
   const [search, setSearch] = useState("");
@@ -423,7 +438,7 @@ export default function TasksPage() {
           max_tasks: 50000,
         });
         setBulkResult(
-          `${response.updated_count} tasks auto-balanced across ${response.assignee_count} users (${response.matched_count} matched, ${response.skipped_count} unchanged).`
+          `${response.updated_count} tasks auto-balanced by call across ${response.assignee_count} users (${response.matched_count} matched, ${response.skipped_count} unchanged).`
         );
         setSelectedTaskIds([]);
         setAllMatchingSelected(false);
@@ -444,13 +459,18 @@ export default function TasksPage() {
     }
     if (selectedVisibleTasks.length === 0) return;
     const orderedUsers = [...assignableUsers];
-    const assignments = selectedVisibleTasks.map((task, index) => {
+    const callGroups = new Map<string, TaskListItem[]>();
+    selectedVisibleTasks.forEach((task) => {
+      const callKey = taskCallKey(task);
+      callGroups.set(callKey, [...(callGroups.get(callKey) ?? []), task]);
+    });
+    const assignments = Array.from(callGroups.values()).flatMap((tasksForCall, index) => {
       const assignee = orderedUsers[index % orderedUsers.length];
-      return {
+      return tasksForCall.map((task) => ({
         task_id: task.id,
         version: task.version,
         assignee_id: assignee.id,
-      };
+      }));
     });
     await applyAssignmentBatch(assignments, "Auto-balance assignment failed");
   }
@@ -969,7 +989,7 @@ export default function TasksPage() {
                   disabled={bulkBusy || selectedTaskCount === 0 || assignableUsers.length === 0}
                   className="oa-btn-secondary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Auto-balance selected
+                  Auto-balance by call
                 </button>
               </div>
 
@@ -1011,7 +1031,7 @@ export default function TasksPage() {
               </div>
               {allMatchingSelected ? (
                 <p className="rounded-lg border border-[#ded4ef] bg-white px-3 py-2 text-xs text-[#5f5b77]">
-                  Auto-balance and call batches will update every task matching the current Search, Status, and Assignee filters. Use Assignee = Unassigned to update only unassigned tasks.
+                  Auto-balance and call batches will update every task matching the current Search, Status, and Assignee filters. Auto-balance keeps all segments from the same call together. Use Assignee = Unassigned to update only unassigned tasks.
                 </p>
               ) : null}
               {onlyVisiblePageSelected ? (

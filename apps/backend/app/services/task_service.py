@@ -705,37 +705,44 @@ class TaskService:
                 status_code=422,
             )
 
+        call_groups: dict[str, list[AnnotationTask]] = {}
+        for task in tasks:
+            call_key = self._call_split_key(task, call_id_column="call_id")
+            call_groups.setdefault(call_key, []).append(task)
+
         now = datetime.now(timezone.utc)
         updated_count = 0
         audit_entries: list[dict[str, Any]] = []
-        for index, task in enumerate(tasks):
-            assignee = assignees[index % len(assignees)]
-            if task.assignee_id == assignee.id:
-                continue
-            previous_assignee = task.assignee
-            audit_entries.append(
-                {
-                    "task_id": task.id,
-                    "actor_user_id": actor.id,
-                    "action": "BULK_AUTO_BALANCE_ASSIGNEE",
-                    "changed_fields": {"assignee_id": True},
-                    "previous_values": {
-                        "assignee_id": task.assignee_id,
-                        "assignee_name": previous_assignee.full_name if previous_assignee else None,
-                        "assignee_email": previous_assignee.email if previous_assignee else None,
-                    },
-                    "new_values": {
-                        "assignee_id": assignee.id,
-                        "assignee_name": assignee.full_name,
-                        "assignee_email": assignee.email,
-                    },
-                }
-            )
-            task.assignee_id = assignee.id
-            task.version += 1
-            task.last_saved_at = now
-            task.updated_at = now
-            updated_count += 1
+        for group_index, (call_key, call_tasks) in enumerate(call_groups.items()):
+            assignee = assignees[group_index % len(assignees)]
+            for task in call_tasks:
+                if task.assignee_id == assignee.id:
+                    continue
+                previous_assignee = task.assignee
+                audit_entries.append(
+                    {
+                        "task_id": task.id,
+                        "actor_user_id": actor.id,
+                        "action": "BULK_AUTO_BALANCE_ASSIGNEE",
+                        "changed_fields": {"assignee_id": True},
+                        "previous_values": {
+                            "assignee_id": task.assignee_id,
+                            "assignee_name": previous_assignee.full_name if previous_assignee else None,
+                            "assignee_email": previous_assignee.email if previous_assignee else None,
+                        },
+                        "new_values": {
+                            "assignee_id": assignee.id,
+                            "assignee_name": assignee.full_name,
+                            "assignee_email": assignee.email,
+                            "call_id": call_key,
+                        },
+                    }
+                )
+                task.assignee_id = assignee.id
+                task.version += 1
+                task.last_saved_at = now
+                task.updated_at = now
+                updated_count += 1
 
         self.db.flush()
         self.task_repo.add_audit_logs(audit_entries)
@@ -1228,7 +1235,7 @@ class TaskService:
             return path_group
 
         info = audio_group_info(task.file_location)
-        if info:
+        if info and info.chunk_index is not None:
             return info.group_key
         return task.file_location or task.external_id
 
@@ -1249,10 +1256,12 @@ class TaskService:
         parent = path.parent
         if not str(parent) or str(parent) == ".":
             return None
+        info = audio_group_info(file_location)
+        if not info or info.chunk_index is None:
+            return None
         if parent.name.lower().startswith("channel") and str(parent.parent) and str(parent.parent) != ".":
             return f"{prefix}{parent.parent}"
-        info = audio_group_info(file_location)
-        return info.group_key if info else f"{prefix}{parent}"
+        return info.group_key
 
     def _get_valid_task_assignee(self, assignee_id: str, *, organization_id: str) -> User:
         assignee = self.user_repo.get_by_id(assignee_id)

@@ -796,6 +796,77 @@ def test_admin_can_auto_balance_all_matching_tasks_beyond_current_page(client, a
     assert any(item["action"] == "BULK_AUTO_BALANCE_ASSIGNEE" for item in activity)
 
 
+def test_admin_auto_balance_keeps_segments_from_same_call_together(client, auth_headers, db_session, seed_users):
+    upload_file = UploadFile(
+        original_filename="call-balanced.csv",
+        stored_path="/tmp/call-balanced.csv",
+        content_type="text/csv",
+        uploaded_by_id=seed_users["admin"].id,
+    )
+    db_session.add(upload_file)
+    db_session.flush()
+    upload_job = UploadJob(
+        upload_file_id=upload_file.id,
+        created_by_id=seed_users["admin"].id,
+        status=UploadJobStatusEnum.IMPORTED,
+        preview_row_count=6,
+    )
+    db_session.add(upload_job)
+    db_session.flush()
+
+    for call_index in range(3):
+        for chunk_index in range(2):
+            db_session.add(
+                AnnotationTask(
+                    upload_job_id=upload_job.id,
+                    external_id=f"CALL-BALANCED-{call_index}-{chunk_index}",
+                    file_location=f"/calls/CALL-{call_index}/channel1/chunk_{chunk_index:04d}.wav",
+                    final_transcript="",
+                    notes=None,
+                    status=TaskStatusEnum.NOT_STARTED,
+                    speaker_gender=None,
+                    speaker_role=None,
+                    language="en",
+                    channel=None,
+                    duration_seconds=None,
+                    custom_metadata={},
+                    original_row={"call_id": f"CALL-{call_index}"},
+                    pii_annotations=[],
+                    alignment_words=[],
+                )
+            )
+    db_session.commit()
+
+    response = client.post(
+        "/api/v1/tasks/bulk-auto-balance",
+        headers=auth_headers["admin"],
+        json={
+            "filters": {
+                "search": "CALL-BALANCED",
+                "status": "Not Started",
+                "assignee_id": "unassigned",
+            },
+            "assignee_ids": [seed_users["annotator"].id, seed_users["reviewer"].id],
+        },
+    )
+    assert response.status_code == 200, response.json()
+    assert response.json()["updated_count"] == 6
+
+    assigned = client.get("/api/v1/tasks?search=CALL-BALANCED&page_size=10", headers=auth_headers["admin"]).json()[
+        "items"
+    ]
+    assignees_by_call: dict[str, set[str]] = {}
+    for task in assigned:
+        call_id = task["external_id"].rsplit("-", 1)[0]
+        assignees_by_call.setdefault(call_id, set()).add(task["assignee_email"])
+
+    assert assignees_by_call
+    assert all(len(assignees) == 1 for assignees in assignees_by_call.values())
+    assert {"annotator@test.com", "reviewer@test.com"}.issubset(
+        {next(iter(assignees)) for assignees in assignees_by_call.values()}
+    )
+
+
 def test_admin_can_split_assignment_by_call_batches(client, auth_headers, db_session, seed_users):
     upload_file = UploadFile(
         original_filename="call-split.csv",

@@ -69,6 +69,7 @@ const secondTask = {
   ...task,
   id: "task-2",
   external_id: "OUT-002",
+  file_location: "local:///tmp/audio-2.mp3",
   version: 8,
 };
 
@@ -434,7 +435,7 @@ describe("TasksPage queue workflows", () => {
     expect(screen.getAllByText("Ben Annotator").length).toBeGreaterThan(0);
     expect(screen.getByText("3 open")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Auto-balance selected" }));
+    fireEvent.click(screen.getByRole("button", { name: "Auto-balance by call" }));
 
     await waitFor(() =>
       expect(bulkAssignTasks).toHaveBeenCalledWith("test-token", [
@@ -486,7 +487,7 @@ describe("TasksPage queue workflows", () => {
     fireEvent.change(screen.getByLabelText("Status"), { target: { value: "Not Started" } });
     fireEvent.change(screen.getByLabelText("Assignee"), { target: { value: "unassigned" } });
     fireEvent.click(await screen.findByRole("button", { name: "Select all matching (19690)" }));
-    fireEvent.click(screen.getByRole("button", { name: "Auto-balance selected" }));
+    fireEvent.click(screen.getByRole("button", { name: "Auto-balance by call" }));
 
     await waitFor(() =>
       expect(bulkAutoBalanceTasks).toHaveBeenCalledWith("test-token", {
@@ -504,7 +505,7 @@ describe("TasksPage queue workflows", () => {
       })
     );
     expect(bulkAssignTasks).not.toHaveBeenCalled();
-    expect(await screen.findByText(/19665 tasks auto-balanced across 2 users/)).toBeInTheDocument();
+    expect(await screen.findByText(/19665 tasks auto-balanced by call across 2 users/)).toBeInTheDocument();
   });
 
   it("assigns all matching tasks in call-wise batches", async () => {
