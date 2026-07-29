@@ -7,6 +7,8 @@ import type {
   AudioMaskMode,
   BulkAutoBalanceRequest,
   BulkAutoBalanceResponse,
+  BulkCallSplitRequest,
+  BulkCallSplitResponse,
   ChangePasswordRequest,
   ChangePasswordResponse,
   ClientSecurityAction,
@@ -558,6 +560,17 @@ export async function bulkAutoBalanceTasks(
 ): Promise<BulkAutoBalanceResponse> {
   return request(
     "/tasks/bulk-auto-balance",
+    { method: "POST", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function bulkCallSplitTasks(
+  token: string,
+  payload: BulkCallSplitRequest
+): Promise<BulkCallSplitResponse> {
+  return request(
+    "/tasks/bulk-call-split",
     { method: "POST", body: JSON.stringify(payload) },
     token
   );

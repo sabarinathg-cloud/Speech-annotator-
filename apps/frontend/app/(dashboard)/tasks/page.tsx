@@ -11,6 +11,7 @@ import {
   APIError,
   bulkAssignTasks,
   bulkAutoBalanceTasks,
+  bulkCallSplitTasks,
   bulkCreateTaskAssignmentCopies,
   bulkUpdateTaskDueDates,
   bulkUpdateTaskStatuses,
@@ -78,6 +79,8 @@ export default function TasksPage() {
   const [bulkStatusComment, setBulkStatusComment] = useState("");
   const [bulkExportFormat, setBulkExportFormat] = useState<"csv" | "xlsx">("csv");
   const [assignmentRoleFilter, setAssignmentRoleFilter] = useState<Role | "all">("all");
+  const [callSplitSize, setCallSplitSize] = useState("100");
+  const [callSplitColumn, setCallSplitColumn] = useState("call_id");
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -450,6 +453,53 @@ export default function TasksPage() {
       };
     });
     await applyAssignmentBatch(assignments, "Auto-balance assignment failed");
+  }
+
+  async function applyCallSplitAssignment() {
+    if (!accessToken || !isAdmin || bulkBusy || selectedTaskCount === 0 || assignableUsers.length === 0) return;
+    if (!allMatchingSelected) {
+      setError("Call-wise split applies to all matching tasks. Click Select all matching first.");
+      return;
+    }
+
+    const parsedCallCount = Number.parseInt(callSplitSize, 10);
+    if (!Number.isFinite(parsedCallCount) || parsedCallCount < 1 || parsedCallCount > 10000) {
+      setError("Calls per assignee must be between 1 and 10000.");
+      return;
+    }
+    const column = callSplitColumn.trim() || "call_id";
+
+    setBulkBusy(true);
+    try {
+      const response = await bulkCallSplitTasks(accessToken, {
+        filters: bulkFilterPayload,
+        assignee_ids: assignableUsers.map((account) => account.id),
+        calls_per_assignee: parsedCallCount,
+        call_id_column: column,
+        max_tasks: 50000,
+      });
+      const summary = response.assignments
+        .filter((item) => item.call_count > 0)
+        .map((item) => `${item.assignee_name}: ${item.call_count} calls`)
+        .join("; ");
+      setBulkResult(
+        `${response.updated_count} tasks assigned across ${response.matched_call_count} calls (${response.skipped_count} unchanged). ${summary}`
+      );
+      setSelectedTaskIds([]);
+      setAllMatchingSelected(false);
+      setReloadKey((value) => value + 1);
+      try {
+        const usersResponse = await fetchUsers(accessToken);
+        setUsers(usersResponse.items);
+      } catch {
+        // Keep the current user cards if the refresh fails; the queue refresh still shows task changes.
+      }
+      setError(null);
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Call-wise split assignment failed");
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
   async function applyAssignmentBatch(
@@ -922,9 +972,46 @@ export default function TasksPage() {
                   Auto-balance selected
                 </button>
               </div>
+
+              <div className="grid grid-cols-1 gap-3 rounded-lg border border-[#e6dcf2] bg-white px-3 py-3 lg:grid-cols-[minmax(160px,0.55fr)_minmax(180px,0.7fr)_1fr_auto] lg:items-end">
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-[#676280]">Calls per assignee</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10000"
+                    aria-label="Calls per assignee"
+                    value={callSplitSize}
+                    onChange={(event) => setCallSplitSize(event.target.value)}
+                    className="oa-input py-1.5 text-xs"
+                  />
+                </label>
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-[#676280]">Call ID column</span>
+                  <input
+                    type="text"
+                    aria-label="Call ID column"
+                    value={callSplitColumn}
+                    onChange={(event) => setCallSplitColumn(event.target.value)}
+                    className="oa-input py-1.5 text-xs"
+                    placeholder="call_id"
+                  />
+                </label>
+                <p className="text-xs leading-relaxed text-[#6f6a89]">
+                  Keeps chunks from the same call together. Example: 100 sends the first 100 calls to the first eligible user, next 100 to the next user, then repeats.
+                </p>
+                <button
+                  type="button"
+                  onClick={applyCallSplitAssignment}
+                  disabled={bulkBusy || !allMatchingSelected || selectedTaskCount === 0 || assignableUsers.length === 0}
+                  className="oa-btn-primary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Assign call batches
+                </button>
+              </div>
               {allMatchingSelected ? (
                 <p className="rounded-lg border border-[#ded4ef] bg-white px-3 py-2 text-xs text-[#5f5b77]">
-                  Auto-balance will update every task matching the current Search, Status, and Assignee filters. Use Assignee = Unassigned to balance only unassigned tasks.
+                  Auto-balance and call batches will update every task matching the current Search, Status, and Assignee filters. Use Assignee = Unassigned to update only unassigned tasks.
                 </p>
               ) : null}
               {onlyVisiblePageSelected ? (

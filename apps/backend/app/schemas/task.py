@@ -268,6 +268,33 @@ class BulkAutoBalanceResponse(BaseModel):
     assignee_count: int
 
 
+class BulkCallSplitRequest(BaseModel):
+    filters: BulkTaskFilter = Field(default_factory=BulkTaskFilter)
+    assignee_ids: list[str] = Field(min_length=1, max_length=100)
+    calls_per_assignee: int = Field(default=100, ge=1, le=10000)
+    call_id_column: str = Field(default="call_id", min_length=1, max_length=255)
+    max_tasks: int = Field(default=50000, ge=1, le=50000)
+
+
+class BulkCallSplitAssignment(BaseModel):
+    assignee_id: str
+    assignee_name: str
+    assignee_email: str
+    call_count: int
+    task_count: int
+
+
+class BulkCallSplitResponse(BaseModel):
+    matched_count: int
+    matched_call_count: int
+    updated_count: int
+    skipped_count: int
+    assignee_count: int
+    calls_per_assignee: int
+    call_id_column: str
+    assignments: list[BulkCallSplitAssignment]
+
+
 class BulkAssignmentCopyItem(BaseModel):
     task_id: str
     version: int = Field(ge=1)

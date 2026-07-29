@@ -21,11 +21,13 @@ from app.schemas.task import (
     BulkAssignmentCopyItem,
     BulkAssignmentCopyResponse,
     BulkAutoBalanceResponse,
-    BulkTaskFilter,
     BulkAssigneeError,
     BulkAssigneeItem,
     BulkAssigneeResponse,
     BulkAssigneeUpdated,
+    BulkCallSplitAssignment,
+    BulkCallSplitResponse,
+    BulkTaskFilter,
     BulkDueDateItem,
     BulkStatusItem,
     BulkTaskError,
@@ -745,6 +747,115 @@ class TaskService:
             assignee_count=len(assignees),
         )
 
+    def bulk_call_split_assignees(
+        self,
+        *,
+        filters: BulkTaskFilter,
+        assignee_ids: list[str],
+        calls_per_assignee: int,
+        call_id_column: str,
+        max_tasks: int,
+        actor: User,
+        organization: Organization,
+    ) -> BulkCallSplitResponse:
+        unique_assignee_ids = list(dict.fromkeys(assignee_ids))
+        assignees = [
+            self._get_valid_task_assignee(assignee_id, organization_id=organization.id)
+            for assignee_id in unique_assignee_ids
+        ]
+        normalized_call_id_column = call_id_column.strip() or "call_id"
+        tasks, matched_count = self.task_repo.list_tasks_for_bulk_assignment(
+            status=filters.status,
+            search=filters.search.strip() if filters.search else None,
+            assignee_id=filters.assignee_id,
+            upload_job_id=filters.job_id,
+            language=filters.language,
+            date_from=filters.date_from,
+            date_to=filters.date_to,
+            organization_id=organization.id,
+            limit=max_tasks,
+        )
+        if matched_count > max_tasks:
+            raise ServiceError(
+                f"{matched_count} tasks match this filter. Narrow the filter or raise the max_tasks limit.",
+                status_code=422,
+            )
+
+        call_groups: dict[str, list[AnnotationTask]] = {}
+        for task in tasks:
+            call_key = self._call_split_key(task, call_id_column=normalized_call_id_column)
+            call_groups.setdefault(call_key, []).append(task)
+
+        now = datetime.now(timezone.utc)
+        updated_count = 0
+        audit_entries: list[dict[str, Any]] = []
+        summary_by_assignee = {
+            assignee.id: {
+                "assignee": assignee,
+                "call_count": 0,
+                "task_count": 0,
+            }
+            for assignee in assignees
+        }
+
+        for call_index, (call_key, call_tasks) in enumerate(call_groups.items()):
+            assignee = assignees[(call_index // calls_per_assignee) % len(assignees)]
+            summary_by_assignee[assignee.id]["call_count"] += 1
+            summary_by_assignee[assignee.id]["task_count"] += len(call_tasks)
+            for task in call_tasks:
+                if task.assignee_id == assignee.id:
+                    continue
+                previous_assignee = task.assignee
+                audit_entries.append(
+                    {
+                        "task_id": task.id,
+                        "actor_user_id": actor.id,
+                        "action": "BULK_CALL_SPLIT_ASSIGNEE",
+                        "changed_fields": {"assignee_id": True},
+                        "previous_values": {
+                            "assignee_id": task.assignee_id,
+                            "assignee_name": previous_assignee.full_name if previous_assignee else None,
+                            "assignee_email": previous_assignee.email if previous_assignee else None,
+                        },
+                        "new_values": {
+                            "assignee_id": assignee.id,
+                            "assignee_name": assignee.full_name,
+                            "assignee_email": assignee.email,
+                            "call_id": call_key,
+                            "calls_per_assignee": calls_per_assignee,
+                        },
+                    }
+                )
+                task.assignee_id = assignee.id
+                task.version += 1
+                task.last_saved_at = now
+                task.updated_at = now
+                updated_count += 1
+
+        self.db.flush()
+        self.task_repo.add_audit_logs(audit_entries)
+        self.db.commit()
+
+        return BulkCallSplitResponse(
+            matched_count=matched_count,
+            matched_call_count=len(call_groups),
+            updated_count=updated_count,
+            skipped_count=matched_count - updated_count,
+            assignee_count=len(assignees),
+            calls_per_assignee=calls_per_assignee,
+            call_id_column=normalized_call_id_column,
+            assignments=[
+                BulkCallSplitAssignment(
+                    assignee_id=str(assignee.id),
+                    assignee_name=assignee.full_name,
+                    assignee_email=assignee.email,
+                    call_count=int(summary_by_assignee[assignee.id]["call_count"]),
+                    task_count=int(summary_by_assignee[assignee.id]["task_count"]),
+                )
+                for assignee in assignees
+            ],
+        )
+
     def bulk_create_assignment_copies(
         self,
         *,
@@ -1095,6 +1206,53 @@ class TaskService:
         if actor and actor.role != RoleEnum.ADMIN and task.assignee_id != actor.id:
             raise ServiceError("Task is not assigned to you", status_code=403)
         return task
+
+    def _call_split_key(self, task: AnnotationTask, *, call_id_column: str) -> str:
+        row = task.original_row if isinstance(task.original_row, dict) else {}
+        candidate_keys = [call_id_column, "call_id", "file_id", "source_path_abs"]
+        seen_keys: set[str] = set()
+        for key in candidate_keys:
+            if not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            value = row.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+
+        path_text = str(row.get("segment_audio_path_abs") or row.get("audio") or task.file_location or "").strip()
+        path_group = self._path_call_split_key(path_text)
+        if path_group:
+            return path_group
+
+        info = audio_group_info(task.file_location)
+        if info:
+            return info.group_key
+        return task.file_location or task.external_id
+
+    def _path_call_split_key(self, file_location: str) -> str | None:
+        if not file_location:
+            return None
+        prefix = ""
+        path_text = file_location
+        if file_location.startswith("local://"):
+            prefix = "local://"
+            path_text = file_location.replace("local://", "", 1)
+        elif file_location.startswith("s3://"):
+            parsed = urlparse(file_location)
+            prefix = f"s3://{parsed.netloc}/"
+            path_text = parsed.path.lstrip("/")
+
+        path = PurePosixPath(path_text)
+        parent = path.parent
+        if not str(parent) or str(parent) == ".":
+            return None
+        if parent.name.lower().startswith("channel") and str(parent.parent) and str(parent.parent) != ".":
+            return f"{prefix}{parent.parent}"
+        info = audio_group_info(file_location)
+        return info.group_key if info else f"{prefix}{parent}"
 
     def _get_valid_task_assignee(self, assignee_id: str, *, organization_id: str) -> User:
         assignee = self.user_repo.get_by_id(assignee_id)

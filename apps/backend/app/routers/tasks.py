@@ -16,6 +16,8 @@ from app.schemas.task import (
     BulkAutoBalanceResponse,
     BulkAssigneeRequest,
     BulkAssigneeResponse,
+    BulkCallSplitRequest,
+    BulkCallSplitResponse,
     BulkDueDateRequest,
     BulkStatusRequest,
     BulkTaskResponse,
@@ -137,6 +139,28 @@ def bulk_auto_balance_assignees(
         return service.bulk_auto_balance_assignees(
             filters=payload.filters,
             assignee_ids=payload.assignee_ids,
+            max_tasks=payload.max_tasks,
+            actor=current_user,
+            organization=organization,
+        )
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/bulk-call-split", response_model=BulkCallSplitResponse)
+def bulk_call_split_assignees(
+    payload: BulkCallSplitRequest,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    organization: Organization = Depends(get_current_organization),
+):
+    service = TaskService(db)
+    try:
+        return service.bulk_call_split_assignees(
+            filters=payload.filters,
+            assignee_ids=payload.assignee_ids,
+            calls_per_assignee=payload.calls_per_assignee,
+            call_id_column=payload.call_id_column,
             max_tasks=payload.max_tasks,
             actor=current_user,
             organization=organization,

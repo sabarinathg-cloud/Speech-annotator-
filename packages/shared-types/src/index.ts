@@ -251,6 +251,33 @@ export interface BulkAutoBalanceResponse {
   assignee_count: number;
 }
 
+export interface BulkCallSplitRequest {
+  filters: BulkTaskFilter;
+  assignee_ids: string[];
+  calls_per_assignee: number;
+  call_id_column?: string;
+  max_tasks?: number;
+}
+
+export interface BulkCallSplitAssignment {
+  assignee_id: string;
+  assignee_name: string;
+  assignee_email: string;
+  call_count: number;
+  task_count: number;
+}
+
+export interface BulkCallSplitResponse {
+  matched_count: number;
+  matched_call_count: number;
+  updated_count: number;
+  skipped_count: number;
+  assignee_count: number;
+  calls_per_assignee: number;
+  call_id_column: string;
+  assignments: BulkCallSplitAssignment[];
+}
+
 export interface TaskAudioGroupChunk {
   task_id: string;
   external_id: string;

@@ -796,6 +796,104 @@ def test_admin_can_auto_balance_all_matching_tasks_beyond_current_page(client, a
     assert any(item["action"] == "BULK_AUTO_BALANCE_ASSIGNEE" for item in activity)
 
 
+def test_admin_can_split_assignment_by_call_batches(client, auth_headers, db_session, seed_users):
+    upload_file = UploadFile(
+        original_filename="call-split.csv",
+        stored_path="/tmp/call-split.csv",
+        content_type="text/csv",
+        uploaded_by_id=seed_users["admin"].id,
+    )
+    db_session.add(upload_file)
+    db_session.flush()
+    upload_job = UploadJob(
+        upload_file_id=upload_file.id,
+        created_by_id=seed_users["admin"].id,
+        status=UploadJobStatusEnum.IMPORTED,
+        preview_row_count=8,
+    )
+    db_session.add(upload_job)
+    db_session.flush()
+    tasks = []
+    for call_index in range(4):
+        for chunk_index in range(2):
+            task = AnnotationTask(
+                upload_job_id=upload_job.id,
+                external_id=f"CALL-SPLIT-{call_index}-{chunk_index}",
+                file_location=f"/calls/CALL-{call_index}/channel1/chunk_{chunk_index:04d}.wav",
+                final_transcript="",
+                notes=None,
+                status=TaskStatusEnum.NOT_STARTED,
+                speaker_gender=None,
+                speaker_role=None,
+                language="en",
+                channel=None,
+                duration_seconds=None,
+                custom_metadata={},
+                original_row={"call_id": f"CALL-{call_index}"},
+                pii_annotations=[],
+                alignment_words=[],
+            )
+            db_session.add(task)
+            tasks.append(task)
+    db_session.commit()
+
+    response = client.post(
+        "/api/v1/tasks/bulk-call-split",
+        headers=auth_headers["admin"],
+        json={
+            "filters": {
+                "search": "CALL-SPLIT",
+                "status": "Not Started",
+                "assignee_id": "unassigned",
+            },
+            "assignee_ids": [seed_users["annotator"].id, seed_users["reviewer"].id],
+            "calls_per_assignee": 2,
+            "call_id_column": "call_id",
+        },
+    )
+    assert response.status_code == 200, response.json()
+    payload = response.json()
+    assert payload["matched_count"] == 8
+    assert payload["matched_call_count"] == 4
+    assert payload["updated_count"] == 8
+    assert payload["skipped_count"] == 0
+    assert payload["assignments"] == [
+        {
+            "assignee_id": seed_users["annotator"].id,
+            "assignee_name": "Annotator",
+            "assignee_email": "annotator@test.com",
+            "call_count": 2,
+            "task_count": 4,
+        },
+        {
+            "assignee_id": seed_users["reviewer"].id,
+            "assignee_name": "Reviewer",
+            "assignee_email": "reviewer@test.com",
+            "call_count": 2,
+            "task_count": 4,
+        },
+    ]
+
+    refreshed_tasks = (
+        db_session.query(AnnotationTask)
+        .filter(AnnotationTask.external_id.like("CALL-SPLIT-%"))
+        .order_by(AnnotationTask.external_id.asc())
+        .all()
+    )
+    assignee_by_call = {}
+    for task in refreshed_tasks:
+        assignee_by_call.setdefault(task.original_row["call_id"], set()).add(task.assignee_id)
+    assert assignee_by_call == {
+        "CALL-0": {seed_users["annotator"].id},
+        "CALL-1": {seed_users["annotator"].id},
+        "CALL-2": {seed_users["reviewer"].id},
+        "CALL-3": {seed_users["reviewer"].id},
+    }
+
+    activity = client.get(f"/api/v1/tasks/{tasks[0].id}/activity", headers=auth_headers["admin"]).json()["items"]
+    assert any(item["action"] == "BULK_CALL_SPLIT_ASSIGNEE" for item in activity)
+
+
 def test_start_endpoint_claims_and_marks_task_in_progress(client, auth_headers, sample_excel_bytes):
     task_id = _create_task(client, auth_headers, sample_excel_bytes)
 

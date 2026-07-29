@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   APIError,
   acknowledgeConfidentiality,
   bulkAutoBalanceTasks,
+  bulkCallSplitTasks,
   bulkUpdateTaskDueDates,
   bulkUpdateTaskStatuses,
   changeOwnPassword,
@@ -24,6 +25,12 @@ import {
 import { readSession, writeSession } from "@/lib/session";
 
 describe("API client error handling", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    localStorage.clear();
+  });
+
   it("wraps non-JSON error responses in APIError", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response("upstream unavailable", {
@@ -35,7 +42,7 @@ describe("API client error handling", () => {
     await expect(login("admin@test.com", "password")).rejects.toMatchObject({
       name: "APIError",
       status: 502,
-      message: "Bad Gateway",
+      message: "upstream unavailable",
     });
 
     fetchMock.mockRestore();
@@ -94,6 +101,21 @@ describe("API client error handling", () => {
         )
       )
       .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            matched_count: 20,
+            matched_call_count: 10,
+            updated_count: 20,
+            skipped_count: 0,
+            assignee_count: 2,
+            calls_per_assignee: 5,
+            call_id_column: "call_id",
+            assignments: [],
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
         new Response("task_id\n", {
           status: 200,
           headers: { "Content-Disposition": 'attachment; filename="selected.csv"' },
@@ -132,10 +154,26 @@ describe("API client error handling", () => {
       max_tasks: 50000,
     });
 
+    await bulkCallSplitTasks("admin-token", {
+      filters: { status: "Not Started", assignee_id: "unassigned" },
+      assignee_ids: ["user-1", "user-2"],
+      calls_per_assignee: 5,
+      call_id_column: "call_id",
+      max_tasks: 50000,
+    });
+    expect(new URL(String(fetchMock.mock.calls[3]?.[0])).pathname).toBe("/api/v1/tasks/bulk-call-split");
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+      filters: { status: "Not Started", assignee_id: "unassigned" },
+      assignee_ids: ["user-1", "user-2"],
+      calls_per_assignee: 5,
+      call_id_column: "call_id",
+      max_tasks: 50000,
+    });
+
     await expect(
       downloadTaskExport("admin-token", { format: "csv", taskIds: ["task-1", "task-2"] })
     ).resolves.toMatchObject({ filename: "selected.csv" });
-    const exportUrl = new URL(String(fetchMock.mock.calls[3]?.[0]));
+    const exportUrl = new URL(String(fetchMock.mock.calls[4]?.[0]));
     expect(exportUrl.pathname).toBe("/api/v1/exports/tasks");
     expect(exportUrl.searchParams.getAll("task_ids")).toEqual(["task-1", "task-2"]);
 
