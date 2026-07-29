@@ -82,7 +82,7 @@ async function request<T>(path: string, init: RequestInit = {}, token?: string, 
         return request<T>(path, init, refreshed.access_token, false);
       }
     }
-    const message = extractErrorMessage(payload, response.statusText);
+    const message = extractErrorMessage(payload, response.statusText || `HTTP ${response.status}`);
     throw new APIError(message, response.status, payload);
   }
   return payload as T;
@@ -147,7 +147,11 @@ async function requestBlob(
         payload = text;
       }
     }
-    throw new APIError(extractErrorMessage(payload, response.statusText), response.status, payload);
+    throw new APIError(
+      extractErrorMessage(payload, response.statusText || `HTTP ${response.status}`),
+      response.status,
+      payload
+    );
   }
   return {
     blob: await response.blob(),
@@ -205,7 +209,34 @@ function extractErrorMessage(payload: unknown, fallback: string): string {
       if (typeof message === "string" && message.trim()) return message;
     }
     if (typeof detail === "string" && detail.trim()) return detail;
-    if (Array.isArray(detail) && detail.length > 0) return "Request validation failed";
+    if (Array.isArray(detail) && detail.length > 0) {
+      const messages = detail
+        .map((item) => {
+          if (!item || typeof item !== "object") return "";
+          const validation = item as { loc?: unknown; msg?: unknown };
+          const location = Array.isArray(validation.loc)
+            ? validation.loc
+                .filter((part) => part !== "body" && part !== "query" && part !== "path")
+                .map(String)
+                .join(".")
+            : "";
+          const message = typeof validation.msg === "string" ? validation.msg : "";
+          if (!message) return "";
+          return location ? `${location}: ${message}` : message;
+        })
+        .filter(Boolean)
+        .slice(0, 3);
+      return messages.length ? messages.join("; ") : "Request validation failed";
+    }
+  }
+  if (typeof payload === "string" && payload.trim()) {
+    const cleaned = payload
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return (cleaned || payload.trim()).slice(0, 240);
   }
   return fallback || "Request failed";
 }

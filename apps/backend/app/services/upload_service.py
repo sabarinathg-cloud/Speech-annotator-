@@ -143,14 +143,18 @@ class UploadService:
         stored_name = f"{uuid.uuid4()}{stored_suffix}"
         destination = settings.upload_path / stored_name
         if call_id_limit:
-            excluded_call_ids = (
-                self._existing_call_ids_for_organization(
-                    organization_id=organization.id,
-                    call_id_column=call_id_column,
-                )
-                if skip_existing_call_ids
-                else None
-            )
+            excluded_call_ids = None
+            if skip_existing_call_ids:
+                try:
+                    excluded_call_ids = self._existing_call_ids_for_organization(
+                        organization_id=organization.id,
+                        call_id_column=call_id_column,
+                    )
+                except Exception as exc:
+                    raise ServiceError(
+                        "Unable to check previously imported call IDs for this organization",
+                        status_code=422,
+                    ) from exc
             try:
                 copied_rows = write_call_id_window_subset(
                     resolved_source,
@@ -431,7 +435,10 @@ class UploadService:
             if not isinstance(original_row, dict):
                 continue
             raw_value = original_row.get(call_id_column)
-            value = str(normalize_cell(raw_value)).strip()
+            try:
+                value = str(normalize_cell(raw_value)).strip()
+            except Exception:
+                continue
             if value:
                 existing_call_ids.add(value)
         return existing_call_ids
