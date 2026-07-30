@@ -33,6 +33,10 @@ function shortcutForEvent(event: KeyboardEvent): string {
   return parts.join("+");
 }
 
+function routeHandlesSaveShortcut(pathname: string): boolean {
+  return /^\/tasks\/[^/]+/.test(pathname);
+}
+
 function securityActionForKey(event: KeyboardEvent): ClientSecurityAction | null {
   const key = event.key.toLowerCase();
   const hasCommand = event.ctrlKey || event.metaKey;
@@ -41,7 +45,7 @@ function securityActionForKey(event: KeyboardEvent): ClientSecurityAction | null
   if (hasCommand && event.shiftKey && ["3", "4", "5"].includes(key)) return "ATTEMPT_SCREEN_CAPTURE";
   if (event.key === "F12") return "ATTEMPT_DEVTOOLS";
   if (hasCommand && key === "p") return "ATTEMPT_PRINT";
-  if (hasCommand && key === "s") return "ATTEMPT_SAVE_PAGE";
+  if (hasCommand && key === "s") return routeHandlesSaveShortcut(window.location.pathname) ? null : "ATTEMPT_SAVE_PAGE";
   if (hasCommand && key === "u") return "ATTEMPT_VIEW_SOURCE";
   if (hasCommand && event.shiftKey && ["i", "j", "c"].includes(key)) return "ATTEMPT_DEVTOOLS";
   return null;

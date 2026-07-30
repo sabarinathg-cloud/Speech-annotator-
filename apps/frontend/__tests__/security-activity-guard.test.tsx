@@ -38,6 +38,28 @@ describe("SecurityActivityGuard", () => {
     });
   });
 
+  it("lets task workspaces handle Ctrl+S for in-app saving", () => {
+    render(<SecurityActivityGuard accessToken="token" />);
+
+    expect(fireEvent.keyDown(document, { key: "s", ctrlKey: true })).toBe(true);
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(logClientSecurityEventRequest).not.toHaveBeenCalled();
+  });
+
+  it("still blocks browser save shortcuts outside task workspaces", () => {
+    window.history.pushState({}, "", "/admin/upload");
+    render(<SecurityActivityGuard accessToken="token" />);
+
+    expect(fireEvent.keyDown(document, { key: "s", ctrlKey: true })).toBe(false);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Saving this workspace locally is disabled");
+    expect(logClientSecurityEventRequest).toHaveBeenCalledWith("token", {
+      action: "ATTEMPT_SAVE_PAGE",
+      metadata: expect.objectContaining({ route: "/admin/upload", shortcut: "Ctrl+S" }),
+    });
+  });
+
   it("blocks devtools shortcuts and logs the attempt", async () => {
     render(<SecurityActivityGuard accessToken="token" />);
 
