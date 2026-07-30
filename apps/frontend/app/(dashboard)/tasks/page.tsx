@@ -437,8 +437,12 @@ export default function TasksPage() {
           assignee_ids: assignableUsers.map((account) => account.id),
           max_tasks: 50000,
         });
+        const protectedSummary =
+          response.protected_task_count > 0
+            ? ` ${response.protected_task_count} tasks in ${response.protected_call_count} worked calls were protected.`
+            : "";
         setBulkResult(
-          `${response.updated_count} tasks auto-balanced by call across ${response.assignee_count} users (${response.matched_count} matched, ${response.skipped_count} unchanged).`
+          `${response.updated_count} tasks auto-balanced by call across ${response.assignee_count} users (${response.matched_count} matched, ${response.skipped_count} unchanged).${protectedSummary}`
         );
         setSelectedTaskIds([]);
         setAllMatchingSelected(false);
@@ -502,8 +506,13 @@ export default function TasksPage() {
         .filter((item) => item.call_count > 0)
         .map((item) => `${item.assignee_name}: ${item.call_count} calls`)
         .join("; ");
+      const assignedCallCount = response.assignments.reduce((count, item) => count + item.call_count, 0);
+      const protectedSummary =
+        response.protected_task_count > 0
+          ? ` ${response.protected_task_count} tasks in ${response.protected_call_count} worked calls were protected.`
+          : "";
       setBulkResult(
-        `${response.updated_count} tasks assigned across ${response.matched_call_count} calls (${response.skipped_count} unchanged). ${summary}`
+        `${response.updated_count} tasks assigned across ${assignedCallCount} calls (${response.matched_call_count} matched, ${response.skipped_count} unchanged).${protectedSummary} ${summary}`
       );
       setSelectedTaskIds([]);
       setAllMatchingSelected(false);
@@ -1018,7 +1027,7 @@ export default function TasksPage() {
                   />
                 </label>
                 <p className="text-xs leading-relaxed text-[#6f6a89]">
-                  Keeps chunks from the same call together. Example: 100 sends the first 100 calls to the first eligible user, next 100 to the next user, then repeats.
+                  Keeps chunks from the same call together and protects any call that already has work. Example: 100 sends the first 100 fresh calls to the first eligible user, next 100 to the next user, then repeats.
                 </p>
                 <button
                   type="button"
@@ -1032,6 +1041,7 @@ export default function TasksPage() {
               {allMatchingSelected ? (
                 <p className="rounded-lg border border-[#ded4ef] bg-white px-3 py-2 text-xs text-[#5f5b77]">
                   Auto-balance and call batches will update every task matching the current Search, Status, and Assignee filters. Auto-balance keeps all segments from the same call together. Use Assignee = Unassigned to update only unassigned tasks.
+                  Calls with started or completed work are protected.
                 </p>
               ) : null}
               {onlyVisiblePageSelected ? (

@@ -163,6 +163,8 @@ describe("TasksPage queue workflows", () => {
       updated_count: 19690,
       skipped_count: 0,
       assignee_count: 1,
+      protected_call_count: 0,
+      protected_task_count: 0,
     });
     bulkCallSplitTasks.mockResolvedValue({
       matched_count: 19690,
@@ -172,6 +174,8 @@ describe("TasksPage queue workflows", () => {
       assignee_count: 1,
       calls_per_assignee: 100,
       call_id_column: "call_id",
+      protected_call_count: 0,
+      protected_task_count: 0,
       assignments: [
         {
           assignee_id: "reviewer-1",
@@ -479,6 +483,8 @@ describe("TasksPage queue workflows", () => {
       updated_count: 19665,
       skipped_count: 25,
       assignee_count: 2,
+      protected_call_count: 2,
+      protected_task_count: 25,
     });
 
     render(<TasksPage />);
@@ -544,6 +550,8 @@ describe("TasksPage queue workflows", () => {
       assignee_count: 2,
       calls_per_assignee: 100,
       call_id_column: "call_id",
+      protected_call_count: 2,
+      protected_task_count: 25,
       assignments: [
         {
           assignee_id: "annotator-1",
@@ -590,6 +598,7 @@ describe("TasksPage queue workflows", () => {
     );
     expect(bulkAssignTasks).not.toHaveBeenCalled();
     expect(await screen.findByText(/19665 tasks assigned across 9845 calls/)).toBeInTheDocument();
+    expect(screen.getByText(/25 tasks in 2 worked calls were protected/)).toBeInTheDocument();
   });
 
   it("shows queue progress and lets admins set optional due dates", async () => {

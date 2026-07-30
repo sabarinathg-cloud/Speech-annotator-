@@ -96,7 +96,14 @@ describe("API client error handling", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ updated: [], errors: [] }), { status: 200 }))
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ matched_count: 10, updated_count: 10, skipped_count: 0, assignee_count: 2 }),
+          JSON.stringify({
+            matched_count: 10,
+            updated_count: 10,
+            skipped_count: 0,
+            assignee_count: 2,
+            protected_call_count: 0,
+            protected_task_count: 0,
+          }),
           { status: 200 }
         )
       )
@@ -110,6 +117,8 @@ describe("API client error handling", () => {
             assignee_count: 2,
             calls_per_assignee: 5,
             call_id_column: "call_id",
+            protected_call_count: 0,
+            protected_task_count: 0,
             assignments: [],
           }),
           { status: 200 }

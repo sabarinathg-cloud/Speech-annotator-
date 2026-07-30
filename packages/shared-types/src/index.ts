@@ -249,6 +249,8 @@ export interface BulkAutoBalanceResponse {
   updated_count: number;
   skipped_count: number;
   assignee_count: number;
+  protected_call_count: number;
+  protected_task_count: number;
 }
 
 export interface BulkCallSplitRequest {
@@ -275,6 +277,8 @@ export interface BulkCallSplitResponse {
   assignee_count: number;
   calls_per_assignee: number;
   call_id_column: string;
+  protected_call_count: number;
+  protected_task_count: number;
   assignments: BulkCallSplitAssignment[];
 }
 

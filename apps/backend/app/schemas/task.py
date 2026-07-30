@@ -266,6 +266,8 @@ class BulkAutoBalanceResponse(BaseModel):
     updated_count: int
     skipped_count: int
     assignee_count: int
+    protected_call_count: int = 0
+    protected_task_count: int = 0
 
 
 class BulkCallSplitRequest(BaseModel):
@@ -292,6 +294,8 @@ class BulkCallSplitResponse(BaseModel):
     assignee_count: int
     calls_per_assignee: int
     call_id_column: str
+    protected_call_count: int = 0
+    protected_task_count: int = 0
     assignments: list[BulkCallSplitAssignment]
 
 

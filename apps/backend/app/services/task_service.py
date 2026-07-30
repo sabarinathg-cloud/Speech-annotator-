@@ -710,11 +710,19 @@ class TaskService:
             call_key = self._call_split_key(task, call_id_column="call_id")
             call_groups.setdefault(call_key, []).append(task)
 
+        protected_call_count = 0
+        protected_task_count = 0
         now = datetime.now(timezone.utc)
         updated_count = 0
         audit_entries: list[dict[str, Any]] = []
-        for group_index, (call_key, call_tasks) in enumerate(call_groups.items()):
-            assignee = assignees[group_index % len(assignees)]
+        assignable_group_index = 0
+        for call_key, call_tasks in call_groups.items():
+            if self._call_group_has_work(call_tasks):
+                protected_call_count += 1
+                protected_task_count += len(call_tasks)
+                continue
+            assignee = assignees[assignable_group_index % len(assignees)]
+            assignable_group_index += 1
             for task in call_tasks:
                 if task.assignee_id == assignee.id:
                     continue
@@ -752,6 +760,8 @@ class TaskService:
             updated_count=updated_count,
             skipped_count=matched_count - updated_count,
             assignee_count=len(assignees),
+            protected_call_count=protected_call_count,
+            protected_task_count=protected_task_count,
         )
 
     def bulk_call_split_assignees(
@@ -793,6 +803,8 @@ class TaskService:
             call_key = self._call_split_key(task, call_id_column=normalized_call_id_column)
             call_groups.setdefault(call_key, []).append(task)
 
+        protected_call_count = 0
+        protected_task_count = 0
         now = datetime.now(timezone.utc)
         updated_count = 0
         audit_entries: list[dict[str, Any]] = []
@@ -805,8 +817,14 @@ class TaskService:
             for assignee in assignees
         }
 
-        for call_index, (call_key, call_tasks) in enumerate(call_groups.items()):
-            assignee = assignees[(call_index // calls_per_assignee) % len(assignees)]
+        assignable_call_index = 0
+        for call_key, call_tasks in call_groups.items():
+            if self._call_group_has_work(call_tasks):
+                protected_call_count += 1
+                protected_task_count += len(call_tasks)
+                continue
+            assignee = assignees[(assignable_call_index // calls_per_assignee) % len(assignees)]
+            assignable_call_index += 1
             summary_by_assignee[assignee.id]["call_count"] += 1
             summary_by_assignee[assignee.id]["task_count"] += len(call_tasks)
             for task in call_tasks:
@@ -851,6 +869,8 @@ class TaskService:
             assignee_count=len(assignees),
             calls_per_assignee=calls_per_assignee,
             call_id_column=normalized_call_id_column,
+            protected_call_count=protected_call_count,
+            protected_task_count=protected_task_count,
             assignments=[
                 BulkCallSplitAssignment(
                     assignee_id=str(assignee.id),
@@ -1213,6 +1233,9 @@ class TaskService:
         if actor and actor.role != RoleEnum.ADMIN and task.assignee_id != actor.id:
             raise ServiceError("Task is not assigned to you", status_code=403)
         return task
+
+    def _call_group_has_work(self, tasks: list[AnnotationTask]) -> bool:
+        return any(task.status != TaskStatusEnum.NOT_STARTED or task.last_tagger_id for task in tasks)
 
     def _call_split_key(self, task: AnnotationTask, *, call_id_column: str) -> str:
         row = task.original_row if isinstance(task.original_row, dict) else {}
