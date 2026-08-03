@@ -1,7 +1,7 @@
 from app.models.activity import UserActivityEntry
 from app.models.job import BackgroundJob
 from app.models.hiring import HiringAssessment, HiringAssessmentItem, HiringAssignment, HiringSubmission
-from app.models.organization import Organization, OrganizationMembership
+from app.models.organization import Organization, OrganizationMembership, OrganizationQuestionnaire
 from app.models.pii_label import PIILabel
 from app.models.security import SecurityAuditEvent
 from app.models.task import (

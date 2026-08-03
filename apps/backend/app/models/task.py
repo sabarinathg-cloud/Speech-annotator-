@@ -19,7 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
-from app.models.enums import TaskStatusEnum
+from app.models.enums import TaskStatusEnum, TaskWorkflowTypeEnum
 
 
 def enum_values(enum_cls):
@@ -32,6 +32,7 @@ class AnnotationTask(Base, TimestampMixin):
         UniqueConstraint("upload_job_id", "external_id", name="uq_annotation_tasks_upload_external"),
         Index("ix_annotation_tasks_organization_id", "organization_id"),
         Index("ix_annotation_tasks_status", "status"),
+        Index("ix_annotation_tasks_workflow_type", "workflow_type"),
         Index("ix_annotation_tasks_assignee_id", "assignee_id"),
         Index("ix_annotation_tasks_last_tagger_id", "last_tagger_id"),
         Index("ix_annotation_tasks_updated_at", "updated_at"),
@@ -49,7 +50,18 @@ class AnnotationTask(Base, TimestampMixin):
     upload_job_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("upload_jobs.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    workflow_type: Mapped[TaskWorkflowTypeEnum] = mapped_column(
+        Enum(TaskWorkflowTypeEnum, name="task_workflow_type_enum", values_callable=enum_values),
+        default=TaskWorkflowTypeEnum.TRANSCRIPT_CORRECTION,
+        nullable=False,
+    )
     file_location: Mapped[str] = mapped_column(Text, nullable=False)
+    comparison_audio_location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    questionnaire_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("organization_questionnaires.id", ondelete="SET NULL"), nullable=True
+    )
+    questionnaire_snapshot: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    questionnaire_answers: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     final_transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[TaskStatusEnum] = mapped_column(
@@ -90,6 +102,7 @@ class AnnotationTask(Base, TimestampMixin):
     last_saved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     organization = relationship("Organization")
+    questionnaire = relationship("OrganizationQuestionnaire")
     upload_job = relationship("UploadJob", back_populates="tasks")
     assignee = relationship("User", back_populates="assigned_tasks", foreign_keys=[assignee_id])
     last_tagger = relationship("User", foreign_keys=[last_tagger_id])

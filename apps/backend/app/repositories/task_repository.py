@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.models.enums import TaskStatusEnum
+from app.models.enums import TaskStatusEnum, TaskWorkflowTypeEnum
 from app.models.task import (
     AnnotationTask,
     TaskAudioGroupReview,
@@ -39,6 +39,8 @@ SENSITIVE_AUDIT_FIELDS = {
     "original_row",
     "custom_metadata",
     "pii_annotations",
+    "comparison_audio_location",
+    "questionnaire_answers",
     "masked_audio_location",
     "masked_intervals",
 }
@@ -97,12 +99,22 @@ class TaskRepository:
         custom_metadata: dict[str, Any],
         original_row: dict[str, Any],
         due_date: date | None = None,
+        workflow_type: TaskWorkflowTypeEnum = TaskWorkflowTypeEnum.TRANSCRIPT_CORRECTION,
+        comparison_audio_location: str | None = None,
+        questionnaire_id: str | None = None,
+        questionnaire_snapshot: dict[str, Any] | None = None,
+        questionnaire_answers: dict[str, Any] | None = None,
     ) -> AnnotationTask:
         task = AnnotationTask(
             organization_id=organization_id,
             upload_job_id=upload_job_id,
             external_id=external_id,
+            workflow_type=workflow_type,
             file_location=file_location,
+            comparison_audio_location=comparison_audio_location,
+            questionnaire_id=questionnaire_id,
+            questionnaire_snapshot=copy.deepcopy(questionnaire_snapshot or {}),
+            questionnaire_answers=copy.deepcopy(questionnaire_answers or {}),
             final_transcript=final_transcript,
             notes=notes,
             status=status,
@@ -136,7 +148,12 @@ class TaskRepository:
             organization_id=source_task.organization_id,
             upload_job_id=source_task.upload_job_id,
             external_id=external_id,
+            workflow_type=source_task.workflow_type,
             file_location=source_task.file_location,
+            comparison_audio_location=source_task.comparison_audio_location,
+            questionnaire_id=source_task.questionnaire_id,
+            questionnaire_snapshot=copy.deepcopy(source_task.questionnaire_snapshot or {}),
+            questionnaire_answers={},
             final_transcript=source_task.final_transcript,
             notes=source_task.notes,
             status=TaskStatusEnum.NOT_STARTED,

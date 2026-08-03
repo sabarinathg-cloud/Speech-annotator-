@@ -7,13 +7,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.enums import RoleEnum
-from app.models.organization import Organization, OrganizationMembership
+from app.models.organization import Organization, OrganizationMembership, OrganizationQuestionnaire
 from app.models.user import User
 from app.schemas.organization import (
     DEFAULT_ORGANIZATION_INSTRUCTIONS,
+    OrganizationQuestionnaireResponse,
+    OrganizationQuestionnaireUpsertRequest,
     OrganizationMemberListResponse,
     OrganizationMemberResponse,
     OrganizationResponse,
+    QuestionnaireQuestion,
     UserOrganizationAccess,
     normalize_slug,
 )
@@ -223,6 +226,103 @@ class OrganizationService:
             self.db.delete(membership)
             self.db.commit()
         return self.list_members(organization_id)
+
+    def get_questionnaire(self, organization_id: str) -> OrganizationQuestionnaireResponse:
+        organization = self.get_organization_or_404(organization_id)
+        questionnaire = self._active_questionnaire(organization_id)
+        if not questionnaire:
+            return OrganizationQuestionnaireResponse(
+                id=None,
+                organization_id=organization.id,
+                title="Audio comparison questionnaire",
+                description=None,
+                questions=[],
+                version=1,
+                is_active=True,
+                created_at=None,
+                updated_at=None,
+            )
+        return self._questionnaire_response(questionnaire)
+
+    def upsert_questionnaire(
+        self,
+        *,
+        organization_id: str,
+        payload: OrganizationQuestionnaireUpsertRequest,
+    ) -> OrganizationQuestionnaireResponse:
+        organization = self.get_organization_or_404(organization_id)
+        questionnaire = self._active_questionnaire(organization.id)
+        question_payload = [question.model_dump() for question in payload.questions]
+        if questionnaire:
+            questionnaire.title = payload.title.strip()
+            questionnaire.description = payload.description
+            questionnaire.questions = question_payload
+            questionnaire.is_active = payload.is_active
+            questionnaire.version += 1
+        else:
+            questionnaire = OrganizationQuestionnaire(
+                organization_id=organization.id,
+                title=payload.title.strip(),
+                description=payload.description,
+                questions=question_payload,
+                version=1,
+                is_active=payload.is_active,
+            )
+            self.db.add(questionnaire)
+        self.db.commit()
+        self.db.refresh(questionnaire)
+        return self._questionnaire_response(questionnaire)
+
+    def active_questionnaire_snapshot(self, organization_id: str) -> tuple[OrganizationQuestionnaire, dict]:
+        questionnaire = self._active_questionnaire(organization_id)
+        if not questionnaire or not questionnaire.is_active or not questionnaire.questions:
+            raise ServiceError("Active audio comparison questionnaire is required for this organization", status_code=422)
+        response = self._questionnaire_response(questionnaire)
+        return questionnaire, {
+            "id": response.id,
+            "organization_id": response.organization_id,
+            "title": response.title,
+            "description": response.description,
+            "version": response.version,
+            "questions": [question.model_dump() for question in response.questions],
+        }
+
+    def _active_questionnaire(self, organization_id: str) -> OrganizationQuestionnaire | None:
+        return (
+            self.db.execute(
+                select(OrganizationQuestionnaire)
+                .where(OrganizationQuestionnaire.organization_id == organization_id)
+                .where(OrganizationQuestionnaire.is_active.is_(True))
+                .order_by(OrganizationQuestionnaire.updated_at.desc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+
+    def _questionnaire_response(self, questionnaire: OrganizationQuestionnaire) -> OrganizationQuestionnaireResponse:
+        questions = [
+            QuestionnaireQuestion.model_validate(question)
+            for question in sorted(
+                questionnaire.questions or [],
+                key=lambda item: (
+                    int(item.get("sort_order", 0)) if isinstance(item, dict) else 0,
+                    str(item.get("id", "")) if isinstance(item, dict) else "",
+                ),
+            )
+            if isinstance(question, dict)
+        ]
+        return OrganizationQuestionnaireResponse(
+            id=questionnaire.id,
+            organization_id=questionnaire.organization_id,
+            title=questionnaire.title,
+            description=questionnaire.description,
+            questions=questions,
+            version=questionnaire.version,
+            is_active=questionnaire.is_active,
+            created_at=questionnaire.created_at,
+            updated_at=questionnaire.updated_at,
+        )
 
     def ensure_memberships(self, user_id: str, organization_ids: Iterable[str], *, replace: bool = True) -> None:
         requested_ids = list(dict.fromkeys(str(org_id) for org_id in organization_ids if str(org_id).strip()))

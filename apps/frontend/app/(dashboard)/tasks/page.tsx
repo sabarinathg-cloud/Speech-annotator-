@@ -74,6 +74,16 @@ function taskCallKey(task: TaskListItem): string {
   return parts.slice(0, -1).join("/") || location;
 }
 
+function workflowTypeLabel(task: TaskListItem): string {
+  return task.workflow_type === "AUDIO_COMPARISON" ? "Audio comparison" : "Transcript";
+}
+
+function workflowTypeClass(task: TaskListItem): string {
+  return task.workflow_type === "AUDIO_COMPARISON"
+    ? "border-[#bfdbfe] bg-[#eff6ff] text-[#1d4ed8]"
+    : "border-[#e5dbf2] bg-[#fbf8ff] text-[#5f5a79]";
+}
+
 export default function TasksPage() {
   const { accessToken, user, activeOrganizationId } = useAuth();
   const [search, setSearch] = useState("");
@@ -816,7 +826,7 @@ export default function TasksPage() {
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#797590]">Workspace</p>
             <h2 className="oa-title mt-1 text-xl font-semibold">Annotation Queue</h2>
-            <p className="oa-subtext mt-1 text-sm">Search, filter, and open tasks for correction workflows.</p>
+            <p className="oa-subtext mt-1 text-sm">Search, filter, and open tasks for correction and comparison workflows.</p>
           </div>
           <div className="flex flex-wrap gap-2">
             {isAnnotator ? (
@@ -1216,6 +1226,9 @@ export default function TasksPage() {
                   Task ID
                 </th>
                 <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-[0.08em] text-[#696482]">
+                  Type
+                </th>
+                <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-[0.08em] text-[#696482]">
                   Status
                 </th>
                 <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-[0.08em] text-[#696482]">
@@ -1268,6 +1281,11 @@ export default function TasksPage() {
                     </td>
                   ) : null}
                   <td className="px-3 py-2.5 font-medium">{task.external_id}</td>
+                  <td className="px-3 py-2.5">
+                    <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${workflowTypeClass(task)}`}>
+                      {workflowTypeLabel(task)}
+                    </span>
+                  </td>
                   <td className="px-3 py-2.5">
                     <StatusBadge status={task.status} />
                   </td>
@@ -1354,7 +1372,7 @@ export default function TasksPage() {
               ))}
               {data && visibleTasks.length === 0 ? (
                 <tr>
-                  <td className="px-3 py-7 text-center text-sm text-[#7c7795]" colSpan={isAdmin ? 10 : 9}>
+                  <td className="px-3 py-7 text-center text-sm text-[#7c7795]" colSpan={isAdmin ? 11 : 10}>
                     No tasks found for the current filter.
                   </td>
                 </tr>

@@ -1,6 +1,13 @@
 "use client";
 
-import type { AdminUser, Organization, OrganizationSettings } from "@outcomes/shared-types";
+import type {
+  AdminUser,
+  Organization,
+  OrganizationQuestionnaire,
+  OrganizationSettings,
+  QuestionnaireFieldType,
+  QuestionnaireQuestion,
+} from "@outcomes/shared-types";
 import { useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
@@ -10,9 +17,11 @@ import {
   createOrganization,
   fetchCurrentUser,
   fetchOrganizationMembers,
+  fetchOrganizationQuestionnaire,
   fetchOrganizations,
   fetchUsers,
   removeOrganizationMember,
+  saveOrganizationQuestionnaire,
   updateOrganization,
   updateUser,
 } from "@/lib/api";
@@ -38,6 +47,64 @@ const featureLabels: Array<{ key: OrganizationFeatureKey; label: string; hint: s
 ];
 
 const optionalFeatureKeys = featureLabels.map((feature) => feature.key);
+const questionnaireFieldTypes: Array<{ value: QuestionnaireFieldType; label: string; needsOptions?: boolean }> = [
+  { value: "yes_no", label: "Yes / No" },
+  { value: "single_select", label: "Single select", needsOptions: true },
+  { value: "multi_select", label: "Multi select", needsOptions: true },
+  { value: "short_text", label: "Short text" },
+  { value: "long_text", label: "Long text" },
+  { value: "number", label: "Number" },
+  { value: "rating", label: "Rating" },
+  { value: "date", label: "Date" },
+];
+
+function createBlankQuestion(sortOrder: number): QuestionnaireQuestion {
+  const idSuffix = Math.random().toString(36).slice(2, 8);
+  return {
+    id: `question_${idSuffix}`,
+    label: "",
+    field_type: "yes_no",
+    help_text: null,
+    required: true,
+    options: [],
+    sort_order: sortOrder,
+    scoring_key: null,
+  };
+}
+
+function emptyQuestionnaire(organizationId: string): OrganizationQuestionnaire {
+  return {
+    id: null,
+    organization_id: organizationId,
+    title: "Audio comparison questionnaire",
+    description: "Listen to the original and masked audio, then answer these review questions.",
+    questions: [
+      {
+        ...createBlankQuestion(10),
+        id: "mask_quality_ok",
+        label: "Does the masked audio preserve speech quality?",
+        field_type: "yes_no",
+      },
+      {
+        ...createBlankQuestion(20),
+        id: "pii_removed",
+        label: "Is the sensitive information removed or hidden?",
+        field_type: "yes_no",
+      },
+      {
+        ...createBlankQuestion(30),
+        id: "review_notes",
+        label: "Reviewer notes",
+        field_type: "long_text",
+        required: false,
+      },
+    ],
+    version: 1,
+    is_active: true,
+    created_at: null,
+    updated_at: null,
+  };
+}
 
 const blankCreateForm: Partial<OrganizationSettings> & { name: string; slug: string; is_active: boolean } = {
   name: "",
@@ -62,6 +129,7 @@ export default function AdminOrganizationsPage() {
   const [accessOrgIds, setAccessOrgIds] = useState<string[]>([]);
   const [createForm, setCreateForm] = useState(blankCreateForm);
   const [draft, setDraft] = useState<Organization | null>(null);
+  const [questionnaireDraft, setQuestionnaireDraft] = useState<OrganizationQuestionnaire | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -139,6 +207,33 @@ export default function AdminOrganizationsPage() {
       }
     }
     void loadMembers();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, selectedOrganization]);
+
+  useEffect(() => {
+    if (!accessToken || !selectedOrganization) {
+      setQuestionnaireDraft(null);
+      return;
+    }
+    const token = accessToken;
+    const organizationId = selectedOrganization.id;
+    let cancelled = false;
+    async function loadQuestionnaire() {
+      try {
+        const questionnaire = await fetchOrganizationQuestionnaire(token, organizationId);
+        if (cancelled) return;
+        setQuestionnaireDraft(
+          questionnaire.id || questionnaire.questions.length > 0
+            ? questionnaire
+            : emptyQuestionnaire(organizationId)
+        );
+      } catch (err) {
+        if (!cancelled) setError(err instanceof APIError ? err.message : "Could not load questionnaire");
+      }
+    }
+    void loadQuestionnaire();
     return () => {
       cancelled = true;
     };
@@ -275,6 +370,68 @@ export default function AdminOrganizationsPage() {
       setMessage("User organization access saved.");
     } catch (err) {
       setError(err instanceof APIError ? err.message : "Could not save user organization access");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function updateQuestion(index: number, patch: Partial<QuestionnaireQuestion>) {
+    setQuestionnaireDraft((current) => {
+      if (!current) return current;
+      const questions = current.questions.map((question, questionIndex) =>
+        questionIndex === index ? { ...question, ...patch } : question
+      );
+      return { ...current, questions };
+    });
+  }
+
+  function updateQuestionOptions(index: number, rawValue: string) {
+    updateQuestion(index, {
+      options: rawValue
+        .split("\n")
+        .map((option) => option.trim())
+        .filter(Boolean),
+    });
+  }
+
+  function addQuestion() {
+    setQuestionnaireDraft((current) => {
+      if (!current) return current;
+      const nextOrder = (current.questions.at(-1)?.sort_order ?? current.questions.length * 10) + 10;
+      return { ...current, questions: [...current.questions, createBlankQuestion(nextOrder)] };
+    });
+  }
+
+  function removeQuestion(index: number) {
+    setQuestionnaireDraft((current) => {
+      if (!current) return current;
+      return { ...current, questions: current.questions.filter((_, questionIndex) => questionIndex !== index) };
+    });
+  }
+
+  async function handleSaveQuestionnaire() {
+    if (!accessToken || !selectedOrganization || !questionnaireDraft) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const saved = await saveOrganizationQuestionnaire(accessToken, selectedOrganization.id, {
+        title: questionnaireDraft.title.trim() || "Audio comparison questionnaire",
+        description: questionnaireDraft.description?.trim() || null,
+        is_active: questionnaireDraft.is_active,
+        questions: questionnaireDraft.questions.map((question, index) => ({
+          ...question,
+          id: question.id.trim(),
+          label: question.label.trim(),
+          help_text: question.help_text?.trim() || null,
+          scoring_key: question.scoring_key?.trim() || null,
+          sort_order: question.sort_order || (index + 1) * 10,
+        })),
+      });
+      setQuestionnaireDraft(saved);
+      setMessage("Questionnaire saved.");
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Could not save questionnaire");
     } finally {
       setBusy(false);
     }
@@ -486,6 +643,140 @@ export default function AdminOrganizationsPage() {
                 >
                   Save settings
                 </button>
+
+                {questionnaireDraft ? (
+                  <div className="mt-5 rounded-xl border border-[#e8def5] bg-[#fbf8ff] p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <h3 className="oa-title text-lg font-semibold">Audio comparison questionnaire</h3>
+                        <p className="mt-1 text-sm text-[#6f6a86]">
+                          Used when importing original-vs-masked audio review tasks.
+                        </p>
+                      </div>
+                      <FeatureToggle
+                        checked={questionnaireDraft.is_active}
+                        label="Active"
+                        onChange={(checked) =>
+                          setQuestionnaireDraft((current) => (current ? { ...current, is_active: checked } : current))
+                        }
+                      />
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <input
+                        value={questionnaireDraft.title}
+                        onChange={(event) =>
+                          setQuestionnaireDraft((current) =>
+                            current ? { ...current, title: event.target.value } : current
+                          )
+                        }
+                        className="oa-input px-3 py-2 text-sm"
+                        placeholder="Questionnaire title"
+                      />
+                      <input
+                        value={questionnaireDraft.description ?? ""}
+                        onChange={(event) =>
+                          setQuestionnaireDraft((current) =>
+                            current ? { ...current, description: event.target.value } : current
+                          )
+                        }
+                        className="oa-input px-3 py-2 text-sm"
+                        placeholder="Short description"
+                      />
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      {questionnaireDraft.questions.map((question, index) => {
+                        const typeMeta = questionnaireFieldTypes.find((item) => item.value === question.field_type);
+                        return (
+                          <div key={`${question.id}-${index}`} className="rounded-xl border border-[#e5daf4] bg-white p-3">
+                            <div className="grid gap-2 md:grid-cols-[1fr_1fr_180px_auto]">
+                              <input
+                                value={question.id}
+                                onChange={(event) => updateQuestion(index, { id: event.target.value })}
+                                className="oa-input px-3 py-2 text-sm"
+                                placeholder="question_id"
+                              />
+                              <input
+                                value={question.label}
+                                onChange={(event) => updateQuestion(index, { label: event.target.value })}
+                                className="oa-input px-3 py-2 text-sm"
+                                placeholder="Question label"
+                              />
+                              <select
+                                value={question.field_type}
+                                onChange={(event) => {
+                                  const fieldType = event.target.value as QuestionnaireFieldType;
+                                  const needsOptions = questionnaireFieldTypes.find((item) => item.value === fieldType)?.needsOptions;
+                                  updateQuestion(index, {
+                                    field_type: fieldType,
+                                    options: needsOptions ? question.options : [],
+                                  });
+                                }}
+                                className="oa-input px-3 py-2 text-sm"
+                              >
+                                {questionnaireFieldTypes.map((fieldType) => (
+                                  <option key={fieldType.value} value={fieldType.value}>
+                                    {fieldType.label}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => removeQuestion(index)}
+                                className="oa-btn-secondary px-3 py-2 text-sm font-semibold"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                            <div className="mt-2 grid gap-2 md:grid-cols-[1fr_180px_130px]">
+                              <input
+                                value={question.help_text ?? ""}
+                                onChange={(event) => updateQuestion(index, { help_text: event.target.value })}
+                                className="oa-input px-3 py-2 text-sm"
+                                placeholder="Help text"
+                              />
+                              <input
+                                value={question.scoring_key ?? ""}
+                                onChange={(event) => updateQuestion(index, { scoring_key: event.target.value })}
+                                className="oa-input px-3 py-2 text-sm"
+                                placeholder="Scoring key"
+                              />
+                              <label className="flex items-center gap-2 rounded-lg border border-[#e8def5] px-3 py-2 text-sm font-semibold text-[#403c5d]">
+                                <input
+                                  type="checkbox"
+                                  checked={question.required}
+                                  onChange={(event) => updateQuestion(index, { required: event.target.checked })}
+                                  className="h-4 w-4 rounded border-[#cfc3e5] text-[#241f43]"
+                                />
+                                Required
+                              </label>
+                            </div>
+                            {typeMeta?.needsOptions ? (
+                              <textarea
+                                value={question.options.join("\n")}
+                                onChange={(event) => updateQuestionOptions(index, event.target.value)}
+                                className="oa-textarea mt-2 min-h-[88px] resize-y text-sm"
+                                placeholder="One option per line"
+                              />
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button type="button" onClick={addQuestion} className="oa-btn-secondary px-3 py-2 text-sm font-semibold">
+                        Add question
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy || questionnaireDraft.questions.length === 0}
+                        onClick={() => void handleSaveQuestionnaire()}
+                        className="oa-btn-primary px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-55"
+                      >
+                        Save questionnaire
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="rounded-xl border border-[#e8def5] bg-[#fbf8ff] p-4">

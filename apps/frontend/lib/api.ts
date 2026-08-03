@@ -36,6 +36,8 @@ import type {
   Organization,
   OrganizationListResponse,
   OrganizationMemberListResponse,
+  OrganizationQuestionnaire,
+  OrganizationQuestionnaireUpsertRequest,
   OrganizationSettings,
   PIIAnnotation,
   PIILabel,
@@ -44,6 +46,7 @@ import type {
   Role,
   SecurityAuditEventListResponse,
   SecurityAuditEvent,
+  QuestionnaireAnswers,
   TaskAudioGroup,
   TaskAudioAlignmentResponse,
   TaskDetail,
@@ -374,6 +377,18 @@ export async function fetchAudioURL(
   );
 }
 
+export async function fetchComparisonAudioURL(
+  token: string,
+  taskId: string,
+  kind: "original" | "masked"
+): Promise<{ url: string; expires_in_seconds: number }> {
+  return request<{ url: string; expires_in_seconds: number }>(
+    `/tasks/${taskId}/comparison-audio-url?kind=${kind}`,
+    { method: "GET" },
+    token
+  );
+}
+
 export async function fetchTaskAudioGroup(token: string, taskId: string): Promise<TaskAudioGroup> {
   return request<TaskAudioGroup>(`/tasks/${taskId}/audio-group`, { method: "GET" }, token);
 }
@@ -479,6 +494,23 @@ export async function patchPII(
 ): Promise<{ task: TaskDetail }> {
   return request<{ task: TaskDetail }>(
     `/tasks/${taskId}/pii`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function patchQuestionnaireAnswers(
+  token: string,
+  taskId: string,
+  payload: {
+    version: number;
+    questionnaire_answers: QuestionnaireAnswers;
+    status?: TaskStatus | null;
+    comment?: string | null;
+  }
+): Promise<{ task: TaskDetail }> {
+  return request<{ task: TaskDetail }>(
+    `/tasks/${taskId}/questionnaire-answers`,
     { method: "PATCH", body: JSON.stringify(payload) },
     token
   );
@@ -695,6 +727,29 @@ export async function removeOrganizationMember(
   return request<OrganizationMemberListResponse>(
     `/organizations/${organizationId}/members/${userId}`,
     { method: "DELETE" },
+    token
+  );
+}
+
+export async function fetchOrganizationQuestionnaire(
+  token: string,
+  organizationId: string
+): Promise<OrganizationQuestionnaire> {
+  return request<OrganizationQuestionnaire>(
+    `/organizations/${organizationId}/questionnaire`,
+    { method: "GET" },
+    token
+  );
+}
+
+export async function saveOrganizationQuestionnaire(
+  token: string,
+  organizationId: string,
+  payload: OrganizationQuestionnaireUpsertRequest
+): Promise<OrganizationQuestionnaire> {
+  return request<OrganizationQuestionnaire>(
+    `/organizations/${organizationId}/questionnaire`,
+    { method: "PUT", body: JSON.stringify(payload) },
     token
   );
 }

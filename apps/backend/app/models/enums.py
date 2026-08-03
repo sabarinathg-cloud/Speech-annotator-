@@ -26,6 +26,11 @@ class TaskStatusEnum(str, enum.Enum):
     REJECTED = "Rejected"
 
 
+class TaskWorkflowTypeEnum(str, enum.Enum):
+    TRANSCRIPT_CORRECTION = "TRANSCRIPT_CORRECTION"
+    AUDIO_COMPARISON = "AUDIO_COMPARISON"
+
+
 class HiringAssessmentStatusEnum(str, enum.Enum):
     DRAFT = "DRAFT"
     ACTIVE = "ACTIVE"

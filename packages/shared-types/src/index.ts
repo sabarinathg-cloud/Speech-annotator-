@@ -12,6 +12,51 @@ export type TaskStatus =
   | "Approved"
   | "Rejected";
 
+export type TaskWorkflowType = "TRANSCRIPT_CORRECTION" | "AUDIO_COMPARISON";
+
+export type QuestionnaireFieldType =
+  | "yes_no"
+  | "single_select"
+  | "multi_select"
+  | "short_text"
+  | "long_text"
+  | "number"
+  | "rating"
+  | "date";
+
+export interface QuestionnaireQuestion {
+  id: string;
+  label: string;
+  field_type: QuestionnaireFieldType;
+  help_text: string | null;
+  required: boolean;
+  options: string[];
+  sort_order: number;
+  scoring_key: string | null;
+}
+
+export type QuestionnaireAnswerValue = string | number | boolean | string[] | null;
+export type QuestionnaireAnswers = Record<string, QuestionnaireAnswerValue>;
+
+export interface OrganizationQuestionnaire {
+  id: string | null;
+  organization_id: string;
+  title: string;
+  description: string | null;
+  questions: QuestionnaireQuestion[];
+  version: number;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface OrganizationQuestionnaireUpsertRequest {
+  title: string;
+  description?: string | null;
+  questions: QuestionnaireQuestion[];
+  is_active?: boolean;
+}
+
 export interface OrganizationSettings {
   metadata_enabled: boolean;
   pii_enabled: boolean;
@@ -162,7 +207,12 @@ export interface TaskDetail {
   organization_id?: string;
   organization_name?: string | null;
   external_id: string;
+  workflow_type: TaskWorkflowType;
   file_location: string;
+  comparison_audio_location: string | null;
+  questionnaire_id: string | null;
+  questionnaire_snapshot: Record<string, unknown>;
+  questionnaire_answers: QuestionnaireAnswers;
   final_transcript: string | null;
   notes: string | null;
   status: TaskStatus;
@@ -204,7 +254,9 @@ export interface TaskListItem {
   organization_id?: string;
   organization_name?: string | null;
   external_id: string;
+  workflow_type: TaskWorkflowType;
   file_location: string;
+  comparison_audio_location: string | null;
   status: TaskStatus;
   assignee_id: string | null;
   assignee_name: string | null;
@@ -365,8 +417,10 @@ export interface SecurityAuditEventListResponse {
 }
 
 export interface ColumnMappingRequest {
+  workflow_type?: TaskWorkflowType;
   id_column: string;
   file_location_column: string;
+  comparison_audio_column?: string | null;
   transcript_columns: Array<{
     source_key: string;
     column_name: string;

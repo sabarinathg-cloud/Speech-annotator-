@@ -39,6 +39,7 @@ from app.schemas.task import (
     UpdateMetadataRequest,
     UpdateNotesRequest,
     UpdatePIIAnnotationsRequest,
+    UpdateQuestionnaireAnswersRequest,
     UpdateStatusRequest,
     UpdateTranscriptRequest,
 )
@@ -508,6 +509,26 @@ def update_pii(
         raise _http_error(exc) from exc
 
 
+@router.patch("/{task_id}/questionnaire-answers", response_model=TaskPatchResponse)
+def update_questionnaire_answers(
+    task_id: str,
+    payload: UpdateQuestionnaireAnswersRequest,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
+):
+    service = TaskService(db)
+    try:
+        return service.update_questionnaire_answers(
+            task_id=task_id,
+            payload=payload,
+            actor=current_user,
+            organization=organization,
+        )
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
 @router.patch("/{task_id}/assignee", response_model=TaskPatchResponse)
 def update_assignee(
     task_id: str,
@@ -571,6 +592,39 @@ def get_audio_url(
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
             metadata={"expires_in_seconds": expires},
+        )
+        return AudioURLResponse(url=url, expires_in_seconds=expires)
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.get("/{task_id}/comparison-audio-url", response_model=AudioURLResponse)
+def get_comparison_audio_url(
+    task_id: str,
+    request: Request,
+    kind: Literal["original", "masked"] = Query(default="original"),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_confidentiality_ack),
+    organization: Organization = Depends(get_current_organization),
+):
+    service = TaskService(db)
+    try:
+        url, expires = service.generate_comparison_audio_url(
+            task_id,
+            kind=kind,
+            actor=current_user,
+            organization=organization,
+        )
+        SecurityAuditService(db).log_event(
+            action="GENERATE_COMPARISON_AUDIO_URL",
+            actor=current_user,
+            resource_type="audio",
+            resource_id=task_id,
+            task_id=task_id,
+            organization_id=organization.id,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            metadata={"kind": kind, "expires_in_seconds": expires},
         )
         return AudioURLResponse(url=url, expires_in_seconds=expires)
     except ServiceError as exc:

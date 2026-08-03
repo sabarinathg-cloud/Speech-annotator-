@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models.enums import TaskStatusEnum, UploadJobStatusEnum
+from app.models.enums import TaskStatusEnum, TaskWorkflowTypeEnum, UploadJobStatusEnum
 from app.models.organization import Organization
 from app.models.task import AnnotationTask
 from app.models.user import User
@@ -31,6 +31,7 @@ from app.schemas.upload import (
     ValidationGateResult,
 )
 from app.services.errors import ServiceError
+from app.services.organization_service import OrganizationService
 from app.storage.audio_resolver import AudioResolver
 from app.utils.excel import (
     SUPPORTED_TABULAR_SUFFIXES,
@@ -324,6 +325,9 @@ class UploadService:
         all_errors = list(validation.errors)
         imported = 0
         skipped = 0
+        questionnaire_info = None
+        if mapping.workflow_type == TaskWorkflowTypeEnum.AUDIO_COMPARISON:
+            questionnaire_info = OrganizationService(self.db).active_questionnaire_snapshot(organization.id)
 
         self.upload_repo.clear_job_errors(upload_job_id)
 
@@ -339,6 +343,7 @@ class UploadService:
                         actor_user_id=job.created_by_id,
                         organization_id=job.organization_id,
                         metadata_enabled=organization.metadata_enabled,
+                        questionnaire_info=questionnaire_info,
                     )
                 imported += 1
             except IntegrityError:
@@ -447,8 +452,12 @@ class UploadService:
         columns = set(str(col) for col in df.columns.tolist())
         missing_columns = []
 
+        is_audio_comparison = mapping.workflow_type == TaskWorkflowTypeEnum.AUDIO_COMPARISON
         required_columns = [mapping.id_column, mapping.file_location_column]
-        required_columns.extend([item.column_name for item in mapping.transcript_columns])
+        if is_audio_comparison and mapping.comparison_audio_column:
+            required_columns.append(mapping.comparison_audio_column)
+        if not is_audio_comparison:
+            required_columns.extend([item.column_name for item in mapping.transcript_columns])
         optional_columns = [
             mapping.final_transcript_column,
             mapping.notes_column,
@@ -474,7 +483,7 @@ class UploadService:
                 extra={"invalid_fields": sorted(invalid_core)},
             )
 
-        transcript_sources = [item.source_key for item in mapping.transcript_columns]
+        transcript_sources = [] if is_audio_comparison else [item.source_key for item in mapping.transcript_columns]
         mapped_columns = set(required_columns)
         mapped_columns.update(c for c in optional_columns if c)
 
@@ -509,12 +518,22 @@ class UploadService:
 
             external_id = str(normalize_cell(row_obj.get(mapping.id_column, ""))).strip()
             file_location = str(normalize_cell(row_obj.get(mapping.file_location_column, ""))).strip()
+            comparison_audio_location = (
+                str(normalize_cell(row_obj.get(mapping.comparison_audio_column, ""))).strip()
+                if mapping.comparison_audio_column
+                else ""
+            )
             if not external_id:
                 row_errors.append(("id", "ID is required", ""))
             if not file_location:
                 row_errors.append(("file_location", "file_location is required", ""))
             else:
                 audio_locations_for_sampling.append(file_location)
+            if is_audio_comparison:
+                if not comparison_audio_location:
+                    row_errors.append(("comparison_audio_location", "masked/comparison audio location is required", ""))
+                else:
+                    audio_locations_for_sampling.append(comparison_audio_location)
             if external_id:
                 if external_id in seen_ids:
                     duplicate_id_count += 1
@@ -527,16 +546,17 @@ class UploadService:
                 if final_transcript_value:
                     rows_with_final_transcript += 1
 
-            transcript_values = []
-            for transcript_map in mapping.transcript_columns:
-                value = str(normalize_cell(row_obj.get(transcript_map.column_name, ""))).strip()
-                transcript_values.append(value)
-                if value:
-                    non_empty_transcript_by_source[transcript_map.source_key] += 1
-            if any(transcript_values):
-                rows_with_any_transcript += 1
-            else:
-                row_errors.append(("transcript", "At least one transcript value is required", ""))
+            if not is_audio_comparison:
+                transcript_values = []
+                for transcript_map in mapping.transcript_columns:
+                    value = str(normalize_cell(row_obj.get(transcript_map.column_name, ""))).strip()
+                    transcript_values.append(value)
+                    if value:
+                        non_empty_transcript_by_source[transcript_map.source_key] += 1
+                if any(transcript_values):
+                    rows_with_any_transcript += 1
+                else:
+                    row_errors.append(("transcript", "At least one transcript value is required", ""))
 
             if mapping.status_column:
                 raw_status = str(normalize_cell(row_obj.get(mapping.status_column, ""))).strip()
@@ -599,6 +619,8 @@ class UploadService:
         uses_metadata = bool(mapping.core_metadata_columns) or bool(mapping.custom_metadata_columns)
         if uses_metadata and not organization.metadata_enabled:
             raise ServiceError("Metadata import is disabled for this organization", status_code=403)
+        if mapping.workflow_type == TaskWorkflowTypeEnum.AUDIO_COMPARISON:
+            OrganizationService(self.db).active_questionnaire_snapshot(organization.id)
 
     def _evaluate_quick_validation_gates(
         self,
@@ -614,6 +636,20 @@ class UploadService:
         duration_samples: list[tuple[str, Decimal]],
     ) -> list[QuickValidationGate]:
         gates: list[QuickValidationGate] = []
+        if mapping.workflow_type == TaskWorkflowTypeEnum.AUDIO_COMPARISON:
+            gates.append(self._evaluate_duplicate_id_gate(row_count, duplicate_id_count))
+            gates.append(
+                QuickValidationGate(
+                    gate_key="audio_comparison_questionnaire",
+                    status="pass",
+                    message="Active organization questionnaire is configured for audio comparison.",
+                    checked_count=1,
+                    failed_count=0,
+                )
+            )
+            gates.append(self._evaluate_audio_extension_gate(audio_locations))
+            gates.append(self._evaluate_audio_location_gate(audio_locations))
+            return gates
 
         empty_sources = [
             transcript_map.source_key
@@ -890,9 +926,16 @@ class UploadService:
         actor_user_id: str,
         organization_id: str,
         metadata_enabled: bool,
+        questionnaire_info: tuple[Any, dict] | None = None,
     ) -> None:
         external_id = str(normalize_cell(row.get(mapping.id_column, ""))).strip()
         file_location = str(normalize_cell(row.get(mapping.file_location_column, ""))).strip()
+        is_audio_comparison = mapping.workflow_type == TaskWorkflowTypeEnum.AUDIO_COMPARISON
+        comparison_audio_location = (
+            str(normalize_cell(row.get(mapping.comparison_audio_column, ""))).strip()
+            if mapping.comparison_audio_column
+            else None
+        )
 
         status = TaskStatusEnum.NOT_STARTED
         if mapping.status_column:
@@ -912,6 +955,8 @@ class UploadService:
             mapping.file_location_column,
             *[item.column_name for item in mapping.transcript_columns],
         }
+        if mapping.comparison_audio_column:
+            mapped_columns.add(mapping.comparison_audio_column)
         optional = [
             mapping.final_transcript_column,
             mapping.notes_column,
@@ -932,15 +977,26 @@ class UploadService:
             if str(normalize_cell(row.get(column))).strip() != ""
         }
         original_row = {str(k): normalize_cell(v) for k, v in row.items()}
+        questionnaire = None
+        questionnaire_snapshot: dict[str, Any] | None = None
+        if is_audio_comparison:
+            if not questionnaire_info:
+                raise ServiceError("Active audio comparison questionnaire is required for this organization")
+            questionnaire, questionnaire_snapshot = questionnaire_info
 
         task = self.task_repo.create_task(
             organization_id=organization_id,
             upload_job_id=upload_job_id,
             external_id=external_id,
             file_location=file_location,
+            workflow_type=mapping.workflow_type,
+            comparison_audio_location=comparison_audio_location,
+            questionnaire_id=questionnaire.id if questionnaire else None,
+            questionnaire_snapshot=questionnaire_snapshot or {},
+            questionnaire_answers={},
             final_transcript=(
                 str(normalize_cell(row.get(mapping.final_transcript_column))).strip()
-                if mapping.final_transcript_column
+                if mapping.final_transcript_column and not is_audio_comparison
                 else ""
             ),
             notes=(
@@ -971,6 +1027,16 @@ class UploadService:
             custom_metadata=custom_metadata,
             original_row=original_row,
         )
+
+        if is_audio_comparison:
+            self.task_repo.add_status_history(
+                task_id=task.id,
+                old_status=None,
+                new_status=task.status,
+                changed_by_id=actor_user_id,
+                comment="Audio comparison task imported from manifest",
+            )
+            return
 
         variants = []
         for transcript_map in mapping.transcript_columns:

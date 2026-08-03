@@ -5,12 +5,15 @@ import type {
   AudioMaskInterval,
   AudioMaskMode,
   PIIAnnotation,
+  QuestionnaireAnswers,
+  QuestionnaireAnswerValue,
+  QuestionnaireQuestion,
   TaskAudioGroup,
   TaskDetail,
   TaskStatus,
 } from "@outcomes/shared-types";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
@@ -32,12 +35,14 @@ import { validateAnnotationText } from "@/lib/text-validation";
 import {
   APIError,
   detectTaskPII,
+  fetchComparisonAudioURL,
   fetchAudioURL,
   fetchPIILabels,
   fetchTask,
   fetchTaskAudioGroup,
   generateTaskAlignment,
   maskTaskPIIAudio,
+  patchQuestionnaireAnswers,
   patchTaskCombined,
   saveTaskAudioGroupFullTranscript,
   startTask,
@@ -1167,6 +1172,9 @@ export default function TaskWorkspacePage() {
 
   useEffect(() => {
     function handleKeydown(event: KeyboardEvent) {
+      if (task?.workflow_type === "AUDIO_COMPARISON") {
+        return;
+      }
       const key = event.key.toLowerCase();
       const editableTarget = isEditableShortcutTarget(event.target);
       const transcriptTarget = event.target === transcriptTextareaRef.current;
@@ -2225,6 +2233,20 @@ export default function TaskWorkspacePage() {
     );
   }
 
+  if (task.workflow_type === "AUDIO_COMPARISON") {
+    return (
+      <AudioComparisonWorkspace
+        accessToken={accessToken}
+        backendBase={backendBase}
+        initialTask={task}
+        initialOriginalAudioUrl={audioUrl}
+        loadError={error}
+        canReview={user?.role === "ADMIN" || user?.role === "REVIEWER"}
+        userEmail={user?.email ?? "signed-in user"}
+      />
+    );
+  }
+
   return (
     <section className="animate-fade-in space-y-4">
       <div
@@ -3040,6 +3062,631 @@ export default function TaskWorkspacePage() {
       />
     </section>
   );
+}
+
+function AudioComparisonWorkspace({
+  accessToken,
+  backendBase,
+  initialTask,
+  initialOriginalAudioUrl,
+  loadError,
+  canReview,
+  userEmail,
+}: {
+  accessToken: string | null;
+  backendBase: string;
+  initialTask: TaskDetail;
+  initialOriginalAudioUrl: string | null;
+  loadError: string | null;
+  canReview: boolean;
+  userEmail: string;
+}) {
+  const router = useRouter();
+  const [currentTask, setCurrentTask] = useState<TaskDetail>(initialTask);
+  const [answers, setAnswers] = useState<QuestionnaireAnswers>(initialTask.questionnaire_answers ?? {});
+  const [version, setVersion] = useState(initialTask.version);
+  const [originalAudioUrl, setOriginalAudioUrl] = useState<string | null>(initialOriginalAudioUrl);
+  const [maskedComparisonAudioUrl, setMaskedComparisonAudioUrl] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>("saved");
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState<string | null>(loadError);
+  const [reviewComment, setReviewComment] = useState("");
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const originalAudioRef = useRef<HTMLAudioElement | null>(null);
+  const maskedAudioRef = useRef<HTMLAudioElement | null>(null);
+  const answersRef = useRef<QuestionnaireAnswers>(initialTask.questionnaire_answers ?? {});
+  const dirtyRef = useRef(false);
+  const savingRef = useRef(false);
+  const versionRef = useRef(initialTask.version);
+
+  const questionnaire = currentTask.questionnaire_snapshot as {
+    title?: string;
+    description?: string | null;
+    version?: number | null;
+    questions?: QuestionnaireQuestion[];
+  };
+  const questions = useMemo(
+    () =>
+      Array.isArray(questionnaire.questions)
+        ? [...questionnaire.questions].sort((left, right) => left.sort_order - right.sort_order || left.id.localeCompare(right.id))
+        : [],
+    [questionnaire.questions]
+  );
+  const missingRequiredQuestions = useMemo(
+    () => questions.filter((question) => question.required && !questionnaireAnswerHasValue(answers[question.id])),
+    [answers, questions]
+  );
+  const canComplete = questions.length > 0 && missingRequiredQuestions.length === 0;
+  const isTerminal = ["Completed", "Needs Review", "Reviewed", "Approved", "Rejected"].includes(currentTask.status);
+
+  useEffect(() => {
+    answersRef.current = answers;
+  }, [answers]);
+
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+
+  useEffect(() => {
+    versionRef.current = version;
+  }, [version]);
+
+  useEffect(() => {
+    setCurrentTask(initialTask);
+    setAnswers(initialTask.questionnaire_answers ?? {});
+    setVersion(initialTask.version);
+    setOriginalAudioUrl(initialOriginalAudioUrl);
+    setMaskedComparisonAudioUrl(null);
+    setSaveState("saved");
+    setDirty(false);
+    setError(loadError);
+    setReviewComment("");
+  }, [initialOriginalAudioUrl, initialTask, loadError]);
+
+  useEffect(() => {
+    if (!accessToken || !currentTask.id) return;
+    const token = accessToken;
+    const currentTaskId = currentTask.id;
+    let cancelled = false;
+
+    async function loadComparisonAudioUrls() {
+      const [originalResult, maskedResult] = await Promise.allSettled([
+        fetchComparisonAudioURL(token, currentTaskId, "original"),
+        fetchComparisonAudioURL(token, currentTaskId, "masked"),
+      ]);
+      if (cancelled) return;
+
+      if (originalResult.status === "fulfilled") {
+        setOriginalAudioUrl(`${backendBase}${originalResult.value.url}`);
+      }
+      if (maskedResult.status === "fulfilled") {
+        setMaskedComparisonAudioUrl(`${backendBase}${maskedResult.value.url}`);
+      } else {
+        setMaskedComparisonAudioUrl(null);
+        setError(maskedResult.reason instanceof APIError ? maskedResult.reason.message : "Masked audio is not available.");
+      }
+    }
+
+    void loadComparisonAudioUrls();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, backendBase, currentTask.id]);
+
+  useEffect(() => {
+    if (!dirty || !accessToken || savingRef.current) return;
+    const timeout = window.setTimeout(() => {
+      void saveAnswers();
+    }, 1200);
+    return () => window.clearTimeout(timeout);
+  }, [accessToken, answers, dirty]);
+
+  useEffect(() => {
+    function handleKeydown(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void saveAnswers();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && canComplete) {
+        event.preventDefault();
+        void completeTask();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  }, [canComplete, accessToken]);
+
+  function updateAnswer(questionId: string, value: QuestionnaireAnswerValue) {
+    setAnswers((prev) => ({ ...prev, [questionId]: value }));
+    setDirty(true);
+    setSaveState("unsaved");
+    setError(null);
+  }
+
+  async function saveAnswers(targetStatus?: TaskStatus, comment?: string | null): Promise<boolean> {
+    if (!accessToken || savingRef.current) return false;
+    const token = accessToken;
+    const currentTaskId = currentTask.id;
+    if (targetStatus === "Completed" && !canComplete) {
+      setError("Answer all required questions before completing this comparison.");
+      return false;
+    }
+
+    const answerSnapshot = answersRef.current;
+    const answerSnapshotKey = JSON.stringify(answerSnapshot);
+    savingRef.current = true;
+    setSaveState("saving");
+    setError(null);
+    try {
+      const response = await patchQuestionnaireAnswers(token, currentTaskId, {
+        version: versionRef.current,
+        questionnaire_answers: answerSnapshot,
+        status: targetStatus ?? null,
+        comment: comment ?? null,
+      });
+      setCurrentTask(response.task);
+      setVersion(response.task.version);
+      const returnedAnswers = response.task.questionnaire_answers ?? {};
+      const changedWhileSaving = JSON.stringify(answersRef.current) !== answerSnapshotKey;
+      setAnswers(changedWhileSaving ? answersRef.current : returnedAnswers);
+      setDirty(changedWhileSaving);
+      setSaveState(changedWhileSaving ? "unsaved" : "saved");
+      return true;
+    } catch (err) {
+      setSaveState("error");
+      setError(err instanceof APIError ? err.message : "Failed to save questionnaire answers");
+      return false;
+    } finally {
+      savingRef.current = false;
+    }
+  }
+
+  async function completeTask() {
+    setBusyAction("complete");
+    try {
+      const saved = await saveAnswers("Completed", "Audio comparison questionnaire completed");
+      if (!saved) return;
+      const nextTaskId = currentTask.next_task_id;
+      router.push(nextTaskId ? `/tasks/${nextTaskId}` : "/tasks");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function reviewTask(targetStatus: Extract<TaskStatus, "Approved" | "Rejected" | "Needs Review">) {
+    const comment = reviewComment.trim();
+    if (targetStatus === "Rejected" && !comment) {
+      setError("Add a rejection reason before rejecting this comparison.");
+      return;
+    }
+    setBusyAction(targetStatus);
+    try {
+      const saved = await saveAnswers(targetStatus, comment || `Audio comparison ${targetStatus.toLowerCase()}`);
+      if (saved) {
+        setReviewComment("");
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function syncMaskedToOriginal() {
+    const original = originalAudioRef.current;
+    const masked = maskedAudioRef.current;
+    if (!original || !masked) return;
+    masked.currentTime = original.currentTime;
+  }
+
+  function playBoth() {
+    const original = originalAudioRef.current;
+    const masked = maskedAudioRef.current;
+    if (!original || !masked) return;
+    masked.currentTime = original.currentTime;
+    void original.play();
+    void masked.play();
+  }
+
+  function pauseBoth() {
+    originalAudioRef.current?.pause();
+    maskedAudioRef.current?.pause();
+  }
+
+  return (
+    <section className="animate-fade-in space-y-4">
+      <div
+        aria-label="Confidential task watermark"
+        className="pointer-events-none rounded-xl border border-[#e6dcf2] bg-white/80 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-[#514a70]"
+      >
+        Confidential comparison | {userEmail} | {currentTask.external_id}
+      </div>
+
+      <div className="oa-card p-5 sm:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6b7280]">Audio Comparison</p>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <h2 className="oa-title text-xl font-semibold">Task {currentTask.external_id}</h2>
+              <StatusBadge status={currentTask.status} />
+              <span className="rounded-full border border-[#dbeafe] bg-[#eff6ff] px-2.5 py-1 text-xs font-semibold text-[#1d4ed8]">
+                Original vs masked
+              </span>
+            </div>
+            <p className="mt-1 max-w-[900px] break-all text-xs text-[#6b7280]">Original: {currentTask.file_location}</p>
+            <p className="mt-1 max-w-[900px] break-all text-xs text-[#6b7280]">
+              Masked: {currentTask.comparison_audio_location ?? "Not configured"}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              disabled={!currentTask.prev_task_id}
+              onClick={() => currentTask.prev_task_id && router.push(`/tasks/${currentTask.prev_task_id}`)}
+              className="oa-btn-secondary px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={() => void saveAnswers()}
+              disabled={saveState === "saving"}
+              className="oa-btn-secondary px-4 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {saveState === "saving" ? "Saving..." : "Save Now"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void completeTask()}
+              disabled={!canComplete || saveState === "saving" || busyAction === "complete" || currentTask.status === "Completed"}
+              className="oa-btn-primary px-4 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {currentTask.next_task_id ? "Complete and Next" : "Complete"}
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-2 border-t border-[#ece3f7] pt-3 md:grid-cols-4">
+          <MiniStat label="Questionnaire" value={questionnaire.title ?? "Audio comparison"} />
+          <MiniStat label="Required left" value={missingRequiredQuestions.length} />
+          <MiniStat label="Answered" value={`${questions.filter((question) => questionnaireAnswerHasValue(answers[question.id])).length}/${questions.length}`} />
+          <MiniStat label="Save" value={saveState === "unsaved" ? "Pending" : saveState === "saving" ? "Saving" : saveState === "error" ? "Failed" : "Saved"} />
+        </div>
+      </div>
+
+      {error ? (
+        <div className="rounded-lg border border-[#f0c8c8] bg-[#fff3f3] px-3 py-2 text-sm text-[#a13a3a]">{error}</div>
+      ) : null}
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <ComparisonAudioCard
+          title="Original audio"
+          path={currentTask.file_location}
+          audioUrl={originalAudioUrl}
+          audioRef={originalAudioRef}
+        />
+        <ComparisonAudioCard
+          title="Masked audio"
+          path={currentTask.comparison_audio_location}
+          audioUrl={maskedComparisonAudioUrl}
+          audioRef={maskedAudioRef}
+        />
+      </div>
+
+      <div className="oa-card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="oa-title text-sm font-semibold">Playback Controls</h3>
+            <p className="mt-1 text-xs text-[#6b7280]">Use these when you want both players aligned for a quick A/B check.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={syncMaskedToOriginal} className="oa-btn-secondary px-3 py-1.5 text-xs font-semibold">
+              Sync masked to original
+            </button>
+            <button type="button" onClick={playBoth} className="oa-btn-secondary px-3 py-1.5 text-xs font-semibold">
+              Play both
+            </button>
+            <button type="button" onClick={pauseBoth} className="oa-btn-secondary px-3 py-1.5 text-xs font-semibold">
+              Pause both
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="oa-card p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#797590]">Questionnaire</p>
+            <h3 className="oa-title mt-1 text-lg font-semibold">{questionnaire.title ?? "Audio comparison questionnaire"}</h3>
+            {questionnaire.description ? (
+              <p className="oa-subtext mt-1 max-w-3xl text-sm">{questionnaire.description}</p>
+            ) : null}
+          </div>
+          {questionnaire.version ? <span className="oa-chip">Version {questionnaire.version}</span> : null}
+        </div>
+
+        {questions.length > 0 ? (
+          <div className="mt-4 grid gap-3">
+            {questions.map((question, index) => (
+              <QuestionnaireQuestionInput
+                key={question.id}
+                question={question}
+                index={index + 1}
+                value={answers[question.id] ?? null}
+                onChange={(value) => updateAnswer(question.id, value)}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="mt-4 rounded-lg border border-[#f0c8c8] bg-[#fff3f3] px-3 py-2 text-sm text-[#a13a3a]">
+            This task does not have a questionnaire snapshot. Ask an admin to configure the organization questionnaire and re-import this comparison job.
+          </p>
+        )}
+
+        {missingRequiredQuestions.length > 0 ? (
+          <p className="mt-4 rounded-lg border border-[#ffd9a8] bg-[#fff8ec] px-3 py-2 text-sm text-[#925b17]">
+            Required before completion: {missingRequiredQuestions.map((question) => question.label).join(", ")}
+          </p>
+        ) : questions.length > 0 ? (
+          <p className="mt-4 rounded-lg border border-[#cdebd7] bg-[#f4fff7] px-3 py-2 text-sm text-[#2f6940]">
+            Required questions are answered. You can complete this comparison when your review is finished.
+          </p>
+        ) : null}
+      </div>
+
+      {canReview && isTerminal ? (
+        <div className="oa-card p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="oa-title text-base font-semibold">Reviewer Decision</h3>
+              <p className="mt-1 text-sm text-[#6b7280]">Listen to both files, review answers, then approve or reject this comparison.</p>
+            </div>
+            <StatusBadge status={currentTask.status} />
+          </div>
+          <label className="mt-3 block text-xs font-medium text-[#4b5563]">
+            Decision note
+            <textarea
+              value={reviewComment}
+              onChange={(event) => setReviewComment(event.target.value)}
+              rows={3}
+              className="oa-textarea mt-1"
+              placeholder="Required when rejecting"
+            />
+          </label>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void reviewTask("Approved")}
+              disabled={Boolean(busyAction)}
+              className="oa-btn-primary px-3.5 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {busyAction === "Approved" ? "Saving..." : "Approve"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void reviewTask("Rejected")}
+              disabled={Boolean(busyAction)}
+              className="rounded-lg border border-[#f0c8c8] bg-white px-3.5 py-2 text-sm font-semibold text-[#a13a3a] transition hover:bg-[#fff4f4] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Reject
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="oa-card p-4">
+        <div className="grid grid-cols-1 gap-2 text-xs text-[#4b5563] sm:grid-cols-3">
+          <ShortcutHint keys="Ctrl + S" label="Save answers" />
+          <ShortcutHint keys="Ctrl + Enter" label="Complete when ready" />
+          <ShortcutHint keys="Sync" label="Align masked playback" />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded-lg border border-[#e8def5] bg-[#fbf8ff] px-3 py-2">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#77718f]">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-[#272241]">{value}</p>
+    </div>
+  );
+}
+
+function ComparisonAudioCard({
+  title,
+  path,
+  audioUrl,
+  audioRef,
+}: {
+  title: string;
+  path: string | null;
+  audioUrl: string | null;
+  audioRef: RefObject<HTMLAudioElement | null>;
+}) {
+  return (
+    <div className="oa-card p-4">
+      <div className="mb-3">
+        <h3 className="oa-title text-sm font-semibold">{title}</h3>
+        <p className="mt-1 break-all text-xs text-[#6b7280]">{path ?? "No path configured"}</p>
+      </div>
+      {audioUrl ? (
+        <audio
+          ref={audioRef}
+          controls
+          controlsList="nodownload"
+          preload="metadata"
+          className="w-full"
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <source src={audioUrl} />
+        </audio>
+      ) : (
+        <p className="rounded-lg border border-[#f0c8c8] bg-[#fff3f3] px-3 py-3 text-sm text-[#a13a3a]">
+          Audio is not available. Check the mapped path and backend file access.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function QuestionnaireQuestionInput({
+  question,
+  index,
+  value,
+  onChange,
+}: {
+  question: QuestionnaireQuestion;
+  index: number;
+  value: QuestionnaireAnswerValue;
+  onChange: (value: QuestionnaireAnswerValue) => void;
+}) {
+  const label = `${index}. ${question.label}${question.required ? " *" : ""}`;
+
+  return (
+    <div className="rounded-xl border border-[#e8def5] bg-[#fbf8ff] p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <label className="text-sm font-semibold text-[#272241]" htmlFor={`question-${question.id}`}>
+          {label}
+        </label>
+        {question.scoring_key ? <span className="oa-chip">Score key: {question.scoring_key}</span> : null}
+      </div>
+      {question.help_text ? <p className="mt-1 text-xs text-[#6f6a89]">{question.help_text}</p> : null}
+      <div className="mt-3">
+        {renderQuestionControl(question, value, onChange)}
+      </div>
+    </div>
+  );
+}
+
+function renderQuestionControl(
+  question: QuestionnaireQuestion,
+  value: QuestionnaireAnswerValue,
+  onChange: (value: QuestionnaireAnswerValue) => void
+) {
+  if (question.field_type === "yes_no") {
+    const currentValue = typeof value === "string" ? value : value === true ? "yes" : value === false ? "no" : "";
+    return (
+      <div className="flex flex-wrap gap-2">
+        {["yes", "no"].map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => onChange(option)}
+            className={`rounded-lg border px-4 py-2 text-sm font-semibold transition ${
+              currentValue === option
+                ? "border-[#221b4c] bg-[#221b4c] text-white"
+                : "border-[#d9d2ef] bg-white text-[#403a60] hover:bg-[#f8f4ff]"
+            }`}
+          >
+            {option === "yes" ? "Yes" : "No"}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  if (question.field_type === "single_select") {
+    return (
+      <select
+        id={`question-${question.id}`}
+        value={typeof value === "string" ? value : ""}
+        onChange={(event) => onChange(event.target.value || null)}
+        className="oa-select bg-white"
+      >
+        <option value="">Select an option</option>
+        {question.options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  if (question.field_type === "multi_select") {
+    const selected = Array.isArray(value) ? value : [];
+    return (
+      <div className="grid gap-2 sm:grid-cols-2">
+        {question.options.map((option) => (
+          <label key={option} className="flex items-center gap-2 rounded-lg border border-[#e5dbf2] bg-white px-3 py-2 text-sm text-[#403a60]">
+            <input
+              type="checkbox"
+              checked={selected.includes(option)}
+              onChange={(event) => {
+                const next = event.target.checked
+                  ? [...selected, option]
+                  : selected.filter((item) => item !== option);
+                onChange(next);
+              }}
+              className="h-4 w-4 rounded border-[#cfc4df]"
+            />
+            {option}
+          </label>
+        ))}
+      </div>
+    );
+  }
+
+  if (question.field_type === "long_text") {
+    return (
+      <textarea
+        id={`question-${question.id}`}
+        value={typeof value === "string" ? value : ""}
+        onChange={(event) => onChange(event.target.value)}
+        rows={4}
+        className="oa-textarea bg-white"
+        placeholder="Write feedback or notes"
+      />
+    );
+  }
+
+  if (question.field_type === "number" || question.field_type === "rating") {
+    return (
+      <input
+        id={`question-${question.id}`}
+        type="number"
+        min={question.field_type === "rating" ? 1 : undefined}
+        max={question.field_type === "rating" ? 5 : undefined}
+        step={question.field_type === "rating" ? 1 : "any"}
+        value={typeof value === "number" ? String(value) : typeof value === "string" ? value : ""}
+        onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))}
+        className="oa-input bg-white"
+        placeholder={question.field_type === "rating" ? "1 to 5" : "Enter a number"}
+      />
+    );
+  }
+
+  if (question.field_type === "date") {
+    return (
+      <input
+        id={`question-${question.id}`}
+        type="date"
+        value={typeof value === "string" ? value : ""}
+        onChange={(event) => onChange(event.target.value || null)}
+        className="oa-input bg-white"
+      />
+    );
+  }
+
+  return (
+    <input
+      id={`question-${question.id}`}
+      type="text"
+      value={typeof value === "string" ? value : ""}
+      onChange={(event) => onChange(event.target.value)}
+      className="oa-input bg-white"
+      placeholder="Short answer"
+    />
+  );
+}
+
+function questionnaireAnswerHasValue(value: QuestionnaireAnswerValue | undefined): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.some((item) => item.trim().length > 0);
+  return true;
 }
 
 function ShortcutHint({ keys, label }: { keys: string; label: string }) {

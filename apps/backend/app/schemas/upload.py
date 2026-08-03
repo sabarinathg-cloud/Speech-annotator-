@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.enums import UploadJobStatusEnum
+from app.models.enums import TaskWorkflowTypeEnum, UploadJobStatusEnum
 
 
 class TranscriptColumnMapping(BaseModel):
@@ -14,8 +14,10 @@ class TranscriptColumnMapping(BaseModel):
 
 class ColumnMappingRequest(BaseModel):
     id_column: str
+    workflow_type: TaskWorkflowTypeEnum = TaskWorkflowTypeEnum.TRANSCRIPT_CORRECTION
     file_location_column: str
-    transcript_columns: list[TranscriptColumnMapping]
+    comparison_audio_column: str | None = None
+    transcript_columns: list[TranscriptColumnMapping] = Field(default_factory=list)
     final_transcript_column: str | None = None
     notes_column: str | None = None
     status_column: str | None = None
@@ -23,9 +25,13 @@ class ColumnMappingRequest(BaseModel):
     custom_metadata_columns: list[str] | None = None
 
     @model_validator(mode="after")
-    def validate_transcripts(self) -> "ColumnMappingRequest":
-        if not self.transcript_columns:
+    def validate_workflow_mapping(self) -> "ColumnMappingRequest":
+        if self.workflow_type == TaskWorkflowTypeEnum.TRANSCRIPT_CORRECTION and not self.transcript_columns:
             raise ValueError("At least one transcript column is required")
+        if self.workflow_type == TaskWorkflowTypeEnum.AUDIO_COMPARISON:
+            if not self.comparison_audio_column:
+                raise ValueError("Masked/comparison audio column is required for audio comparison imports")
+            self.transcript_columns = self.transcript_columns or []
         return self
 
 

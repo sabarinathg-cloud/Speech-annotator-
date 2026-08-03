@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
-from app.models.enums import TaskStatusEnum
+from app.models.enums import TaskStatusEnum, TaskWorkflowTypeEnum
 
 AudioMaskMode = Literal["silence", "beep"]
 
@@ -23,7 +23,9 @@ class TaskListItemResponse(BaseModel):
 
     id: str
     external_id: str
+    workflow_type: TaskWorkflowTypeEnum = TaskWorkflowTypeEnum.TRANSCRIPT_CORRECTION
     file_location: str
+    comparison_audio_location: str | None = None
     status: TaskStatusEnum
     assignee_id: str | None
     assignee_name: str | None
@@ -102,7 +104,12 @@ class TaskDetailResponse(BaseModel):
 
     id: str
     external_id: str
+    workflow_type: TaskWorkflowTypeEnum = TaskWorkflowTypeEnum.TRANSCRIPT_CORRECTION
     file_location: str
+    comparison_audio_location: str | None = None
+    questionnaire_id: str | None = None
+    questionnaire_snapshot: dict[str, Any] = Field(default_factory=dict)
+    questionnaire_answers: dict[str, Any] = Field(default_factory=dict)
     final_transcript: str | None
     notes: str | None
     status: TaskStatusEnum
@@ -183,6 +190,13 @@ class UpdateStatusRequest(BaseModel):
 class UpdatePIIAnnotationsRequest(BaseModel):
     version: int = Field(ge=1)
     pii_annotations: list[PIIAnnotation]
+
+
+class UpdateQuestionnaireAnswersRequest(BaseModel):
+    version: int = Field(ge=1)
+    questionnaire_answers: dict[str, Any] = Field(default_factory=dict)
+    status: TaskStatusEnum | None = None
+    comment: str | None = None
 
 
 class UpdateAssigneeRequest(BaseModel):

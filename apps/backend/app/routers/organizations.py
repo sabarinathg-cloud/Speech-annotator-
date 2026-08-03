@@ -9,6 +9,8 @@ from app.schemas.organization import (
     OrganizationListResponse,
     OrganizationMemberAddRequest,
     OrganizationMemberListResponse,
+    OrganizationQuestionnaireResponse,
+    OrganizationQuestionnaireUpsertRequest,
     OrganizationResponse,
     OrganizationUpdateRequest,
 )
@@ -105,5 +107,30 @@ def remove_member(
 ):
     try:
         return OrganizationService(db).remove_member(organization_id=organization_id, user_id=user_id)
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.get("/{organization_id}/questionnaire", response_model=OrganizationQuestionnaireResponse)
+def get_questionnaire(
+    organization_id: str,
+    db: Session = Depends(get_db_session),
+    _: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    try:
+        return OrganizationService(db).get_questionnaire(organization_id)
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.put("/{organization_id}/questionnaire", response_model=OrganizationQuestionnaireResponse)
+def upsert_questionnaire(
+    organization_id: str,
+    payload: OrganizationQuestionnaireUpsertRequest,
+    db: Session = Depends(get_db_session),
+    _: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    try:
+        return OrganizationService(db).upsert_questionnaire(organization_id=organization_id, payload=payload)
     except ServiceError as exc:
         raise _http_error(exc) from exc

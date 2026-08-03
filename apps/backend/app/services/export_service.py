@@ -10,7 +10,10 @@ from app.models.enums import TaskStatusEnum
 from app.models.task import AnnotationTask
 
 DEFAULT_EXPORT_COLUMNS = [
+    "workflow_type",
     "final_transcript_corrected",
+    "original_audio_location",
+    "masked_audio_location",
     "notes_corrected",
     "annotation_status",
     "corrected_speaker_gender",
@@ -95,6 +98,10 @@ class ExportService:
 
     def _serialize_task(self, task: AnnotationTask, *, transcript_redaction_enabled: bool) -> dict:
         row = dict(task.original_row or {})
+        row["workflow_type"] = task.workflow_type.value
+        row["original_audio_location"] = task.file_location
+        row["masked_audio_location"] = task.comparison_audio_location or ""
+        self._add_questionnaire_answers(row, task)
         row["final_transcript_corrected"] = task.final_transcript or ""
         if transcript_redaction_enabled:
             row["final_transcript_redacted"] = self._redacted_transcript(task)
@@ -118,6 +125,46 @@ class ExportService:
         row["task_id"] = task.id
         row["external_id"] = task.external_id
         return row
+
+    def _add_questionnaire_answers(self, row: dict, task: AnnotationTask) -> None:
+        snapshot = task.questionnaire_snapshot or {}
+        questions = snapshot.get("questions") if isinstance(snapshot, dict) else None
+        if not isinstance(questions, list):
+            questions = []
+        answers = task.questionnaire_answers or {}
+        if not isinstance(answers, dict):
+            answers = {}
+
+        if snapshot:
+            row["questionnaire_title"] = str(snapshot.get("title") or "")
+            row["questionnaire_version"] = snapshot.get("version") or ""
+
+        known_question_ids: set[str] = set()
+        for raw_question in questions:
+            if not isinstance(raw_question, dict):
+                continue
+            question_id = str(raw_question.get("id") or "").strip()
+            if not question_id:
+                continue
+            known_question_ids.add(question_id)
+            label = str(raw_question.get("label") or question_id).strip() or question_id
+            row[f"question_{question_id}_label"] = label
+            row[f"question_{question_id}_answer"] = self._format_answer_value(answers.get(question_id))
+
+        for question_id, answer in answers.items():
+            key = str(question_id)
+            if key in known_question_ids:
+                continue
+            row[f"question_{key}_answer"] = self._format_answer_value(answer)
+
+    def _format_answer_value(self, value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return "; ".join(str(item) for item in value)
+        if isinstance(value, bool):
+            return "Yes" if value else "No"
+        return str(value)
 
     def _redacted_transcript(self, task: AnnotationTask) -> str:
         text = task.final_transcript or ""

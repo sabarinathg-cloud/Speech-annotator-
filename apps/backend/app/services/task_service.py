@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
-from app.models.enums import RoleEnum, TaskStatusEnum
+from app.models.enums import RoleEnum, TaskStatusEnum, TaskWorkflowTypeEnum
 from app.models.organization import Organization
 from app.models.task import AnnotationTask
 from app.models.user import User
@@ -46,6 +46,7 @@ from app.schemas.task import (
     TaskMaskedAudioResponse,
     TaskPatchResponse,
     UpdateAudioGroupTranscriptRequest,
+    UpdateQuestionnaireAnswersRequest,
 )
 from app.services.audio_alignment_service import AudioAlignmentService, transcript_hash
 from app.services.audio_group_service import audio_group_info, audio_group_sort_key
@@ -134,7 +135,7 @@ class TaskService:
         if actor.role == RoleEnum.CANDIDATE:
             raise ServiceError("Candidates cannot access annotation tasks", status_code=403)
         if actor.role == RoleEnum.ADMIN:
-            assignee_id = task.assignee_id or "unassigned"
+            assignee_id = "unassigned"
         else:
             assignee_id = actor.id
         return self.task_repo.get_next_unfinished_task(assignee_id=assignee_id, organization_id=organization.id)
@@ -152,6 +153,7 @@ class TaskService:
         update_fields = provided_fields - {"version", "comment"}
         if not update_fields:
             raise ServiceError("No task fields provided for update", status_code=422)
+        self._guard_workflow_updates(task, update_fields)
         self._guard_feature_updates(update_fields, organization)
         if "due_date" in update_fields and actor.role != RoleEnum.ADMIN:
             raise ServiceError("Only admins can update due dates", status_code=403)
@@ -197,6 +199,8 @@ class TaskService:
             if payload.status is None:
                 raise ServiceError("Status cannot be null", status_code=422)
             self._validate_status_transition(task.status, payload.status, actor)
+            if payload.status == TaskStatusEnum.COMPLETED:
+                self._validate_questionnaire_completion(task, task.questionnaire_answers or {})
             if task.status != payload.status:
                 previous_values["status"] = task.status.value
                 new_values["status"] = payload.status.value
@@ -258,6 +262,7 @@ class TaskService:
         organization: Organization,
     ) -> TaskPatchResponse:
         task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
+        self._ensure_transcript_correction_task(task)
         _raise_for_invalid_text(final_transcript, "transcript")
         self._ensure_version(task, version, ["final_transcript"], actor=actor)
         previous = {"final_transcript": task.final_transcript}
@@ -302,6 +307,7 @@ class TaskService:
         if not organization.metadata_enabled:
             raise ServiceError("Metadata is disabled for this organization", status_code=403)
         task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
+        self._ensure_transcript_correction_task(task)
         changed_fields = []
         previous_values: dict[str, Any] = {}
         new_values: dict[str, Any] = {}
@@ -404,6 +410,8 @@ class TaskService:
         old_status = task.status
 
         self._validate_status_transition(old_status, new_status, actor)
+        if new_status == TaskStatusEnum.COMPLETED:
+            self._validate_questionnaire_completion(task, task.questionnaire_answers or {})
 
         task.status = new_status
         self._mark_tagger(task, actor)
@@ -438,6 +446,7 @@ class TaskService:
         if not organization.pii_enabled:
             raise ServiceError("PII annotation is disabled for this organization", status_code=403)
         task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
+        self._ensure_transcript_correction_task(task)
         self._ensure_version(task, version, ["pii_annotations"], actor=actor)
 
         normalized_annotations = self._normalize_pii_annotations(
@@ -468,6 +477,83 @@ class TaskService:
             changed_fields=changed_fields,
             previous_values=previous,
             new_values=new_values,
+        )
+        self.db.commit()
+        return TaskPatchResponse(task=self._to_task_detail(task, viewer=actor))
+
+    def update_questionnaire_answers(
+        self,
+        *,
+        task_id: str,
+        payload: UpdateQuestionnaireAnswersRequest,
+        actor: User,
+        organization: Organization,
+    ) -> TaskPatchResponse:
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
+        self._ensure_audio_comparison_task(task)
+        _raise_for_invalid_text(payload.comment, "comment")
+        self._ensure_version(task, payload.version, ["questionnaire_answers"], actor=actor)
+
+        normalized_answers = self._normalize_questionnaire_answers(
+            task,
+            payload.questionnaire_answers or {},
+            completing=payload.status == TaskStatusEnum.COMPLETED,
+        )
+        old_status = task.status
+        status_changed = False
+        if payload.status is not None:
+            self._validate_status_transition(task.status, payload.status, actor)
+            if payload.status == TaskStatusEnum.COMPLETED:
+                self._validate_questionnaire_completion(task, normalized_answers)
+            if task.status != payload.status:
+                status_changed = True
+
+        previous_values: dict[str, Any] = {}
+        new_values: dict[str, Any] = {}
+        changed_fields: dict[str, bool] = {}
+
+        if (task.questionnaire_answers or {}) != normalized_answers:
+            previous_values["questionnaire_answers"] = task.questionnaire_answers or {}
+            new_values["questionnaire_answers"] = normalized_answers
+            changed_fields["questionnaire_answers"] = True
+            task.questionnaire_answers = normalized_answers
+
+        if payload.status is not None and status_changed:
+            previous_values["status"] = old_status.value
+            new_values["status"] = payload.status.value
+            changed_fields["status"] = True
+            task.status = payload.status
+
+        if not changed_fields:
+            return TaskPatchResponse(task=self._to_task_detail(task, viewer=actor))
+
+        self._mark_tagger(task, actor)
+        auto_started_from = None
+        if payload.status is None:
+            auto_started_from = self._auto_start_task_if_needed(task, actor)
+            if auto_started_from:
+                previous_values["status"] = auto_started_from.value
+                new_values["status"] = task.status.value
+                changed_fields["status"] = True
+                old_status = auto_started_from
+                status_changed = True
+
+        task = self.task_repo.save_task(task)
+        if status_changed:
+            self.task_repo.add_status_history(
+                task_id=task.id,
+                old_status=old_status,
+                new_status=task.status,
+                changed_by_id=actor.id,
+                comment=payload.comment if payload.status is not None else AUTO_START_COMMENT,
+            )
+        self.task_repo.add_audit_log(
+            task_id=task.id,
+            actor_user_id=actor.id,
+            action="UPDATE_QUESTIONNAIRE_ANSWERS",
+            changed_fields=changed_fields,
+            previous_values=previous_values,
+            new_values={**new_values, **({"comment": payload.comment} if payload.comment else {})},
         )
         self.db.commit()
         return TaskPatchResponse(task=self._to_task_detail(task, viewer=actor))
@@ -974,8 +1060,46 @@ class TaskService:
         url = f"{settings.api_v1_prefix}/media/audio/{token}"
         return url, settings.audio_signing_expire_seconds
 
+    def generate_comparison_audio_url(
+        self,
+        task_id: str,
+        *,
+        kind: str,
+        actor: User,
+        organization: Organization,
+    ) -> tuple[str, int]:
+        from itsdangerous import URLSafeTimedSerializer
+
+        from app.core.config import get_settings
+
+        task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
+        self._ensure_audio_comparison_task(task)
+        normalized_kind = kind.strip().lower()
+        if normalized_kind == "original":
+            file_location = task.file_location
+        elif normalized_kind == "masked":
+            file_location = task.comparison_audio_location
+        else:
+            raise ServiceError("Audio kind must be original or masked", status_code=422)
+        if not file_location:
+            raise ServiceError("Requested comparison audio is not configured", status_code=404)
+
+        settings = get_settings()
+        serializer = URLSafeTimedSerializer(settings.audio_signing_secret)
+        token = serializer.dumps(
+            {
+                "task_id": task.id,
+                "file_location": file_location,
+                "actor_user_id": actor.id,
+                "organization_id": organization.id,
+                "comparison_kind": normalized_kind,
+            }
+        )
+        return f"{settings.api_v1_prefix}/media/audio/{token}", settings.audio_signing_expire_seconds
+
     def get_audio_group(self, task_id: str, *, actor: User, organization: Organization) -> TaskAudioGroupResponse:
         task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
+        self._ensure_transcript_correction_task(task)
         group_info = audio_group_info(task.file_location)
         if not group_info:
             return self._single_chunk_group_response(
@@ -1074,6 +1198,7 @@ class TaskService:
         organization: Organization,
     ) -> TaskAudioGroupResponse:
         task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
+        self._ensure_transcript_correction_task(task)
         group_info = audio_group_info(task.file_location)
         if not group_info:
             raise ServiceError("Full transcript review is available for WAV chunk folders only", status_code=422)
@@ -1130,6 +1255,7 @@ class TaskService:
         if actor is None:
             raise ServiceError("Audio token is missing a valid user", status_code=401)
         task = self._get_task_or_404(task_id, actor=actor, organization_id=organization_id)
+        self._ensure_transcript_correction_task(task)
         group_info = audio_group_info(task.file_location)
         if not group_info:
             raise ServiceError("Full audio review is available for WAV chunk folders only", status_code=422)
@@ -1142,6 +1268,7 @@ class TaskService:
         self, task_id: str, *, actor: User, organization: Organization, force: bool = False
     ) -> TaskAudioAlignmentResponse:
         task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
+        self._ensure_transcript_correction_task(task)
         words = self.audio_alignment_service.align_task_audio(task, force=force)
         self.db.flush()
         self.db.commit()
@@ -1170,6 +1297,7 @@ class TaskService:
         if not organization.audio_masking_enabled:
             raise ServiceError("Audio masking is disabled for this organization", status_code=403)
         task = self._get_task_or_404(task_id, actor=actor, organization_id=organization.id)
+        self._ensure_transcript_correction_task(task)
         masked_audio_location, intervals = self.audio_alignment_service.build_pii_masked_audio(
             task,
             force=force,
@@ -1492,7 +1620,14 @@ class TaskService:
         return TaskDetailResponse(
             id=task.id,
             external_id=task.external_id,
+            workflow_type=task.workflow_type,
             file_location=self._display_file_location(task.file_location, viewer),
+            comparison_audio_location=self._display_file_location(task.comparison_audio_location, viewer)
+            if task.comparison_audio_location
+            else None,
+            questionnaire_id=task.questionnaire_id,
+            questionnaire_snapshot=task.questionnaire_snapshot or {},
+            questionnaire_answers=task.questionnaire_answers or {},
             final_transcript=task.final_transcript,
             notes=task.notes,
             status=task.status,
@@ -1533,7 +1668,11 @@ class TaskService:
         return TaskListItemResponse(
             id=task.id,
             external_id=task.external_id,
+            workflow_type=task.workflow_type,
             file_location=self._display_file_location(task.file_location, viewer),
+            comparison_audio_location=self._display_file_location(task.comparison_audio_location, viewer)
+            if task.comparison_audio_location
+            else None,
             status=task.status,
             assignee_id=task.assignee_id,
             assignee_name=task.assignee.full_name if task.assignee else None,
@@ -1648,6 +1787,136 @@ class TaskService:
             RoleEnum.REVIEWER,
         }:
             raise ServiceError("Only reviewer/admin can make review decisions", status_code=403)
+
+    def _guard_workflow_updates(self, task: AnnotationTask, update_fields: set[str]) -> None:
+        if task.workflow_type != TaskWorkflowTypeEnum.AUDIO_COMPARISON:
+            return
+        transcript_fields = {
+            "final_transcript",
+            "speaker_gender",
+            "speaker_role",
+            "language",
+            "channel",
+            "duration_seconds",
+            "custom_metadata",
+            "pii_annotations",
+        }
+        blocked = sorted(update_fields & transcript_fields)
+        if blocked:
+            raise ServiceError(
+                "Transcript, metadata, and PII fields are not used for audio comparison tasks",
+                status_code=422,
+                extra={"fields": blocked},
+            )
+
+    def _ensure_transcript_correction_task(self, task: AnnotationTask) -> None:
+        if task.workflow_type == TaskWorkflowTypeEnum.AUDIO_COMPARISON:
+            raise ServiceError("This action is only available for transcript correction tasks", status_code=422)
+
+    def _ensure_audio_comparison_task(self, task: AnnotationTask) -> None:
+        if task.workflow_type != TaskWorkflowTypeEnum.AUDIO_COMPARISON:
+            raise ServiceError("This action is only available for audio comparison tasks", status_code=422)
+
+    def _questionnaire_questions(self, task: AnnotationTask) -> list[dict[str, Any]]:
+        snapshot = task.questionnaire_snapshot if isinstance(task.questionnaire_snapshot, dict) else {}
+        raw_questions = snapshot.get("questions") if isinstance(snapshot, dict) else []
+        if not isinstance(raw_questions, list):
+            return []
+        questions = [question for question in raw_questions if isinstance(question, dict) and question.get("id")]
+        return sorted(questions, key=lambda item: (int(item.get("sort_order", 0) or 0), str(item.get("id", ""))))
+
+    def _normalize_questionnaire_answers(
+        self,
+        task: AnnotationTask,
+        answers: dict[str, Any],
+        *,
+        completing: bool,
+    ) -> dict[str, Any]:
+        if not isinstance(answers, dict):
+            raise ServiceError("Questionnaire answers must be an object", status_code=422)
+        questions = self._questionnaire_questions(task)
+        question_by_id = {str(question.get("id")): question for question in questions}
+        unknown_ids = sorted(str(key) for key in answers.keys() if str(key) not in question_by_id)
+        if unknown_ids:
+            raise ServiceError(
+                "Questionnaire contains answers for unknown questions",
+                status_code=422,
+                extra={"question_ids": unknown_ids},
+            )
+
+        normalized: dict[str, Any] = {}
+        for question_id, question in question_by_id.items():
+            if question_id not in answers:
+                continue
+            value = answers.get(question_id)
+            field_type = str(question.get("field_type") or "")
+            options = [str(option) for option in question.get("options") or []]
+            if value is None or value == "":
+                continue
+            if field_type == "yes_no":
+                if isinstance(value, bool):
+                    normalized[question_id] = "yes" if value else "no"
+                else:
+                    text = str(value).strip().lower()
+                    if text not in {"yes", "no"}:
+                        raise ServiceError(f"Answer for '{question.get('label')}' must be yes or no", status_code=422)
+                    normalized[question_id] = text
+            elif field_type == "single_select":
+                text = str(value).strip()
+                if options and text not in options:
+                    raise ServiceError(f"Answer for '{question.get('label')}' must be one of the configured options", status_code=422)
+                normalized[question_id] = text
+            elif field_type == "multi_select":
+                if not isinstance(value, list):
+                    raise ServiceError(f"Answer for '{question.get('label')}' must be a list", status_code=422)
+                selected = [str(item).strip() for item in value if str(item).strip()]
+                invalid = [item for item in selected if options and item not in options]
+                if invalid:
+                    raise ServiceError(
+                        f"Answer for '{question.get('label')}' contains an option that is not configured",
+                        status_code=422,
+                    )
+                normalized[question_id] = selected
+            elif field_type in {"number", "rating"}:
+                try:
+                    normalized[question_id] = float(value)
+                except (TypeError, ValueError) as exc:
+                    raise ServiceError(f"Answer for '{question.get('label')}' must be numeric", status_code=422) from exc
+            elif field_type == "date":
+                normalized[question_id] = str(value).strip()
+            else:
+                normalized[question_id] = str(value)
+
+        if completing:
+            self._validate_questionnaire_completion(task, normalized)
+        return normalized
+
+    def _validate_questionnaire_completion(self, task: AnnotationTask, answers: dict[str, Any]) -> None:
+        if task.workflow_type != TaskWorkflowTypeEnum.AUDIO_COMPARISON:
+            return
+        questions = self._questionnaire_questions(task)
+        if not questions:
+            raise ServiceError("Audio comparison questionnaire has no questions", status_code=422)
+        missing = [
+            str(question.get("id"))
+            for question in questions
+            if question.get("required") and not self._answer_has_value(answers.get(str(question.get("id"))))
+        ]
+        if missing:
+            raise ServiceError(
+                "Complete all required questionnaire answers before marking this task complete",
+                status_code=422,
+                extra={"missing_question_ids": missing},
+            )
+
+    def _answer_has_value(self, value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, list):
+            return any(self._answer_has_value(item) for item in value)
+        return True
 
     def _auto_start_task_if_needed(self, task: AnnotationTask, actor: User) -> TaskStatusEnum | None:
         if task.status != TaskStatusEnum.NOT_STARTED:

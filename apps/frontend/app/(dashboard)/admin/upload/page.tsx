@@ -1,6 +1,14 @@
 "use client";
 
-import type { AdminUser, ColumnMappingRequest, JobStatus, Role, TaskStatus, UserStatusFilter } from "@outcomes/shared-types";
+import type {
+  AdminUser,
+  ColumnMappingRequest,
+  JobStatus,
+  Role,
+  TaskStatus,
+  TaskWorkflowType,
+  UserStatusFilter,
+} from "@outcomes/shared-types";
 import { useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
@@ -81,9 +89,7 @@ function chooseColumn(columns: string[], preferredNames: string[], fallback = ""
 function chooseAudioLocationColumn(columns: string[]): string {
   const exact = chooseColumn(columns, [
     "segment_audio_path_abs",
-    "redacted_audio_path_abs",
     "segment_audio_path_rel",
-    "redacted_audio_path_rel",
     "file_location",
     "audio",
     "audio_path",
@@ -100,6 +106,24 @@ function chooseAudioLocationColumn(columns: string[]): string {
   return columns.find((column) => /audio|wav|file.*path|path.*file/i.test(column) && !/transcript/i.test(column)) ?? "";
 }
 
+function chooseComparisonAudioLocationColumn(columns: string[]): string {
+  const exact = chooseColumn(columns, [
+    "comparison_audio_location",
+    "masked_audio_location",
+    "masked_audio_path",
+    "masked_audio",
+    "redacted_audio_path_abs",
+    "redacted_audio_path_rel",
+    "redacted_audio",
+    "comparison_audio",
+  ]);
+  if (exact) return exact;
+
+  return (
+    columns.find((column) => /masked|redacted|comparison/i.test(column) && /audio|wav|path|file/i.test(column)) ?? ""
+  );
+}
+
 export default function AdminUploadPage() {
   const { accessToken, user, activeOrganizationId } = useAuth();
   const [file, setFile] = useState<File | null>(null);
@@ -112,8 +136,10 @@ export default function AdminUploadPage() {
   const [uploadJobId, setUploadJobId] = useState<string | null>(null);
   const [columns, setColumns] = useState<string[]>([]);
   const [sampleRows, setSampleRows] = useState<Record<string, unknown>[]>([]);
+  const [workflowType, setWorkflowType] = useState<TaskWorkflowType>("TRANSCRIPT_CORRECTION");
   const [idColumn, setIdColumn] = useState("id");
   const [fileLocationColumn, setFileLocationColumn] = useState("file_location");
+  const [comparisonAudioColumn, setComparisonAudioColumn] = useState("");
   const [finalTranscriptColumn, setFinalTranscriptColumn] = useState("");
   const [notesColumn, setNotesColumn] = useState("");
   const [speakerGenderColumn, setSpeakerGenderColumn] = useState("");
@@ -164,27 +190,36 @@ export default function AdminUploadPage() {
   }, [activeOrganizationId]);
   const mapping = useMemo<ColumnMappingRequest>(
     () => ({
+      workflow_type: workflowType,
       id_column: idColumn,
       file_location_column: fileLocationColumn,
-      transcript_columns: transcriptMaps
-        .filter((item) => item.source_key && item.column_name)
-        .map((item) => ({
-          source_key: item.source_key.trim(),
-          source_label: item.source_label.trim(),
-          column_name: item.column_name
-        })),
-      final_transcript_column: finalTranscriptColumn || null,
-      notes_column: notesColumn || null,
-      core_metadata_columns: {
-        ...(speakerGenderColumn ? { speaker_gender: speakerGenderColumn } : {}),
-        ...(speakerRoleColumn ? { speaker_role: speakerRoleColumn } : {}),
-        ...(languageColumn ? { language: languageColumn } : {}),
-        ...(channelColumn ? { channel: channelColumn } : {}),
-        ...(durationColumn ? { duration_seconds: durationColumn } : {})
-      }
+      comparison_audio_column: workflowType === "AUDIO_COMPARISON" ? comparisonAudioColumn || null : null,
+      transcript_columns:
+        workflowType === "TRANSCRIPT_CORRECTION"
+          ? transcriptMaps
+              .filter((item) => item.source_key && item.column_name)
+              .map((item) => ({
+                source_key: item.source_key.trim(),
+                source_label: item.source_label.trim(),
+                column_name: item.column_name
+              }))
+          : [],
+      final_transcript_column: workflowType === "TRANSCRIPT_CORRECTION" ? finalTranscriptColumn || null : null,
+      notes_column: workflowType === "TRANSCRIPT_CORRECTION" ? notesColumn || null : null,
+      core_metadata_columns:
+        workflowType === "TRANSCRIPT_CORRECTION"
+          ? {
+              ...(speakerGenderColumn ? { speaker_gender: speakerGenderColumn } : {}),
+              ...(speakerRoleColumn ? { speaker_role: speakerRoleColumn } : {}),
+              ...(languageColumn ? { language: languageColumn } : {}),
+              ...(channelColumn ? { channel: channelColumn } : {}),
+              ...(durationColumn ? { duration_seconds: durationColumn } : {})
+            }
+          : {}
     }),
     [
       channelColumn,
+      comparisonAudioColumn,
       durationColumn,
       fileLocationColumn,
       finalTranscriptColumn,
@@ -193,12 +228,14 @@ export default function AdminUploadPage() {
       notesColumn,
       speakerGenderColumn,
       speakerRoleColumn,
-      transcriptMaps
+      transcriptMaps,
+      workflowType
     ]
   );
 
   function applyPreviewDefaults(preview: Awaited<ReturnType<typeof previewUpload>>) {
     const audioLocationColumn = chooseAudioLocationColumn(preview.columns);
+    const maskedAudioLocationColumn = chooseComparisonAudioLocationColumn(preview.columns);
     setColumns(preview.columns);
     setSampleRows(preview.sample_rows);
     setIdColumn(
@@ -209,6 +246,7 @@ export default function AdminUploadPage() {
       )
     );
     setFileLocationColumn(audioLocationColumn || preview.columns[0] || "");
+    setComparisonAudioColumn(maskedAudioLocationColumn);
     setFinalTranscriptColumn(
       chooseColumn(preview.columns, ["final_transcript", "corrected_transcript", "normalized_final_transcript"], "")
     );
@@ -1065,10 +1103,10 @@ export default function AdminUploadPage() {
           <ul className="mt-3 space-y-2 text-sm text-[#403c5d]">
             <li className="oa-card-soft px-3 py-2">Ensure one unique ID per row.</li>
             <li className="oa-card-soft px-3 py-2">
-              Confirm the mapped audio column points to playable media.
+              Confirm mapped audio columns point to playable media.
             </li>
             <li className="oa-card-soft px-3 py-2">
-              Map at least one transcript source before validation.
+              For transcript correction, map at least one transcript source. For audio comparison, configure the org questionnaire first.
             </li>
           </ul>
         </div>
@@ -1083,131 +1121,192 @@ export default function AdminUploadPage() {
             </span>
           </div>
 
+          <div className="oa-card-soft p-4">
+            <h4 className="text-sm font-semibold text-[#262240]">Import Mode</h4>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {[
+                {
+                  value: "TRANSCRIPT_CORRECTION" as const,
+                  label: "Transcript correction",
+                  description: "Import one audio file per task with ASR transcript sources for correction.",
+                },
+                {
+                  value: "AUDIO_COMPARISON" as const,
+                  label: "Audio comparison",
+                  description: "Import original and masked audio pairs, then collect questionnaire answers.",
+                },
+              ].map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    setWorkflowType(option.value);
+                    setValidationResult(null);
+                    setImportResult(null);
+                    setImportJob(null);
+                  }}
+                  className={`rounded-xl border px-3 py-3 text-left transition ${
+                    workflowType === option.value
+                      ? "border-[#b895e7] bg-white text-[#251f44] shadow-[0_12px_28px_-24px_rgba(15,23,42,0.8)]"
+                      : "border-[#e5dbf2] bg-[#fbf8ff] text-[#5f5a79] hover:bg-white"
+                  }`}
+                >
+                  <span className="block text-sm font-semibold">{option.label}</span>
+                  <span className="mt-1 block text-xs leading-relaxed">{option.description}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <div className="oa-card-soft p-4">
               <h4 className="text-sm font-semibold text-[#262240]">Required Fields</h4>
               <div className="mt-3 grid grid-cols-1 gap-3">
                 <ColumnSelect label="ID Column" value={idColumn} columns={columns} onChange={setIdColumn} />
                 <ColumnSelect
-                  label="File Location Column"
+                  label={workflowType === "AUDIO_COMPARISON" ? "Original Audio Column" : "File Location Column"}
                   value={fileLocationColumn}
                   columns={columns}
                   onChange={setFileLocationColumn}
                 />
-                <ColumnSelect
-                  label="Final Transcript Column (Optional)"
-                  value={finalTranscriptColumn}
-                  columns={columns}
-                  onChange={setFinalTranscriptColumn}
-                  allowEmptyOption
-                  emptyOptionLabel="Leave empty (start final transcript blank)"
-                />
+                {workflowType === "AUDIO_COMPARISON" ? (
+                  <ColumnSelect
+                    label="Masked Audio Column"
+                    value={comparisonAudioColumn}
+                    columns={columns}
+                    onChange={setComparisonAudioColumn}
+                  />
+                ) : (
+                  <ColumnSelect
+                    label="Final Transcript Column (Optional)"
+                    value={finalTranscriptColumn}
+                    columns={columns}
+                    onChange={setFinalTranscriptColumn}
+                    allowEmptyOption
+                    emptyOptionLabel="Leave empty (start final transcript blank)"
+                  />
+                )}
               </div>
             </div>
 
-            <div className="oa-card-soft p-4">
-              <h4 className="text-sm font-semibold text-[#262240]">Optional Metadata</h4>
-              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <ColumnSelect label="Notes" value={notesColumn} columns={columns} onChange={setNotesColumn} />
-                <ColumnSelect
-                  label="Speaker Gender"
-                  value={speakerGenderColumn}
-                  columns={columns}
-                  onChange={setSpeakerGenderColumn}
-                />
-                <ColumnSelect
-                  label="Speaker Role"
-                  value={speakerRoleColumn}
-                  columns={columns}
-                  onChange={setSpeakerRoleColumn}
-                />
-                <ColumnSelect label="Language" value={languageColumn} columns={columns} onChange={setLanguageColumn} />
-                <ColumnSelect label="Channel" value={channelColumn} columns={columns} onChange={setChannelColumn} />
-                <ColumnSelect label="Duration" value={durationColumn} columns={columns} onChange={setDurationColumn} />
-              </div>
-            </div>
-          </div>
-
-          <div className="oa-card-soft p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h4 className="text-sm font-semibold text-[#262240]">Transcript Sources</h4>
-              <button
-                type="button"
-                onClick={() =>
-                  setTranscriptMaps((prev) => [
-                    ...prev,
-                    {
-                      source_key: "",
-                      source_label: "",
-                      column_name: ""
-                    }
-                  ])
-                }
-                className="oa-btn-secondary px-2.5 py-1.5 text-xs font-medium"
-              >
-                Add Source
-              </button>
-            </div>
-
-            <div className="mt-3 space-y-2">
-              {transcriptMaps.map((item, index) => (
-                <div
-                  key={`${item.source_key}-${index}`}
-                  className="grid grid-cols-1 gap-2 rounded-lg border border-[#e5dbf2] bg-white p-2 md:grid-cols-[1fr_1fr_1.2fr_auto]"
-                >
-                  <input
-                    value={item.source_key}
-                    onChange={(event) =>
-                      setTranscriptMaps((prev) =>
-                        prev.map((entry, entryIndex) =>
-                          entryIndex === index ? { ...entry, source_key: event.target.value } : entry
-                        )
-                      )
-                    }
-                    className="oa-input"
-                    placeholder="source_key"
+            {workflowType === "TRANSCRIPT_CORRECTION" ? (
+              <div className="oa-card-soft p-4">
+                <h4 className="text-sm font-semibold text-[#262240]">Optional Metadata</h4>
+                <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <ColumnSelect label="Notes" value={notesColumn} columns={columns} onChange={setNotesColumn} />
+                  <ColumnSelect
+                    label="Speaker Gender"
+                    value={speakerGenderColumn}
+                    columns={columns}
+                    onChange={setSpeakerGenderColumn}
                   />
-                  <input
-                    value={item.source_label}
-                    onChange={(event) =>
-                      setTranscriptMaps((prev) =>
-                        prev.map((entry, entryIndex) =>
-                          entryIndex === index ? { ...entry, source_label: event.target.value } : entry
-                        )
-                      )
-                    }
-                    className="oa-input"
-                    placeholder="source_label"
+                  <ColumnSelect
+                    label="Speaker Role"
+                    value={speakerRoleColumn}
+                    columns={columns}
+                    onChange={setSpeakerRoleColumn}
                   />
-                  <select
-                    value={item.column_name}
-                    onChange={(event) =>
-                      setTranscriptMaps((prev) =>
-                        prev.map((entry, entryIndex) =>
-                          entryIndex === index ? { ...entry, column_name: event.target.value } : entry
-                        )
-                      )
-                    }
-                    className="oa-select"
-                  >
-                    <option value="">Select transcript column</option>
-                    {columns.map((column) => (
-                      <option key={column} value={column}>
-                        {column}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => setTranscriptMaps((prev) => prev.filter((_, entryIndex) => entryIndex !== index))}
-                    className="rounded-lg border border-[#f0c8c8] bg-white px-3 py-2 text-xs font-medium text-[#a13a3a] transition hover:bg-[#fff4f4]"
-                  >
-                    Remove
-                  </button>
+                  <ColumnSelect label="Language" value={languageColumn} columns={columns} onChange={setLanguageColumn} />
+                  <ColumnSelect label="Channel" value={channelColumn} columns={columns} onChange={setChannelColumn} />
+                  <ColumnSelect label="Duration" value={durationColumn} columns={columns} onChange={setDurationColumn} />
                 </div>
-              ))}
-            </div>
+              </div>
+            ) : (
+              <div className="oa-card-soft p-4">
+                <h4 className="text-sm font-semibold text-[#262240]">Questionnaire Requirement</h4>
+                <p className="mt-2 text-sm leading-relaxed text-[#5f5a79]">
+                  Audio comparison imports use the active questionnaire configured on the Organizations page. Each task stores
+                  a snapshot so future edits do not change already imported work.
+                </p>
+                <p className="mt-3 rounded-lg border border-[#e3d8f3] bg-white px-3 py-2 text-xs text-[#605a7e]">
+                  Extra manifest columns are kept in the original row for audit/export context.
+                </p>
+              </div>
+            )}
           </div>
+
+          {workflowType === "TRANSCRIPT_CORRECTION" ? (
+            <div className="oa-card-soft p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-sm font-semibold text-[#262240]">Transcript Sources</h4>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setTranscriptMaps((prev) => [
+                      ...prev,
+                      {
+                        source_key: "",
+                        source_label: "",
+                        column_name: ""
+                      }
+                    ])
+                  }
+                  className="oa-btn-secondary px-2.5 py-1.5 text-xs font-medium"
+                >
+                  Add Source
+                </button>
+              </div>
+
+              <div className="mt-3 space-y-2">
+                {transcriptMaps.map((item, index) => (
+                  <div
+                    key={`${item.source_key}-${index}`}
+                    className="grid grid-cols-1 gap-2 rounded-lg border border-[#e5dbf2] bg-white p-2 md:grid-cols-[1fr_1fr_1.2fr_auto]"
+                  >
+                    <input
+                      value={item.source_key}
+                      onChange={(event) =>
+                        setTranscriptMaps((prev) =>
+                          prev.map((entry, entryIndex) =>
+                            entryIndex === index ? { ...entry, source_key: event.target.value } : entry
+                          )
+                        )
+                      }
+                      className="oa-input"
+                      placeholder="source_key"
+                    />
+                    <input
+                      value={item.source_label}
+                      onChange={(event) =>
+                        setTranscriptMaps((prev) =>
+                          prev.map((entry, entryIndex) =>
+                            entryIndex === index ? { ...entry, source_label: event.target.value } : entry
+                          )
+                        )
+                      }
+                      className="oa-input"
+                      placeholder="source_label"
+                    />
+                    <select
+                      value={item.column_name}
+                      onChange={(event) =>
+                        setTranscriptMaps((prev) =>
+                          prev.map((entry, entryIndex) =>
+                            entryIndex === index ? { ...entry, column_name: event.target.value } : entry
+                          )
+                        )
+                      }
+                      className="oa-select"
+                    >
+                      <option value="">Select transcript column</option>
+                      {columns.map((column) => (
+                        <option key={column} value={column}>
+                          {column}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setTranscriptMaps((prev) => prev.filter((_, entryIndex) => entryIndex !== index))}
+                      className="rounded-lg border border-[#f0c8c8] bg-white px-3 py-2 text-xs font-medium text-[#a13a3a] transition hover:bg-[#fff4f4]"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="flex flex-wrap items-center gap-2 border-t border-[#ece3f7] pt-4">
             <button
