@@ -555,8 +555,9 @@ export default function AdminOrganizationsPage() {
 
         <section className="oa-card p-4">
           {draft ? (
-            <div className="grid gap-5 xl:grid-cols-[1fr_420px]">
-              <div>
+            <div className="space-y-5">
+              <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+                <div>
                 <div className="flex flex-col gap-3 sm:flex-row">
                   <input
                     value={draft.name}
@@ -643,143 +644,9 @@ export default function AdminOrganizationsPage() {
                 >
                   Save settings
                 </button>
+                </div>
 
-                {questionnaireDraft ? (
-                  <div className="mt-5 rounded-xl border border-[#e8def5] bg-[#fbf8ff] p-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <h3 className="oa-title text-lg font-semibold">Audio comparison questionnaire</h3>
-                        <p className="mt-1 text-sm text-[#6f6a86]">
-                          Used when importing original-vs-masked audio review tasks.
-                        </p>
-                      </div>
-                      <FeatureToggle
-                        checked={questionnaireDraft.is_active}
-                        label="Active"
-                        onChange={(checked) =>
-                          setQuestionnaireDraft((current) => (current ? { ...current, is_active: checked } : current))
-                        }
-                      />
-                    </div>
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      <input
-                        value={questionnaireDraft.title}
-                        onChange={(event) =>
-                          setQuestionnaireDraft((current) =>
-                            current ? { ...current, title: event.target.value } : current
-                          )
-                        }
-                        className="oa-input px-3 py-2 text-sm"
-                        placeholder="Questionnaire title"
-                      />
-                      <input
-                        value={questionnaireDraft.description ?? ""}
-                        onChange={(event) =>
-                          setQuestionnaireDraft((current) =>
-                            current ? { ...current, description: event.target.value } : current
-                          )
-                        }
-                        className="oa-input px-3 py-2 text-sm"
-                        placeholder="Short description"
-                      />
-                    </div>
-                    <div className="mt-4 space-y-3">
-                      {questionnaireDraft.questions.map((question, index) => {
-                        const typeMeta = questionnaireFieldTypes.find((item) => item.value === question.field_type);
-                        return (
-                          <div key={`${question.id}-${index}`} className="rounded-xl border border-[#e5daf4] bg-white p-3">
-                            <div className="grid gap-2 md:grid-cols-[1fr_1fr_180px_auto]">
-                              <input
-                                value={question.id}
-                                onChange={(event) => updateQuestion(index, { id: event.target.value })}
-                                className="oa-input px-3 py-2 text-sm"
-                                placeholder="question_id"
-                              />
-                              <input
-                                value={question.label}
-                                onChange={(event) => updateQuestion(index, { label: event.target.value })}
-                                className="oa-input px-3 py-2 text-sm"
-                                placeholder="Question label"
-                              />
-                              <select
-                                value={question.field_type}
-                                onChange={(event) => {
-                                  const fieldType = event.target.value as QuestionnaireFieldType;
-                                  const needsOptions = questionnaireFieldTypes.find((item) => item.value === fieldType)?.needsOptions;
-                                  updateQuestion(index, {
-                                    field_type: fieldType,
-                                    options: needsOptions ? question.options : [],
-                                  });
-                                }}
-                                className="oa-input px-3 py-2 text-sm"
-                              >
-                                {questionnaireFieldTypes.map((fieldType) => (
-                                  <option key={fieldType.value} value={fieldType.value}>
-                                    {fieldType.label}
-                                  </option>
-                                ))}
-                              </select>
-                              <button
-                                type="button"
-                                onClick={() => removeQuestion(index)}
-                                className="oa-btn-secondary px-3 py-2 text-sm font-semibold"
-                              >
-                                Remove
-                              </button>
-                            </div>
-                            <div className="mt-2 grid gap-2 md:grid-cols-[1fr_180px_130px]">
-                              <input
-                                value={question.help_text ?? ""}
-                                onChange={(event) => updateQuestion(index, { help_text: event.target.value })}
-                                className="oa-input px-3 py-2 text-sm"
-                                placeholder="Help text"
-                              />
-                              <input
-                                value={question.scoring_key ?? ""}
-                                onChange={(event) => updateQuestion(index, { scoring_key: event.target.value })}
-                                className="oa-input px-3 py-2 text-sm"
-                                placeholder="Scoring key"
-                              />
-                              <label className="flex items-center gap-2 rounded-lg border border-[#e8def5] px-3 py-2 text-sm font-semibold text-[#403c5d]">
-                                <input
-                                  type="checkbox"
-                                  checked={question.required}
-                                  onChange={(event) => updateQuestion(index, { required: event.target.checked })}
-                                  className="h-4 w-4 rounded border-[#cfc3e5] text-[#241f43]"
-                                />
-                                Required
-                              </label>
-                            </div>
-                            {typeMeta?.needsOptions ? (
-                              <textarea
-                                value={question.options.join("\n")}
-                                onChange={(event) => updateQuestionOptions(index, event.target.value)}
-                                className="oa-textarea mt-2 min-h-[88px] resize-y text-sm"
-                                placeholder="One option per line"
-                              />
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <button type="button" onClick={addQuestion} className="oa-btn-secondary px-3 py-2 text-sm font-semibold">
-                        Add question
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy || questionnaireDraft.questions.length === 0}
-                        onClick={() => void handleSaveQuestionnaire()}
-                        className="oa-btn-primary px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-55"
-                      >
-                        Save questionnaire
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="rounded-xl border border-[#e8def5] bg-[#fbf8ff] p-4">
+                <div className="rounded-xl border border-[#e8def5] bg-[#fbf8ff] p-4">
                 <h3 className="oa-title text-lg font-semibold">Members</h3>
                 <div className="mt-3 flex gap-2">
                   <select
@@ -826,6 +693,199 @@ export default function AdminOrganizationsPage() {
                   )}
                 </div>
               </div>
+              </div>
+
+              {questionnaireDraft ? (
+                <section className="rounded-2xl border border-[#e4d8f2] bg-[#fbf8ff] p-4 shadow-[0_14px_40px_rgba(49,36,77,0.06)]">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="oa-title text-lg font-semibold">Audio comparison questionnaire</h3>
+                        <span className="rounded-full border border-[#d8c9ee] bg-white px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#62577e]">
+                          {questionnaireDraft.questions.length} question
+                          {questionnaireDraft.questions.length === 1 ? "" : "s"}
+                        </span>
+                        <span
+                          className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] ${
+                            questionnaireDraft.is_active
+                              ? "border-[#bde4ca] bg-[#effaf2] text-[#236140]"
+                              : "border-[#efd0d0] bg-[#fff5f5] text-[#9f3b3b]"
+                          }`}
+                        >
+                          {questionnaireDraft.is_active ? "Active" : "Inactive"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-sm text-[#6f6a86]">
+                        Configure the form annotators answer after listening to original and masked audio.
+                      </p>
+                    </div>
+                    <label className="flex shrink-0 items-center gap-2 rounded-xl border border-[#ded1f1] bg-white px-3 py-2 text-sm font-semibold text-[#2a2546]">
+                      <input
+                        type="checkbox"
+                        checked={questionnaireDraft.is_active}
+                        onChange={(event) =>
+                          setQuestionnaireDraft((current) =>
+                            current ? { ...current, is_active: event.target.checked } : current
+                          )
+                        }
+                        className="h-4 w-4 rounded border-[#cfc3e5] text-[#241f43]"
+                      />
+                      Active
+                    </label>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,360px)_1fr]">
+                    <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">
+                      Questionnaire title
+                      <input
+                        value={questionnaireDraft.title}
+                        onChange={(event) =>
+                          setQuestionnaireDraft((current) =>
+                            current ? { ...current, title: event.target.value } : current
+                          )
+                        }
+                        className="oa-input px-3 py-2.5 text-sm normal-case tracking-normal"
+                        placeholder="Audio comparison questionnaire"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">
+                      Description
+                      <input
+                        value={questionnaireDraft.description ?? ""}
+                        onChange={(event) =>
+                          setQuestionnaireDraft((current) =>
+                            current ? { ...current, description: event.target.value } : current
+                          )
+                        }
+                        className="oa-input px-3 py-2.5 text-sm normal-case tracking-normal"
+                        placeholder="Briefly describe what reviewers should compare."
+                      />
+                    </label>
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    {questionnaireDraft.questions.map((question, index) => {
+                      const typeMeta = questionnaireFieldTypes.find((item) => item.value === question.field_type);
+                      return (
+                        <article
+                          key={`${question.id}-${index}`}
+                          className="rounded-2xl border border-[#e5daf4] bg-white p-4 shadow-[0_8px_24px_rgba(49,36,77,0.04)]"
+                        >
+                          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-full bg-[#f3ecff] px-3 py-1 text-xs font-semibold text-[#5b3f90]">
+                                Question {index + 1}
+                              </span>
+                              <select
+                                value={question.field_type}
+                                onChange={(event) => {
+                                  const fieldType = event.target.value as QuestionnaireFieldType;
+                                  const needsOptions = questionnaireFieldTypes.find((item) => item.value === fieldType)?.needsOptions;
+                                  updateQuestion(index, {
+                                    field_type: fieldType,
+                                    options: needsOptions ? question.options : [],
+                                  });
+                                }}
+                                className="oa-input min-w-[190px] px-3 py-2 text-sm"
+                              >
+                                {questionnaireFieldTypes.map((fieldType) => (
+                                  <option key={fieldType.value} value={fieldType.value}>
+                                    {fieldType.label}
+                                  </option>
+                                ))}
+                              </select>
+                              <label className="flex items-center gap-2 rounded-lg border border-[#e8def5] px-3 py-2 text-sm font-semibold text-[#403c5d]">
+                                <input
+                                  type="checkbox"
+                                  checked={question.required}
+                                  onChange={(event) => updateQuestion(index, { required: event.target.checked })}
+                                  className="h-4 w-4 rounded border-[#cfc3e5] text-[#241f43]"
+                                />
+                                Required
+                              </label>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeQuestion(index)}
+                              className="oa-btn-secondary px-3 py-2 text-sm font-semibold"
+                            >
+                              Remove
+                            </button>
+                          </div>
+
+                          <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(220px,0.65fr)]">
+                            <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">
+                              Question text
+                              <input
+                                value={question.label}
+                                onChange={(event) => updateQuestion(index, { label: event.target.value })}
+                                className="oa-input px-3 py-2.5 text-sm normal-case tracking-normal"
+                                placeholder="What should the annotator answer?"
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">
+                              Internal key
+                              <input
+                                value={question.id}
+                                onChange={(event) => updateQuestion(index, { id: event.target.value })}
+                                className="oa-input px-3 py-2.5 text-sm normal-case tracking-normal"
+                                placeholder="question_id"
+                              />
+                            </label>
+                          </div>
+
+                          <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(200px,260px)]">
+                            <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">
+                              Help text
+                              <input
+                                value={question.help_text ?? ""}
+                                onChange={(event) => updateQuestion(index, { help_text: event.target.value })}
+                                className="oa-input px-3 py-2.5 text-sm normal-case tracking-normal"
+                                placeholder="Optional guidance shown below this question."
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">
+                              Scoring key
+                              <input
+                                value={question.scoring_key ?? ""}
+                                onChange={(event) => updateQuestion(index, { scoring_key: event.target.value })}
+                                className="oa-input px-3 py-2.5 text-sm normal-case tracking-normal"
+                                placeholder="Optional admin score key"
+                              />
+                            </label>
+                          </div>
+
+                          {typeMeta?.needsOptions ? (
+                            <label className="mt-3 flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">
+                              Options
+                              <textarea
+                                value={question.options.join("\n")}
+                                onChange={(event) => updateQuestionOptions(index, event.target.value)}
+                                className="oa-textarea min-h-[96px] resize-y text-sm normal-case tracking-normal"
+                                placeholder="One option per line"
+                              />
+                            </label>
+                          ) : null}
+                        </article>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-4 flex flex-col gap-3 border-t border-[#eadff6] pt-4 sm:flex-row sm:items-center sm:justify-between">
+                    <button type="button" onClick={addQuestion} className="oa-btn-secondary px-4 py-2 text-sm font-semibold">
+                      Add question
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || questionnaireDraft.questions.length === 0}
+                      onClick={() => void handleSaveQuestionnaire()}
+                      className="oa-btn-primary px-5 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-55"
+                    >
+                      Save questionnaire
+                    </button>
+                  </div>
+                </section>
+              ) : null}
             </div>
           ) : (
             <p className="text-sm text-[#5f5b79]">Create an organization to start scoping data.</p>
