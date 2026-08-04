@@ -278,6 +278,70 @@ def test_audio_group_combines_wav_chunks_for_full_recording_playback(
         assert combined.getnframes() == 5
 
 
+def test_audio_group_recognizes_opus_chunks_without_combined_playback(
+    client, auth_headers, db_session, seed_users, tmp_path
+):
+    organization = OrganizationService(db_session).ensure_default_organization()
+    group_dir = tmp_path / "opus-recording" / "channel1"
+    group_dir.mkdir(parents=True)
+    chunk_one = group_dir / "chunk_0001.opus"
+    chunk_two = group_dir / "chunk_0002.opus"
+    chunk_one.write_bytes(b"OggSone")
+    chunk_two.write_bytes(b"OggStwo")
+
+    upload_file = UploadFile(
+        organization_id=organization.id,
+        original_filename="manifest.xlsx",
+        stored_path=str(tmp_path / "manifest.xlsx"),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        uploaded_by_id=seed_users["admin"].id,
+    )
+    db_session.add(upload_file)
+    db_session.flush()
+    upload_job = UploadJob(
+        organization_id=organization.id,
+        upload_file_id=upload_file.id,
+        created_by_id=seed_users["admin"].id,
+        mapping_json=_mapping(),
+    )
+    db_session.add(upload_job)
+    db_session.flush()
+
+    task_one = AnnotationTask(
+        organization_id=organization.id,
+        upload_job_id=upload_job.id,
+        external_id="opus-chunk-1",
+        file_location=f"local://{chunk_one}",
+        final_transcript="hello",
+        status=TaskStatusEnum.IN_PROGRESS,
+        assignee_id=seed_users["annotator"].id,
+        original_row={},
+    )
+    task_two = AnnotationTask(
+        organization_id=organization.id,
+        upload_job_id=upload_job.id,
+        external_id="opus-chunk-2",
+        file_location=f"local://{chunk_two}",
+        final_transcript="world",
+        status=TaskStatusEnum.IN_PROGRESS,
+        assignee_id=seed_users["annotator"].id,
+        original_row={},
+    )
+    db_session.add_all([task_one, task_two])
+    db_session.commit()
+
+    group_response = client.get(f"/api/v1/tasks/{task_one.id}/audio-group", headers=auth_headers["annotator"])
+
+    assert group_response.status_code == 200
+    group = group_response.json()
+    assert group["chunk_count"] == 2
+    assert group["assembled_transcript"] == "hello\nworld"
+    assert group["full_audio_available"] is False
+    assert group["full_audio_url"] is None
+    assert "WAV chunks" in group["message"]
+    assert [chunk["filename"] for chunk in group["chunks"]] == ["chunk_0001.opus", "chunk_0002.opus"]
+
+
 def test_audio_group_seeds_full_transcript_from_final_then_mapped_asr(
     client, auth_headers, db_session, seed_users, tmp_path
 ):

@@ -1105,7 +1105,7 @@ class TaskService:
             return self._single_chunk_group_response(
                 task,
                 viewer=actor,
-                message="Full audio review is available for WAV chunk folders only.",
+                message="Full audio review is available for chunk folders only.",
             )
 
         group_tasks = self._load_audio_group_tasks(task, actor=actor, group_key=group_info.group_key)
@@ -1160,10 +1160,16 @@ class TaskService:
         full_transcript_text = review.transcript if review else seed_text
         full_audio_url = None
         expires = None
-        full_audio_available = len(chunks) > 1
+        full_audio_supported = all(
+            bool((info := audio_group_info(group_task.file_location)) and info.filename.lower().endswith(".wav"))
+            for group_task in group_tasks
+        )
+        full_audio_available = len(chunks) > 1 and full_audio_supported
         message = None
         if full_audio_available:
             full_audio_url, expires = self._generate_audio_group_url(task, actor=actor, organization=organization)
+        elif len(chunks) > 1:
+            message = "Full audio playback can only combine WAV chunks. Use the individual audio player for Opus chunks."
         else:
             message = "Only one chunk was found for this recording."
 
@@ -1201,7 +1207,7 @@ class TaskService:
         self._ensure_transcript_correction_task(task)
         group_info = audio_group_info(task.file_location)
         if not group_info:
-            raise ServiceError("Full transcript review is available for WAV chunk folders only", status_code=422)
+            raise ServiceError("Full transcript review is available for chunk folders only", status_code=422)
 
         _raise_for_invalid_text(payload.transcript, "full transcript")
         assignee_id, assignment_scope_key = self._audio_group_review_scope(task, actor)

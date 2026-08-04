@@ -4,7 +4,8 @@ from pathlib import PurePosixPath
 from urllib.parse import urlparse
 
 
-CHUNK_FILENAME_RE = re.compile(r"(?:^|[_-])chunk[_-]?(\d+)\.wav$", re.IGNORECASE)
+GROUPABLE_AUDIO_EXTENSIONS = {".opus", ".wav"}
+CHUNK_FILENAME_RE = re.compile(r"(?:^|[_-])chunk[_-]?(\d+)\.(?:opus|wav)$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,7 @@ def audio_group_info(file_location: str) -> AudioGroupInfo | None:
 
 def _group_from_path(path: PurePosixPath, *, group_prefix: str, query_prefix: str) -> AudioGroupInfo | None:
     filename = path.name
-    if path.suffix.lower() != ".wav":
+    if path.suffix.lower() not in GROUPABLE_AUDIO_EXTENSIONS:
         return None
     parent = path.parent
     if not str(parent) or str(parent) == ".":
@@ -80,4 +81,3 @@ def audio_group_sort_key(file_location: str) -> tuple[int, str]:
 
 def normalize_transcript_words(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+(?:'[a-z0-9]+)?", text.lower())
-

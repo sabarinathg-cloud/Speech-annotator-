@@ -138,6 +138,74 @@ def test_import_uses_selected_final_transcript_column(client, auth_headers, tmp_
     assert detail_response.json()["final_transcript"] == "preselected corrected transcript"
 
 
+def test_manifest_import_accepts_and_streams_opus_audio(client, auth_headers, tmp_path):
+    import io
+
+    import pandas as pd
+
+    opus_path = tmp_path / "chunk_0001.opus"
+    opus_path.write_bytes(b"OggSfake-opus-audio")
+
+    dataframe = pd.DataFrame(
+        [
+            {
+                "id": "OPUS-001",
+                "file_location": f"local://{opus_path}",
+                "model_1_transcript": "hello from opus",
+                "model_2_transcript": "hello from opus alternate",
+                "speaker_gender": "female",
+                "language": "en",
+                "notes": "opus import",
+            }
+        ]
+    )
+    excel_bytes = io.BytesIO()
+    dataframe.to_excel(excel_bytes, index=False)
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        headers=auth_headers["admin"],
+        files={
+            "file": (
+                "opus_tasks.xlsx",
+                excel_bytes.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert upload_response.status_code == 200
+    upload_job_id = upload_response.json()["upload_job_id"]
+
+    validate_response = client.post(
+        f"/api/v1/uploads/{upload_job_id}/validate",
+        headers=auth_headers["admin"],
+        json=_mapping(),
+    )
+    assert validate_response.status_code == 200
+    validation = validate_response.json()
+    assert validation["import_allowed"] is True
+    assert any(
+        gate["gate_key"] == "audio_extension_support" and gate["status"] == "pass"
+        for gate in validation["gates"]
+    )
+
+    import_response = client.post(
+        f"/api/v1/uploads/{upload_job_id}/import",
+        headers=auth_headers["admin"],
+        json=_mapping(),
+    )
+    assert import_response.status_code == 200
+    assert import_response.json()["imported_tasks"] == 1
+
+    task_id = client.get("/api/v1/tasks", headers=auth_headers["admin"]).json()["items"][0]["id"]
+    signed = client.get(f"/api/v1/tasks/{task_id}/audio-url", headers=auth_headers["admin"]).json()
+    stream_response = client.get(signed["url"], headers={"Range": "bytes=0-3"})
+
+    assert stream_response.status_code == 206
+    assert stream_response.headers["content-type"].startswith("audio/ogg")
+    assert stream_response.content == b"OggS"
+
+
 def test_validate_rejects_missing_custom_metadata_columns(client, auth_headers, sample_excel_bytes):
     upload_response = client.post(
         "/api/v1/uploads",

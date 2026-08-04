@@ -47,7 +47,7 @@ ALLOWED_CORE_METADATA_FIELDS = {"speaker_gender", "speaker_role", "language", "c
 AUDIO_VALIDATION_SAMPLE_SIZE = 12
 AUDIO_VALIDATION_FAIL_RATIO = 0.5
 MIN_ROWS_WITH_ANY_TRANSCRIPT_RATIO = 0.8
-SUPPORTED_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".webm"}
+SUPPORTED_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".webm"}
 GateStatus = Literal["pass", "warning", "fail"]
 
 

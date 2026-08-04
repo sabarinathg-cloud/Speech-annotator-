@@ -97,13 +97,15 @@ function chooseAudioLocationColumn(columns: string[]): string {
     "audio_filepath",
     "file_path",
     "path",
+    "opus_path",
+    "opus_file",
     "wav_path",
     "wav_file",
     "source_path_abs",
   ]);
   if (exact) return exact;
 
-  return columns.find((column) => /audio|wav|file.*path|path.*file/i.test(column) && !/transcript/i.test(column)) ?? "";
+  return columns.find((column) => /audio|opus|wav|file.*path|path.*file/i.test(column) && !/transcript/i.test(column)) ?? "";
 }
 
 function chooseComparisonAudioLocationColumn(columns: string[]): string {
@@ -120,7 +122,7 @@ function chooseComparisonAudioLocationColumn(columns: string[]): string {
   if (exact) return exact;
 
   return (
-    columns.find((column) => /masked|redacted|comparison/i.test(column) && /audio|wav|path|file/i.test(column)) ?? ""
+    columns.find((column) => /masked|redacted|comparison/i.test(column) && /audio|opus|wav|path|file/i.test(column)) ?? ""
   );
 }
 
@@ -573,7 +575,7 @@ export default function AdminUploadPage() {
     ];
     const example = [
       "CALL-0001",
-      "local:///absolute/path/audio.wav",
+      "local:///absolute/path/audio.opus",
       "first ASR transcript",
       "second ASR transcript",
       "",

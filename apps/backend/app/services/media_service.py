@@ -23,6 +23,10 @@ SECURE_AUDIO_HEADERS = {
     "X-Content-Type-Options": "nosniff",
 }
 
+EXPLICIT_AUDIO_MEDIA_TYPES = {
+    ".opus": "audio/ogg",
+}
+
 
 class MediaService:
     def __init__(self) -> None:
@@ -47,7 +51,7 @@ class MediaService:
             return self._build_local_audio_response(Path(location.local_path).expanduser(), range_header)
 
         stream = self.audio_resolver.open_audio(location)
-        media_type = mimetypes.guess_type(location.key or file_location)[0] or "application/octet-stream"
+        media_type = self._audio_media_type(location.key or file_location)
         return StreamingResponse(stream, media_type=media_type, headers=SECURE_AUDIO_HEADERS)
 
     def build_combined_wav_response(self, file_locations: list[str], range_header: str | None = None):
@@ -76,7 +80,7 @@ class MediaService:
             raise FileNotFoundError("Audio file not found")
 
         file_size = path.stat().st_size
-        media_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        media_type = self._audio_media_type(str(path))
         headers = dict(SECURE_AUDIO_HEADERS)
         if not range_header:
             return FileResponse(path, media_type=media_type, headers=headers)
@@ -94,6 +98,10 @@ class MediaService:
             }
         )
         return Response(content=content, status_code=206, media_type=media_type, headers=headers)
+
+    def _audio_media_type(self, filename: str) -> str:
+        suffix = Path(filename).suffix.lower()
+        return EXPLICIT_AUDIO_MEDIA_TYPES.get(suffix) or mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
     def _parse_range_header(self, range_header: str, file_size: int) -> tuple[int, int]:
         if not range_header.startswith("bytes="):

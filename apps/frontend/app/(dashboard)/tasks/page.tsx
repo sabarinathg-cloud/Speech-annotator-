@@ -64,7 +64,7 @@ function taskCallKey(task: TaskListItem): string {
   const normalized = location.replace(/^local:\/\//, "");
   const parts = normalized.split(/[\\/]+/).filter(Boolean);
   const filename = parts.at(-1) ?? "";
-  if (!/(^|[_-])chunk[_-]?\d+\.wav$/i.test(filename)) {
+  if (!/(^|[_-])chunk[_-]?\d+\.(?:opus|wav)$/i.test(filename)) {
     return location;
   }
   const parent = parts.at(-2) ?? "";
