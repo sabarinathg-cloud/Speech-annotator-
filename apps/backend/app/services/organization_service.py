@@ -2,15 +2,23 @@ import re
 import uuid
 from typing import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.activity import UserActivityEntry
 from app.models.enums import RoleEnum
+from app.models.hiring import HiringAssessment, HiringAssessmentItem, HiringAssignment, HiringSubmission
+from app.models.job import BackgroundJob
 from app.models.organization import Organization, OrganizationMembership, OrganizationQuestionnaire
+from app.models.pii_label import PIILabel
+from app.models.security import SecurityAuditEvent
+from app.models.task import AnnotationTask, TaskAuditLog, TaskAudioGroupReview, TaskStatusHistory, TaskTranscriptVariant
+from app.models.upload import UploadFile, UploadJob, UploadJobError
 from app.models.user import User
 from app.schemas.organization import (
     DEFAULT_ORGANIZATION_INSTRUCTIONS,
+    OrganizationDeleteResponse,
     OrganizationQuestionnaireResponse,
     OrganizationQuestionnaireUpsertRequest,
     OrganizationMemberListResponse,
@@ -175,6 +183,92 @@ class OrganizationService:
             raise ServiceError("Organization slug already exists", status_code=409) from exc
         self.db.refresh(organization)
         return OrganizationResponse.model_validate(organization)
+
+    def delete_organization(
+        self,
+        *,
+        organization_id: str,
+        confirm_slug: str,
+        actor: User,
+    ) -> OrganizationDeleteResponse:
+        organization = self.get_organization_or_404(organization_id)
+        if organization.id == DEFAULT_ORGANIZATION_ID or organization.slug == DEFAULT_ORGANIZATION_SLUG:
+            raise ServiceError("Default organization cannot be deleted", status_code=422)
+        if confirm_slug.strip() != organization.slug:
+            raise ServiceError("Confirmation slug does not match this organization", status_code=422)
+
+        deleted_counts: dict[str, int] = {}
+        task_ids = select(AnnotationTask.id).where(AnnotationTask.organization_id == organization.id)
+        upload_job_ids = select(UploadJob.id).where(UploadJob.organization_id == organization.id)
+        assessment_ids = select(HiringAssessment.id).where(HiringAssessment.organization_id == organization.id)
+        hiring_assignment_ids = select(HiringAssignment.id).where(HiringAssignment.assessment_id.in_(assessment_ids))
+        hiring_item_ids = select(HiringAssessmentItem.id).where(HiringAssessmentItem.assessment_id.in_(assessment_ids))
+
+        def count_rows(model, condition) -> int:
+            return int(self.db.execute(select(func.count()).select_from(model).where(condition)).scalar_one())
+
+        def delete_rows(model, condition, label: str) -> None:
+            deleted_counts[label] = count_rows(model, condition)
+            self.db.execute(delete(model).where(condition).execution_options(synchronize_session=False))
+
+        delete_rows(SecurityAuditEvent, SecurityAuditEvent.organization_id == organization.id, "security_audit_events")
+        delete_rows(UserActivityEntry, UserActivityEntry.organization_id == organization.id, "user_activity_entries")
+        delete_rows(BackgroundJob, BackgroundJob.organization_id == organization.id, "background_jobs")
+
+        delete_rows(HiringSubmission, HiringSubmission.assignment_id.in_(hiring_assignment_ids), "hiring_submissions")
+        delete_rows(HiringAssessmentItem, HiringAssessmentItem.id.in_(hiring_item_ids), "hiring_assessment_items")
+        delete_rows(HiringAssignment, HiringAssignment.id.in_(hiring_assignment_ids), "hiring_assignments")
+        delete_rows(HiringAssessment, HiringAssessment.id.in_(assessment_ids), "hiring_assessments")
+
+        delete_rows(TaskAudioGroupReview, TaskAudioGroupReview.organization_id == organization.id, "task_audio_group_reviews")
+        delete_rows(TaskTranscriptVariant, TaskTranscriptVariant.task_id.in_(task_ids), "task_transcript_variants")
+        delete_rows(TaskStatusHistory, TaskStatusHistory.task_id.in_(task_ids), "task_status_history")
+        delete_rows(TaskAuditLog, TaskAuditLog.task_id.in_(task_ids), "task_audit_logs")
+        delete_rows(AnnotationTask, AnnotationTask.organization_id == organization.id, "annotation_tasks")
+
+        delete_rows(UploadJobError, UploadJobError.upload_job_id.in_(upload_job_ids), "upload_job_errors")
+        delete_rows(UploadJob, UploadJob.organization_id == organization.id, "upload_jobs")
+        delete_rows(UploadFile, UploadFile.organization_id == organization.id, "upload_files")
+
+        delete_rows(PIILabel, PIILabel.organization_id == organization.id, "pii_labels")
+        delete_rows(
+            OrganizationQuestionnaire,
+            OrganizationQuestionnaire.organization_id == organization.id,
+            "organization_questionnaires",
+        )
+        delete_rows(
+            OrganizationMembership,
+            OrganizationMembership.organization_id == organization.id,
+            "organization_memberships",
+        )
+
+        deleted_response = OrganizationDeleteResponse(
+            deleted_organization_id=organization.id,
+            deleted_organization_name=organization.name,
+            deleted_organization_slug=organization.slug,
+            deleted_counts=deleted_counts,
+        )
+        self.db.delete(organization)
+        self.db.add(
+            SecurityAuditEvent(
+                organization_id=None,
+                actor_user_id=actor.id,
+                actor_email=actor.email,
+                actor_role=actor.role.value,
+                action="ORGANIZATION_DELETED",
+                risk_level="high",
+                resource_type="organization",
+                resource_id=organization.id,
+                event_metadata={
+                    "organization_name": organization.name,
+                    "organization_slug": organization.slug,
+                    "deleted_counts": deleted_counts,
+                    "source_audio_deleted": False,
+                },
+            )
+        )
+        self.db.commit()
+        return deleted_response
 
     def get_organization_or_404(self, organization_id: str) -> Organization:
         organization = self.db.get(Organization, organization_id)

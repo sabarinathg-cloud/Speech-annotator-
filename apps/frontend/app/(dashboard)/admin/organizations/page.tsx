@@ -15,6 +15,7 @@ import {
   APIError,
   addOrganizationMember,
   createOrganization,
+  deleteOrganization,
   fetchCurrentUser,
   fetchOrganizationMembers,
   fetchOrganizationQuestionnaire,
@@ -57,6 +58,7 @@ const questionnaireFieldTypes: Array<{ value: QuestionnaireFieldType; label: str
   { value: "rating", label: "Rating" },
   { value: "date", label: "Date" },
 ];
+const defaultRatingLabels = ["Very bad", "Bad", "Acceptable", "Good", "Excellent"];
 
 function createBlankQuestion(sortOrder: number): QuestionnaireQuestion {
   const idSuffix = Math.random().toString(36).slice(2, 8);
@@ -130,6 +132,8 @@ export default function AdminOrganizationsPage() {
   const [createForm, setCreateForm] = useState(blankCreateForm);
   const [draft, setDraft] = useState<Organization | null>(null);
   const [questionnaireDraft, setQuestionnaireDraft] = useState<OrganizationQuestionnaire | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteConfirmSlug, setDeleteConfirmSlug] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -191,6 +195,8 @@ export default function AdminOrganizationsPage() {
 
   useEffect(() => {
     setDraft(selectedOrganization ? { ...selectedOrganization } : null);
+    setDeleteConfirmOpen(false);
+    setDeleteConfirmSlug("");
   }, [selectedOrganization]);
 
   useEffect(() => {
@@ -311,6 +317,31 @@ export default function AdminOrganizationsPage() {
     }
   }
 
+  async function handleDeleteOrganization() {
+    if (!accessToken || !selectedOrganization || deleteConfirmSlug.trim() !== selectedOrganization.slug) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const deleted = await deleteOrganization(accessToken, selectedOrganization.id, deleteConfirmSlug.trim());
+      const response = await fetchOrganizations(accessToken);
+      setOrganizations(response.items);
+      const nextOrganization = response.items.find((organization) => organization.is_active) ?? response.items[0] ?? null;
+      setSelectedOrgId(nextOrganization?.id ?? null);
+      setActiveOrganizationId(nextOrganization?.id ?? null);
+      setDeleteConfirmOpen(false);
+      setDeleteConfirmSlug("");
+      await refreshCurrentUserSession(accessToken);
+      setMessage(
+        `${deleted.deleted_organization_name} deleted. Removed ${deleted.deleted_counts.annotation_tasks ?? 0} tasks and ${deleted.deleted_counts.upload_jobs ?? 0} upload jobs.`
+      );
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Could not delete organization");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleAddMember() {
     if (!accessToken || !selectedOrganization || !memberUserId) return;
     setBusy(true);
@@ -394,6 +425,24 @@ export default function AdminOrganizationsPage() {
     });
   }
 
+  function updateRatingLabel(index: number, scoreIndex: number, label: string) {
+    setQuestionnaireDraft((current) => {
+      if (!current) return current;
+      const questions = current.questions.map((question, questionIndex) => {
+        if (questionIndex !== index) return question;
+        const options = [...question.options.slice(0, 5)];
+        while (options.length < 5) options.push("");
+        options[scoreIndex] = label;
+        return { ...question, options };
+      });
+      return { ...current, questions };
+    });
+  }
+
+  function applyDefaultRatingLabels(index: number) {
+    updateQuestion(index, { options: [...defaultRatingLabels] });
+  }
+
   function addQuestion() {
     setQuestionnaireDraft((current) => {
       if (!current) return current;
@@ -424,6 +473,10 @@ export default function AdminOrganizationsPage() {
           id: question.id.trim(),
           label: question.label.trim(),
           help_text: question.help_text?.trim() || null,
+          options:
+            question.field_type === "rating"
+              ? question.options.slice(0, 5).map((option) => option.trim())
+              : question.options.map((option) => option.trim()).filter(Boolean),
           scoring_key: question.scoring_key?.trim() || null,
           sort_order: question.sort_order || (index + 1) * 10,
         })),
@@ -783,7 +836,14 @@ export default function AdminOrganizationsPage() {
                                   const needsOptions = questionnaireFieldTypes.find((item) => item.value === fieldType)?.needsOptions;
                                   updateQuestion(index, {
                                     field_type: fieldType,
-                                    options: needsOptions ? question.options : [],
+                                    options:
+                                      fieldType === "rating"
+                                        ? question.options.length > 0
+                                          ? question.options.slice(0, 5)
+                                          : [...defaultRatingLabels]
+                                        : needsOptions
+                                          ? question.options.filter(Boolean)
+                                          : [],
                                   });
                                 }}
                                 className="oa-input min-w-[190px] px-3 py-2 text-sm"
@@ -866,6 +926,55 @@ export default function AdminOrganizationsPage() {
                               />
                             </label>
                           ) : null}
+
+                          {question.field_type === "rating" ? (
+                            <div className="mt-3 rounded-xl border border-[#eadff6] bg-[#fbf8ff] p-3">
+                              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                  <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">
+                                    Rating scale labels
+                                  </p>
+                                  <p className="mt-1 text-xs text-[#6f6a89]">These labels appear beside scores 1 through 5.</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => applyDefaultRatingLabels(index)}
+                                  className="oa-btn-secondary px-3 py-1.5 text-xs font-semibold"
+                                >
+                                  Use default scale
+                                </button>
+                              </div>
+                              <div className="mt-3 grid gap-2 sm:grid-cols-5">
+                                {Array.from({ length: 5 }, (_, scoreIndex) => (
+                                  <label
+                                    key={scoreIndex}
+                                    className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]"
+                                  >
+                                    Score {scoreIndex + 1}
+                                    <input
+                                      value={question.options[scoreIndex] ?? ""}
+                                      onChange={(event) => updateRatingLabel(index, scoreIndex, event.target.value)}
+                                      className="oa-input px-3 py-2 text-sm normal-case tracking-normal"
+                                      placeholder={defaultRatingLabels[scoreIndex]}
+                                    />
+                                  </label>
+                                ))}
+                              </div>
+                              <div className="mt-3 rounded-lg border border-[#e5dbf2] bg-white px-3 py-2">
+                                <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">Annotator preview</p>
+                                <div className="mt-2 grid gap-2 sm:grid-cols-5">
+                                  {Array.from({ length: 5 }, (_, scoreIndex) => (
+                                    <div key={scoreIndex} className="rounded-lg border border-[#d9d2ef] px-3 py-2 text-center">
+                                      <p className="text-sm font-semibold text-[#272241]">{scoreIndex + 1}</p>
+                                      <p className="mt-1 min-h-[1.25rem] text-xs text-[#6f6a89]">
+                                        {question.options[scoreIndex] || defaultRatingLabels[scoreIndex]}
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          ) : null}
                         </article>
                       );
                     })}
@@ -886,6 +995,33 @@ export default function AdminOrganizationsPage() {
                   </div>
                 </section>
               ) : null}
+
+              <section className="rounded-2xl border border-[#f0c8c8] bg-[#fff7f7] p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#a13a3a]">Danger zone</p>
+                    <h3 className="oa-title mt-1 text-lg font-semibold text-[#241f43]">Delete organization and data</h3>
+                    <p className="mt-1 max-w-3xl text-sm leading-6 text-[#6f5360]">
+                      Deletes this organization&apos;s tasks, uploads, hiring assessments, questionnaires, PII labels,
+                      background jobs, activity metrics, memberships, and audit events. User accounts and original
+                      source audio files are not deleted.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busy || selectedOrganization?.slug === "default"}
+                    onClick={() => setDeleteConfirmOpen(true)}
+                    className="rounded-lg border border-[#e4a2a2] bg-white px-4 py-2 text-sm font-semibold text-[#a13a3a] transition hover:bg-[#fff0f0] disabled:cursor-not-allowed disabled:opacity-55"
+                  >
+                    Delete organization
+                  </button>
+                </div>
+                {selectedOrganization?.slug === "default" ? (
+                  <p className="mt-3 rounded-lg border border-[#ead0d0] bg-white px-3 py-2 text-sm text-[#875252]">
+                    The default organization is protected and cannot be deleted.
+                  </p>
+                ) : null}
+              </section>
             </div>
           ) : (
             <p className="text-sm text-[#5f5b79]">Create an organization to start scoping data.</p>
@@ -967,6 +1103,72 @@ export default function AdminOrganizationsPage() {
           </p>
         )}
       </section>
+
+      {deleteConfirmOpen && selectedOrganization ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#17132a]/45 px-4 py-6 backdrop-blur-sm">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-organization-title"
+            className="w-full max-w-xl rounded-2xl border border-[#f0c8c8] bg-white p-5 shadow-[0_24px_80px_rgba(35,24,62,0.28)]"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#a13a3a]">
+                  Permanent action
+                </p>
+                <h3 id="delete-organization-title" className="oa-title mt-1 text-xl font-semibold text-[#241f43]">
+                  Delete {selectedOrganization.name}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteConfirmOpen(false);
+                  setDeleteConfirmSlug("");
+                }}
+                className="oa-btn-secondary px-3 py-1.5 text-sm font-semibold"
+              >
+                Cancel
+              </button>
+            </div>
+            <p className="mt-4 rounded-xl border border-[#f0c8c8] bg-[#fff7f7] px-4 py-3 text-sm leading-6 text-[#7d4c58]">
+              This removes organization-scoped annotation tasks, upload jobs, hiring data, questionnaire settings,
+              labels, metrics activity, and memberships. User accounts stay available for other organizations.
+            </p>
+            <label className="mt-4 block text-xs font-semibold uppercase tracking-[0.08em] text-[#6a6287]">
+              Type organization slug to confirm
+              <input
+                value={deleteConfirmSlug}
+                onChange={(event) => setDeleteConfirmSlug(event.target.value)}
+                className="oa-input mt-1 w-full px-3 py-2 text-sm normal-case tracking-normal"
+                placeholder={selectedOrganization.slug}
+                autoFocus
+              />
+            </label>
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteConfirmOpen(false);
+                  setDeleteConfirmSlug("");
+                }}
+                className="oa-btn-secondary px-4 py-2 text-sm font-semibold"
+              >
+                Keep organization
+              </button>
+              <button
+                type="button"
+                disabled={busy || deleteConfirmSlug.trim() !== selectedOrganization.slug}
+                onClick={() => void handleDeleteOrganization()}
+                className="rounded-lg border border-[#d97575] bg-[#a13a3a] px-4 py-2 text-sm font-semibold text-white shadow-[0_12px_28px_rgba(161,58,58,0.22)] transition hover:bg-[#8f3030] disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                Delete organization and data
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

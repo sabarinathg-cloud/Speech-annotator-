@@ -3643,17 +3643,52 @@ function renderQuestionControl(
   }
 
   if (question.field_type === "number" || question.field_type === "rating") {
+    if (question.field_type === "rating") {
+      const currentScore =
+        typeof value === "number"
+          ? value
+          : typeof value === "string" && value.trim()
+            ? Number(value)
+            : null;
+      return (
+        <div className="grid gap-2 sm:grid-cols-5">
+          {Array.from({ length: 5 }, (_, scoreIndex) => {
+            const score = scoreIndex + 1;
+            const scoreLabel = question.options[scoreIndex] || "";
+            const selected = currentScore === score;
+            return (
+              <button
+                key={score}
+                type="button"
+                id={score === 1 ? `question-${question.id}` : undefined}
+                onClick={() => onChange(score)}
+                className={`min-h-[76px] rounded-xl border px-3 py-2 text-center transition ${
+                  selected
+                    ? "border-[#221b4c] bg-[#221b4c] text-white shadow-[0_10px_24px_rgba(34,27,76,0.18)]"
+                    : "border-[#d9d2ef] bg-white text-[#403a60] hover:bg-[#f8f4ff]"
+                }`}
+                aria-pressed={selected}
+                aria-label={`${score}${scoreLabel ? `, ${scoreLabel}` : ""}`}
+              >
+                <span className="block text-lg font-semibold leading-none">{score}</span>
+                <span className={`mt-2 block text-xs ${selected ? "text-white/80" : "text-[#6f6a89]"}`}>
+                  {scoreLabel || "No label"}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      );
+    }
     return (
       <input
         id={`question-${question.id}`}
         type="number"
-        min={question.field_type === "rating" ? 1 : undefined}
-        max={question.field_type === "rating" ? 5 : undefined}
-        step={question.field_type === "rating" ? 1 : "any"}
+        step="any"
         value={typeof value === "number" ? String(value) : typeof value === "string" ? value : ""}
         onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))}
         className="oa-input bg-white"
-        placeholder={question.field_type === "rating" ? "1 to 5" : "Enter a number"}
+        placeholder="Enter a number"
       />
     );
   }

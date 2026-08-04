@@ -53,6 +53,13 @@ class OrganizationListResponse(BaseModel):
     items: list[OrganizationResponse]
 
 
+class OrganizationDeleteResponse(BaseModel):
+    deleted_organization_id: str
+    deleted_organization_name: str
+    deleted_organization_slug: str
+    deleted_counts: dict[str, int]
+
+
 class OrganizationCreateRequest(BaseModel):
     name: str = Field(min_length=2, max_length=255)
     slug: str | None = Field(default=None, min_length=2, max_length=80)
@@ -171,22 +178,29 @@ class QuestionnaireQuestion(BaseModel):
     @field_validator("options")
     @classmethod
     def clean_options(cls, value: list[str]) -> list[str]:
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for option in value or []:
-            text = str(option).strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            cleaned.append(text)
-        return cleaned
+        return [str(option).strip() for option in value or []]
 
     @model_validator(mode="after")
     def validate_options_for_type(self) -> "QuestionnaireQuestion":
+        if self.field_type in {"single_select", "multi_select"}:
+            cleaned: list[str] = []
+            seen: set[str] = set()
+            for option in self.options:
+                text = str(option).strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                cleaned.append(text)
+            self.options = cleaned
+        elif self.field_type == "rating":
+            rating_options = [str(option).strip() for option in self.options[:5]]
+            while rating_options and not rating_options[-1]:
+                rating_options.pop()
+            self.options = rating_options
+        else:
+            self.options = []
         if self.field_type in {"single_select", "multi_select"} and not self.options:
             raise ValueError("select questions require at least one option")
-        if self.field_type not in {"single_select", "multi_select"}:
-            self.options = []
         return self
 
 

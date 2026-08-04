@@ -1010,6 +1010,7 @@ def test_admin_can_split_assignment_by_call_batches(client, auth_headers, db_ses
             "assignee_email": "annotator@test.com",
             "call_count": 2,
             "task_count": 4,
+            "duration_seconds": 240.0,
         },
         {
             "assignee_id": seed_users["reviewer"].id,
@@ -1017,6 +1018,7 @@ def test_admin_can_split_assignment_by_call_batches(client, auth_headers, db_ses
             "assignee_email": "reviewer@test.com",
             "call_count": 2,
             "task_count": 4,
+            "duration_seconds": 240.0,
         },
     ]
 
@@ -1116,6 +1118,7 @@ def test_admin_call_split_protects_worked_call_groups(client, auth_headers, db_s
             "assignee_email": "reviewer@test.com",
             "call_count": 1,
             "task_count": 2,
+            "duration_seconds": 120.0,
         },
         {
             "assignee_id": seed_users["annotator"].id,
@@ -1123,6 +1126,7 @@ def test_admin_call_split_protects_worked_call_groups(client, auth_headers, db_s
             "assignee_email": "annotator@test.com",
             "call_count": 1,
             "task_count": 2,
+            "duration_seconds": 120.0,
         },
     ]
 
@@ -1139,6 +1143,122 @@ def test_admin_call_split_protects_worked_call_groups(client, auth_headers, db_s
         "WORKED-CALL": {seed_users["annotator"].id},
         "FRESH-CALL-1": {seed_users["reviewer"].id},
         "FRESH-CALL-2": {seed_users["annotator"].id},
+    }
+
+
+def test_admin_can_balance_call_split_by_duration(client, auth_headers, db_session, seed_users):
+    upload_file = UploadFile(
+        original_filename="duration-call-split.csv",
+        stored_path="/tmp/duration-call-split.csv",
+        content_type="text/csv",
+        uploaded_by_id=seed_users["admin"].id,
+    )
+    db_session.add(upload_file)
+    db_session.flush()
+    upload_job = UploadJob(
+        upload_file_id=upload_file.id,
+        created_by_id=seed_users["admin"].id,
+        status=UploadJobStatusEnum.IMPORTED,
+        preview_row_count=8,
+    )
+    db_session.add(upload_job)
+    db_session.flush()
+
+    call_durations = {
+        "WORKED-CALL": [100, 100],
+        "LONG-CALL": [300, 300],
+        "SHORT-CALL-1": [100, 100],
+        "SHORT-CALL-2": [100, 100],
+    }
+    for call_id, durations in call_durations.items():
+        for chunk_index, duration in enumerate(durations):
+            db_session.add(
+                AnnotationTask(
+                    upload_job_id=upload_job.id,
+                    external_id=f"DURATION-SPLIT-{call_id}-{chunk_index}",
+                    file_location=f"/calls/{call_id}/channel1/chunk_{chunk_index:04d}.wav",
+                    final_transcript="",
+                    notes=None,
+                    status=(
+                        TaskStatusEnum.COMPLETED
+                        if call_id == "WORKED-CALL" and chunk_index == 0
+                        else TaskStatusEnum.NOT_STARTED
+                    ),
+                    speaker_gender=None,
+                    speaker_role=None,
+                    language="en",
+                    channel=None,
+                    duration_seconds=duration,
+                    custom_metadata={},
+                    original_row={"call_id": call_id},
+                    pii_annotations=[],
+                    alignment_words=[],
+                    assignee_id=seed_users["annotator"].id if call_id == "WORKED-CALL" else None,
+                    last_tagger_id=(
+                        seed_users["annotator"].id
+                        if call_id == "WORKED-CALL" and chunk_index == 0
+                        else None
+                    ),
+                )
+            )
+    db_session.commit()
+
+    response = client.post(
+        "/api/v1/tasks/bulk-call-split",
+        headers=auth_headers["admin"],
+        json={
+            "filters": {"search": "DURATION-SPLIT", "status": None, "assignee_id": None},
+            "assignee_ids": [seed_users["annotator"].id, seed_users["reviewer"].id],
+            "split_strategy": "duration_balance",
+            "call_id_column": "call_id",
+        },
+    )
+
+    assert response.status_code == 200, response.json()
+    payload = response.json()
+    assert payload["split_strategy"] == "duration_balance"
+    assert payload["matched_count"] == 8
+    assert payload["matched_call_count"] == 4
+    assert payload["assigned_call_count"] == 3
+    assert payload["updated_count"] == 6
+    assert payload["protected_call_count"] == 1
+    assert payload["protected_task_count"] == 2
+    assert payload["missing_duration_task_count"] == 0
+    assert payload["estimated_duration_task_count"] == 0
+    assert payload["assignments"] == [
+        {
+            "assignee_id": seed_users["annotator"].id,
+            "assignee_name": "Annotator",
+            "assignee_email": "annotator@test.com",
+            "call_count": 2,
+            "task_count": 4,
+            "duration_seconds": 400.0,
+        },
+        {
+            "assignee_id": seed_users["reviewer"].id,
+            "assignee_name": "Reviewer",
+            "assignee_email": "reviewer@test.com",
+            "call_count": 1,
+            "task_count": 2,
+            "duration_seconds": 600.0,
+        },
+    ]
+
+    refreshed_tasks = (
+        db_session.query(AnnotationTask)
+        .filter(AnnotationTask.external_id.like("DURATION-SPLIT-%"))
+        .order_by(AnnotationTask.external_id.asc())
+        .all()
+    )
+    assignee_by_call = {}
+    for task in refreshed_tasks:
+        assignee_by_call.setdefault(task.original_row["call_id"], set()).add(task.assignee_id)
+
+    assert assignee_by_call == {
+        "WORKED-CALL": {seed_users["annotator"].id},
+        "LONG-CALL": {seed_users["reviewer"].id},
+        "SHORT-CALL-1": {seed_users["annotator"].id},
+        "SHORT-CALL-2": {seed_users["annotator"].id},
     }
 
 

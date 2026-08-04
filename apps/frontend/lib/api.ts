@@ -34,6 +34,7 @@ import type {
   HiringSubmissionValidationStatus,
   JobStatus,
   Organization,
+  OrganizationDeleteResponse,
   OrganizationListResponse,
   OrganizationMemberListResponse,
   OrganizationQuestionnaire,
@@ -696,6 +697,19 @@ export async function updateOrganization(
   return request<Organization>(
     `/organizations/${organizationId}`,
     { method: "PATCH", body: JSON.stringify(payload) },
+    token
+  );
+}
+
+export async function deleteOrganization(
+  token: string,
+  organizationId: string,
+  confirmSlug: string
+): Promise<OrganizationDeleteResponse> {
+  const query = new URLSearchParams({ confirm_slug: confirmSlug });
+  return request<OrganizationDeleteResponse>(
+    `/organizations/${organizationId}?${query.toString()}`,
+    { method: "DELETE" },
     token
   );
 }

@@ -160,6 +160,7 @@ def bulk_call_split_assignees(
         return service.bulk_call_split_assignees(
             filters=payload.filters,
             assignee_ids=payload.assignee_ids,
+            split_strategy=payload.split_strategy,
             calls_per_assignee=payload.calls_per_assignee,
             call_id_column=payload.call_id_column,
             max_tasks=payload.max_tasks,

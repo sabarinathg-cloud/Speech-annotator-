@@ -855,6 +855,7 @@ class TaskService:
         *,
         filters: BulkTaskFilter,
         assignee_ids: list[str],
+        split_strategy: str,
         calls_per_assignee: int,
         call_id_column: str,
         max_tasks: int,
@@ -889,8 +890,11 @@ class TaskService:
             call_key = self._call_split_key(task, call_id_column=normalized_call_id_column)
             call_groups.setdefault(call_key, []).append(task)
 
+        fallback_segment_duration = self._median_known_duration_seconds(tasks)
         protected_call_count = 0
         protected_task_count = 0
+        missing_duration_task_count = 0
+        estimated_duration_task_count = 0
         now = datetime.now(timezone.utc)
         updated_count = 0
         audit_entries: list[dict[str, Any]] = []
@@ -899,49 +903,93 @@ class TaskService:
                 "assignee": assignee,
                 "call_count": 0,
                 "task_count": 0,
+                "duration_seconds": 0.0,
             }
             for assignee in assignees
         }
 
-        assignable_call_index = 0
-        for call_key, call_tasks in call_groups.items():
-            if self._call_group_has_work(call_tasks):
-                protected_call_count += 1
-                protected_task_count += len(call_tasks)
-                continue
-            assignee = assignees[(assignable_call_index // calls_per_assignee) % len(assignees)]
-            assignable_call_index += 1
-            summary_by_assignee[assignee.id]["call_count"] += 1
-            summary_by_assignee[assignee.id]["task_count"] += len(call_tasks)
-            for task in call_tasks:
-                if task.assignee_id == assignee.id:
-                    continue
-                previous_assignee = task.assignee
-                audit_entries.append(
-                    {
-                        "task_id": task.id,
-                        "actor_user_id": actor.id,
-                        "action": "BULK_CALL_SPLIT_ASSIGNEE",
-                        "changed_fields": {"assignee_id": True},
-                        "previous_values": {
-                            "assignee_id": task.assignee_id,
-                            "assignee_name": previous_assignee.full_name if previous_assignee else None,
-                            "assignee_email": previous_assignee.email if previous_assignee else None,
-                        },
-                        "new_values": {
-                            "assignee_id": assignee.id,
-                            "assignee_name": assignee.full_name,
-                            "assignee_email": assignee.email,
-                            "call_id": call_key,
-                            "calls_per_assignee": calls_per_assignee,
-                        },
-                    }
+        assigned_call_count = 0
+        if split_strategy == "duration_balance":
+            assignee_load_seconds = {assignee.id: 0.0 for assignee in assignees}
+            assignable_calls: list[tuple[str, list[AnnotationTask], float]] = []
+            eligible_assignee_ids = set(assignee_load_seconds.keys())
+            for call_key, call_tasks in call_groups.items():
+                duration_seconds, missing_count, estimated_count = self._call_group_duration_seconds(
+                    call_tasks,
+                    fallback_segment_duration=fallback_segment_duration,
                 )
-                task.assignee_id = assignee.id
-                task.version += 1
-                task.last_saved_at = now
-                task.updated_at = now
-                updated_count += 1
+                missing_duration_task_count += missing_count
+                estimated_duration_task_count += estimated_count
+                if self._call_group_has_work(call_tasks):
+                    protected_call_count += 1
+                    protected_task_count += len(call_tasks)
+                    protected_assignee_id = self._protected_call_assignee_id(call_tasks, eligible_assignee_ids)
+                    if protected_assignee_id:
+                        assignee_load_seconds[protected_assignee_id] += duration_seconds
+                    continue
+                assignable_calls.append((call_key, call_tasks, duration_seconds))
+
+            assignable_calls.sort(key=lambda item: (-item[2], item[0]))
+            for call_key, call_tasks, duration_seconds in assignable_calls:
+                assignee = min(
+                    assignees,
+                    key=lambda item: (
+                        assignee_load_seconds[item.id],
+                        int(summary_by_assignee[item.id]["call_count"]),
+                        item.full_name.lower(),
+                        item.id,
+                    ),
+                )
+                assignee_load_seconds[assignee.id] += duration_seconds
+                summary_by_assignee[assignee.id]["call_count"] += 1
+                summary_by_assignee[assignee.id]["task_count"] += len(call_tasks)
+                summary_by_assignee[assignee.id]["duration_seconds"] += duration_seconds
+                assigned_call_count += 1
+                updated_count += self._assign_call_group(
+                    call_key=call_key,
+                    call_tasks=call_tasks,
+                    assignee=assignee,
+                    actor=actor,
+                    now=now,
+                    audit_entries=audit_entries,
+                    action="BULK_DURATION_SPLIT_ASSIGNEE",
+                    extra_values={
+                        "split_strategy": split_strategy,
+                        "duration_seconds": round(duration_seconds, 3),
+                    },
+                )
+        else:
+            assignable_call_index = 0
+            for call_key, call_tasks in call_groups.items():
+                duration_seconds, missing_count, estimated_count = self._call_group_duration_seconds(
+                    call_tasks,
+                    fallback_segment_duration=fallback_segment_duration,
+                )
+                missing_duration_task_count += missing_count
+                estimated_duration_task_count += estimated_count
+                if self._call_group_has_work(call_tasks):
+                    protected_call_count += 1
+                    protected_task_count += len(call_tasks)
+                    continue
+                assignee = assignees[(assignable_call_index // calls_per_assignee) % len(assignees)]
+                assignable_call_index += 1
+                summary_by_assignee[assignee.id]["call_count"] += 1
+                summary_by_assignee[assignee.id]["task_count"] += len(call_tasks)
+                summary_by_assignee[assignee.id]["duration_seconds"] += duration_seconds
+                assigned_call_count += 1
+                updated_count += self._assign_call_group(
+                    call_key=call_key,
+                    call_tasks=call_tasks,
+                    assignee=assignee,
+                    actor=actor,
+                    now=now,
+                    audit_entries=audit_entries,
+                    action="BULK_CALL_SPLIT_ASSIGNEE",
+                    extra_values={
+                        "split_strategy": split_strategy,
+                        "calls_per_assignee": calls_per_assignee,
+                    },
+                )
 
         self.db.flush()
         self.task_repo.add_audit_logs(audit_entries)
@@ -955,8 +1003,12 @@ class TaskService:
             assignee_count=len(assignees),
             calls_per_assignee=calls_per_assignee,
             call_id_column=normalized_call_id_column,
+            split_strategy=split_strategy,
+            assigned_call_count=assigned_call_count,
             protected_call_count=protected_call_count,
             protected_task_count=protected_task_count,
+            missing_duration_task_count=missing_duration_task_count,
+            estimated_duration_task_count=estimated_duration_task_count,
             assignments=[
                 BulkCallSplitAssignment(
                     assignee_id=str(assignee.id),
@@ -964,6 +1016,7 @@ class TaskService:
                     assignee_email=assignee.email,
                     call_count=int(summary_by_assignee[assignee.id]["call_count"]),
                     task_count=int(summary_by_assignee[assignee.id]["task_count"]),
+                    duration_seconds=round(float(summary_by_assignee[assignee.id]["duration_seconds"]), 3),
                 )
                 for assignee in assignees
             ],
@@ -1370,6 +1423,104 @@ class TaskService:
 
     def _call_group_has_work(self, tasks: list[AnnotationTask]) -> bool:
         return any(task.status != TaskStatusEnum.NOT_STARTED or task.last_tagger_id for task in tasks)
+
+    def _task_duration_seconds(self, task: AnnotationTask) -> float | None:
+        if task.duration_seconds is None:
+            return None
+        try:
+            duration = float(task.duration_seconds)
+        except (TypeError, ValueError):
+            return None
+        return duration if duration > 0 else None
+
+    def _median_known_duration_seconds(self, tasks: list[AnnotationTask]) -> float:
+        durations = sorted(
+            duration
+            for task in tasks
+            if (duration := self._task_duration_seconds(task)) is not None
+        )
+        if not durations:
+            return 60.0
+        midpoint = len(durations) // 2
+        if len(durations) % 2:
+            return durations[midpoint]
+        return (durations[midpoint - 1] + durations[midpoint]) / 2
+
+    def _call_group_duration_seconds(
+        self,
+        tasks: list[AnnotationTask],
+        *,
+        fallback_segment_duration: float,
+    ) -> tuple[float, int, int]:
+        known_durations = [
+            duration
+            for task in tasks
+            if (duration := self._task_duration_seconds(task)) is not None
+        ]
+        missing_count = max(0, len(tasks) - len(known_durations))
+        if known_durations:
+            return sum(known_durations), missing_count, 0
+        estimated_duration = max(fallback_segment_duration, 0.0) * len(tasks)
+        return estimated_duration, missing_count, len(tasks)
+
+    def _protected_call_assignee_id(
+        self,
+        tasks: list[AnnotationTask],
+        eligible_assignee_ids: set[str],
+    ) -> str | None:
+        assignee_counts: dict[str, int] = {}
+        for task in tasks:
+            for candidate_id in (task.assignee_id, task.last_tagger_id):
+                if candidate_id and candidate_id in eligible_assignee_ids:
+                    assignee_counts[candidate_id] = assignee_counts.get(candidate_id, 0) + 1
+                    break
+        if not assignee_counts:
+            return None
+        return sorted(assignee_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+    def _assign_call_group(
+        self,
+        *,
+        call_key: str,
+        call_tasks: list[AnnotationTask],
+        assignee: User,
+        actor: User,
+        now: datetime,
+        audit_entries: list[dict[str, Any]],
+        action: str,
+        extra_values: dict[str, Any],
+    ) -> int:
+        updated_count = 0
+        for task in call_tasks:
+            if task.assignee_id == assignee.id:
+                continue
+            previous_assignee = task.assignee
+            audit_entries.append(
+                {
+                    "task_id": task.id,
+                    "actor_user_id": actor.id,
+                    "action": action,
+                    "changed_fields": {"assignee_id": True},
+                    "previous_values": {
+                        "assignee_id": task.assignee_id,
+                        "assignee_name": previous_assignee.full_name if previous_assignee else None,
+                        "assignee_email": previous_assignee.email if previous_assignee else None,
+                    },
+                    "new_values": {
+                        "assignee_id": assignee.id,
+                        "assignee_name": assignee.full_name,
+                        "assignee_email": assignee.email,
+                        "call_id": call_key,
+                        **extra_values,
+                    },
+                }
+            )
+            task.assignee_id = assignee.id
+            task.version += 1
+            task.last_saved_at = now
+            task.updated_at = now
+            updated_count += 1
+        return updated_count
 
     def _call_split_key(self, task: AnnotationTask, *, call_id_column: str) -> str:
         row = task.original_row if isinstance(task.original_row, dict) else {}
@@ -1883,11 +2034,19 @@ class TaskService:
                         status_code=422,
                     )
                 normalized[question_id] = selected
-            elif field_type in {"number", "rating"}:
+            elif field_type == "number":
                 try:
                     normalized[question_id] = float(value)
                 except (TypeError, ValueError) as exc:
                     raise ServiceError(f"Answer for '{question.get('label')}' must be numeric", status_code=422) from exc
+            elif field_type == "rating":
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError) as exc:
+                    raise ServiceError(f"Answer for '{question.get('label')}' must be numeric", status_code=422) from exc
+                if not numeric.is_integer() or numeric < 1 or numeric > 5:
+                    raise ServiceError(f"Answer for '{question.get('label')}' must be a whole number from 1 to 5", status_code=422)
+                normalized[question_id] = int(numeric)
             elif field_type == "date":
                 normalized[question_id] = str(value).strip()
             else:

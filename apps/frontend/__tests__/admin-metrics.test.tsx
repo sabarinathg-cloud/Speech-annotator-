@@ -301,8 +301,8 @@ describe("AdminMetricsPage", () => {
     expect(screen.getAllByText("Model 1").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Annotator").length).toBeGreaterThan(0);
     expect(screen.getByText("User Productivity Metrics")).toBeInTheDocument();
-    expect(screen.getByText("18 min")).toBeInTheDocument();
-    expect(screen.getByText("75 min")).toBeInTheDocument();
+    expect(screen.getByText(/Turnaround 18 min/)).toBeInTheDocument();
+    expect(screen.getByText(/Session 75 min/)).toBeInTheDocument();
     expect(screen.getByText("ROW-001")).toBeInTheDocument();
   });
 

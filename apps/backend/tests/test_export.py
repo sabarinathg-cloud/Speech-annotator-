@@ -1,6 +1,9 @@
 import io
+from types import SimpleNamespace
 
 import pandas as pd
+
+from app.services.export_service import ExportService
 
 
 def _mapping():
@@ -116,3 +119,27 @@ def test_export_supports_selected_task_ids(client, auth_headers, sample_excel_by
     dataframe = pd.read_csv(io.StringIO(export_response.text))
     assert len(dataframe) == 1
     assert dataframe.iloc[0]["task_id"] == selected_task_id
+
+
+def test_export_adds_rating_label_columns(db_session):
+    task = SimpleNamespace(
+        questionnaire_snapshot={
+            "title": "Masking QA",
+            "version": 2,
+            "questions": [
+                {
+                    "id": "audio_quality",
+                    "label": "Audio quality",
+                    "field_type": "rating",
+                    "options": ["Very bad", "Bad", "Acceptable", "Good", "Excellent"],
+                }
+            ],
+        },
+        questionnaire_answers={"audio_quality": 5},
+    )
+    row = {}
+
+    ExportService(db_session)._add_questionnaire_answers(row, task)
+
+    assert row["question_audio_quality_answer"] == "5"
+    assert row["question_audio_quality_answer_label"] == "Excellent"

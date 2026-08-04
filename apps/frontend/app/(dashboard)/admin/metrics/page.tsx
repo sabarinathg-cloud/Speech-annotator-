@@ -77,11 +77,13 @@ function formatMinutes(value: number | null | undefined): string {
   return `${formatInteger(value)} min`;
 }
 
-function formatMinutesDecimal(value: number): string {
+function formatMinutesDecimal(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "-";
   return `${value.toFixed(1)} min`;
 }
 
-function formatSegmentsPerHour(value: number): string {
+function formatSegmentsPerHour(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "-";
   return `${value.toFixed(2)}/hr`;
 }
 

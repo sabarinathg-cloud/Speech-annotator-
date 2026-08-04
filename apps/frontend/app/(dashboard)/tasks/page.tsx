@@ -1,6 +1,6 @@
 "use client";
 
-import type { AdminUser, BulkTaskFilter, Role, TaskDetail, TaskListItem, TaskStatus } from "@outcomes/shared-types";
+import type { AdminUser, BulkCallSplitStrategy, BulkTaskFilter, Role, TaskDetail, TaskListItem, TaskStatus } from "@outcomes/shared-types";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, useTransition } from "react";
@@ -50,6 +50,16 @@ function assignmentLoadClass(load: AdminUser["assignment_load"]) {
   if (load === "light") return "border-[#cfe0ff] bg-[#f0f6ff] text-[#2c579b]";
   if (load === "normal") return "border-[#f1dfb6] bg-[#fff7e6] text-[#8a5b1e]";
   return "border-[#f0c8c8] bg-[#fff3f3] text-[#a13a3a]";
+}
+
+function formatDuration(seconds: number | undefined): string {
+  const totalSeconds = Math.max(0, Math.round(seconds ?? 0));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${remainingSeconds}s`;
+  return `${remainingSeconds}s`;
 }
 
 function nextAssignmentLoad(openCount: number): AdminUser["assignment_load"] {
@@ -104,6 +114,7 @@ export default function TasksPage() {
   const [bulkStatusComment, setBulkStatusComment] = useState("");
   const [bulkExportFormat, setBulkExportFormat] = useState<"csv" | "xlsx">("csv");
   const [assignmentRoleFilter, setAssignmentRoleFilter] = useState<Role | "all">("all");
+  const [callSplitStrategy, setCallSplitStrategy] = useState<BulkCallSplitStrategy>("calls_per_assignee");
   const [callSplitSize, setCallSplitSize] = useState("100");
   const [callSplitColumn, setCallSplitColumn] = useState("call_id");
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -496,10 +507,14 @@ export default function TasksPage() {
       return;
     }
 
-    const parsedCallCount = Number.parseInt(callSplitSize, 10);
-    if (!Number.isFinite(parsedCallCount) || parsedCallCount < 1 || parsedCallCount > 10000) {
-      setError("Calls per assignee must be between 1 and 10000.");
-      return;
+    let parsedCallCount = Number.parseInt(callSplitSize, 10);
+    if (callSplitStrategy === "calls_per_assignee") {
+      if (!Number.isFinite(parsedCallCount) || parsedCallCount < 1 || parsedCallCount > 10000) {
+        setError("Calls per assignee must be between 1 and 10000.");
+        return;
+      }
+    } else {
+      parsedCallCount = 100;
     }
     const column = callSplitColumn.trim() || "call_id";
 
@@ -508,21 +523,32 @@ export default function TasksPage() {
       const response = await bulkCallSplitTasks(accessToken, {
         filters: bulkFilterPayload,
         assignee_ids: assignableUsers.map((account) => account.id),
+        split_strategy: callSplitStrategy,
         calls_per_assignee: parsedCallCount,
         call_id_column: column,
         max_tasks: 50000,
       });
       const summary = response.assignments
         .filter((item) => item.call_count > 0)
-        .map((item) => `${item.assignee_name}: ${item.call_count} calls`)
+        .map((item) =>
+          callSplitStrategy === "duration_balance"
+            ? `${item.assignee_name}: ${item.call_count} calls, ${formatDuration(item.duration_seconds)}`
+            : `${item.assignee_name}: ${item.call_count} calls`
+        )
         .join("; ");
-      const assignedCallCount = response.assignments.reduce((count, item) => count + item.call_count, 0);
+      const assignedCallCount =
+        response.assigned_call_count ?? response.assignments.reduce((count, item) => count + item.call_count, 0);
       const protectedSummary =
         response.protected_task_count > 0
           ? ` ${response.protected_task_count} tasks in ${response.protected_call_count} worked calls were protected.`
           : "";
+      const durationSummary =
+        callSplitStrategy === "duration_balance" && (response.missing_duration_task_count > 0 || response.estimated_duration_task_count > 0)
+          ? ` ${response.estimated_duration_task_count} tasks had estimated or missing durations (${response.missing_duration_task_count} missing).`
+          : "";
+      const splitVerb = callSplitStrategy === "duration_balance" ? "balanced by duration across" : "assigned across";
       setBulkResult(
-        `${response.updated_count} tasks assigned across ${assignedCallCount} calls (${response.matched_call_count} matched, ${response.skipped_count} unchanged).${protectedSummary} ${summary}`
+        `${response.updated_count} tasks ${splitVerb} ${assignedCallCount} calls (${response.matched_call_count} matched, ${response.skipped_count} unchanged).${protectedSummary}${durationSummary} ${summary}`
       );
       setSelectedTaskIds([]);
       setAllMatchingSelected(false);
@@ -1012,19 +1038,48 @@ export default function TasksPage() {
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 gap-3 rounded-lg border border-[#e6dcf2] bg-white px-3 py-3 lg:grid-cols-[minmax(160px,0.55fr)_minmax(180px,0.7fr)_1fr_auto] lg:items-end">
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-medium text-[#676280]">Calls per assignee</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="10000"
-                    aria-label="Calls per assignee"
-                    value={callSplitSize}
-                    onChange={(event) => setCallSplitSize(event.target.value)}
-                    className="oa-input py-1.5 text-xs"
-                  />
-                </label>
+              <div className="grid grid-cols-1 gap-3 rounded-lg border border-[#e6dcf2] bg-white px-3 py-3 lg:grid-cols-[minmax(250px,0.8fr)_minmax(180px,0.55fr)_minmax(180px,0.65fr)_1fr_auto] lg:items-end">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-[#676280]">Call split mode</span>
+                  <div className="grid grid-cols-2 gap-1 rounded-lg border border-[#ded4ef] bg-[#fbf8ff] p-1">
+                    {[
+                      { value: "calls_per_assignee", label: "By call count" },
+                      { value: "duration_balance", label: "By duration" },
+                    ].map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setCallSplitStrategy(option.value as BulkCallSplitStrategy)}
+                        className={
+                          callSplitStrategy === option.value
+                            ? "rounded-md bg-[#221b4c] px-3 py-1.5 text-xs font-semibold text-white"
+                            : "rounded-md px-3 py-1.5 text-xs font-semibold text-[#5f5b77] hover:bg-white"
+                        }
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {callSplitStrategy === "calls_per_assignee" ? (
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium text-[#676280]">Calls per assignee</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10000"
+                      aria-label="Calls per assignee"
+                      value={callSplitSize}
+                      onChange={(event) => setCallSplitSize(event.target.value)}
+                      className="oa-input py-1.5 text-xs"
+                    />
+                  </label>
+                ) : (
+                  <div className="rounded-lg border border-[#e5dbf2] bg-[#fbf8ff] px-3 py-2">
+                    <p className="text-xs font-semibold text-[#403a60]">Equalize total duration</p>
+                    <p className="mt-1 text-[11px] leading-snug text-[#6f6a89]">Longest calls are assigned first.</p>
+                  </div>
+                )}
                 <label className="flex flex-col gap-1.5">
                   <span className="text-xs font-medium text-[#676280]">Call ID column</span>
                   <input
@@ -1037,7 +1092,9 @@ export default function TasksPage() {
                   />
                 </label>
                 <p className="text-xs leading-relaxed text-[#6f6a89]">
-                  Keeps chunks from the same call together and protects any call that already has work. Example: 100 sends the first 100 fresh calls to the first eligible user, next 100 to the next user, then repeats.
+                  {callSplitStrategy === "duration_balance"
+                    ? "Uses all matching filtered tasks, keeps every call together, protects any call that already has work, and balances fresh calls by total audio duration."
+                    : "Keeps chunks from the same call together and protects any call that already has work. Example: 100 sends the first 100 fresh calls to the first eligible user, next 100 to the next user, then repeats."}
                 </p>
                 <button
                   type="button"
@@ -1045,7 +1102,7 @@ export default function TasksPage() {
                   disabled={bulkBusy || !allMatchingSelected || selectedTaskCount === 0 || assignableUsers.length === 0}
                   className="oa-btn-primary px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Assign call batches
+                  {callSplitStrategy === "duration_balance" ? "Balance by duration" : "Assign call batches"}
                 </button>
               </div>
               {allMatchingSelected ? (

@@ -305,10 +305,13 @@ export interface BulkAutoBalanceResponse {
   protected_task_count: number;
 }
 
+export type BulkCallSplitStrategy = "calls_per_assignee" | "duration_balance";
+
 export interface BulkCallSplitRequest {
   filters: BulkTaskFilter;
   assignee_ids: string[];
-  calls_per_assignee: number;
+  split_strategy?: BulkCallSplitStrategy;
+  calls_per_assignee?: number;
   call_id_column?: string;
   max_tasks?: number;
 }
@@ -319,6 +322,7 @@ export interface BulkCallSplitAssignment {
   assignee_email: string;
   call_count: number;
   task_count: number;
+  duration_seconds: number;
 }
 
 export interface BulkCallSplitResponse {
@@ -329,8 +333,12 @@ export interface BulkCallSplitResponse {
   assignee_count: number;
   calls_per_assignee: number;
   call_id_column: string;
+  split_strategy: BulkCallSplitStrategy;
+  assigned_call_count: number;
   protected_call_count: number;
   protected_task_count: number;
+  missing_duration_task_count: number;
+  estimated_duration_task_count: number;
   assignments: BulkCallSplitAssignment[];
 }
 
@@ -980,6 +988,13 @@ export interface HiringAudioBucketListResponse {
 
 export interface OrganizationListResponse {
   items: Organization[];
+}
+
+export interface OrganizationDeleteResponse {
+  deleted_organization_id: string;
+  deleted_organization_name: string;
+  deleted_organization_slug: string;
+  deleted_counts: Record<string, number>;
 }
 
 export interface OrganizationMemberListResponse {

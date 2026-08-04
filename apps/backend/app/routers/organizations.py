@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db_session, require_roles
@@ -6,6 +6,7 @@ from app.models.enums import RoleEnum
 from app.models.user import User
 from app.schemas.organization import (
     OrganizationCreateRequest,
+    OrganizationDeleteResponse,
     OrganizationListResponse,
     OrganizationMemberAddRequest,
     OrganizationMemberListResponse,
@@ -68,6 +69,23 @@ def update_organization(
             organization_id=organization_id,
             payload=payload,
             provided_fields=set(payload.model_fields_set),
+        )
+    except ServiceError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.delete("/{organization_id}", response_model=OrganizationDeleteResponse)
+def delete_organization(
+    organization_id: str,
+    confirm_slug: str = Query(min_length=1),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    try:
+        return OrganizationService(db).delete_organization(
+            organization_id=organization_id,
+            confirm_slug=confirm_slug,
+            actor=current_user,
         )
     except ServiceError as exc:
         raise _http_error(exc) from exc

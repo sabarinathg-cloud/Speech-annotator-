@@ -287,6 +287,7 @@ class BulkAutoBalanceResponse(BaseModel):
 class BulkCallSplitRequest(BaseModel):
     filters: BulkTaskFilter = Field(default_factory=BulkTaskFilter)
     assignee_ids: list[str] = Field(min_length=1, max_length=100)
+    split_strategy: Literal["calls_per_assignee", "duration_balance"] = "calls_per_assignee"
     calls_per_assignee: int = Field(default=100, ge=1, le=10000)
     call_id_column: str = Field(default="call_id", min_length=1, max_length=255)
     max_tasks: int = Field(default=50000, ge=1, le=50000)
@@ -298,6 +299,7 @@ class BulkCallSplitAssignment(BaseModel):
     assignee_email: str
     call_count: int
     task_count: int
+    duration_seconds: float = 0
 
 
 class BulkCallSplitResponse(BaseModel):
@@ -308,8 +310,12 @@ class BulkCallSplitResponse(BaseModel):
     assignee_count: int
     calls_per_assignee: int
     call_id_column: str
+    split_strategy: Literal["calls_per_assignee", "duration_balance"] = "calls_per_assignee"
+    assigned_call_count: int = 0
     protected_call_count: int = 0
     protected_task_count: int = 0
+    missing_duration_task_count: int = 0
+    estimated_duration_task_count: int = 0
     assignments: list[BulkCallSplitAssignment]
 
 

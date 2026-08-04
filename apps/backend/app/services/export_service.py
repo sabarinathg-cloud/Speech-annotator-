@@ -148,14 +148,34 @@ class ExportService:
                 continue
             known_question_ids.add(question_id)
             label = str(raw_question.get("label") or question_id).strip() or question_id
+            answer = answers.get(question_id)
             row[f"question_{question_id}_label"] = label
-            row[f"question_{question_id}_answer"] = self._format_answer_value(answers.get(question_id))
+            row[f"question_{question_id}_answer"] = self._format_answer_value(answer)
+            if str(raw_question.get("field_type") or "") == "rating":
+                answer_label = self._rating_answer_label(answer, raw_question.get("options"))
+                if answer_label:
+                    row[f"question_{question_id}_answer_label"] = answer_label
 
         for question_id, answer in answers.items():
             key = str(question_id)
             if key in known_question_ids:
                 continue
             row[f"question_{key}_answer"] = self._format_answer_value(answer)
+
+    def _rating_answer_label(self, value, options) -> str:
+        if value is None:
+            return ""
+        if not isinstance(options, list):
+            return ""
+        try:
+            score = int(float(value))
+        except (TypeError, ValueError):
+            return ""
+        if score < 1 or score > 5:
+            return ""
+        if score > len(options):
+            return ""
+        return str(options[score - 1] or "").strip()
 
     def _format_answer_value(self, value) -> str:
         if value is None:
