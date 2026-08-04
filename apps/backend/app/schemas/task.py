@@ -38,7 +38,12 @@ class TaskListItemResponse(BaseModel):
     due_date: date | None
     language: str | None
     speaker_role: str | None
+    duration_seconds: Decimal | None = None
     version: int
+
+    @field_serializer("duration_seconds")
+    def serialize_duration_seconds(self, value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
 
 
 class TaskListResponse(BaseModel):

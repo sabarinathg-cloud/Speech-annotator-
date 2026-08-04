@@ -21,6 +21,10 @@ class UserAdminResponse(BaseModel):
     open_assigned_task_count: int = 0
     completed_task_count: int = 0
     approved_task_count: int = 0
+    assigned_duration_seconds: float = 0
+    open_assigned_duration_seconds: float = 0
+    completed_duration_seconds: float = 0
+    approved_duration_seconds: float = 0
     assignment_load: Literal["none", "light", "normal", "heavy"] = "none"
     organizations: list[UserOrganizationAccess] = []
     created_at: datetime

@@ -62,6 +62,7 @@ const task = {
   language: "en",
   speaker_role: "caller",
   due_date: null,
+  duration_seconds: 60,
   version: 4,
 };
 
@@ -86,6 +87,10 @@ function adminUser(overrides: Partial<Record<string, unknown>> = {}) {
     open_assigned_task_count: 2,
     completed_task_count: 1,
     approved_task_count: 1,
+    assigned_duration_seconds: 0,
+    open_assigned_duration_seconds: 0,
+    completed_duration_seconds: 0,
+    approved_duration_seconds: 0,
     assignment_load: "light",
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -421,6 +426,8 @@ describe("TasksPage queue workflows", () => {
           full_name: "Ben Annotator",
           role: "ANNOTATOR",
           open_assigned_task_count: 3,
+          open_assigned_duration_seconds: 180,
+          assigned_duration_seconds: 180,
           assignment_load: "light",
         }),
       ],
@@ -440,9 +447,9 @@ describe("TasksPage queue workflows", () => {
     fireEvent.change(screen.getByLabelText("Assignment user role"), { target: { value: "ANNOTATOR" } });
 
     expect(screen.getAllByText("Ann Annotator").length).toBeGreaterThan(0);
-    expect(screen.getByText("0 open")).toBeInTheDocument();
+    expect(screen.getAllByText("0 / 0s").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Ben Annotator").length).toBeGreaterThan(0);
-    expect(screen.getByText("3 open")).toBeInTheDocument();
+    expect(screen.getByText("3 / 3m 0s")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Auto-balance by call" }));
 

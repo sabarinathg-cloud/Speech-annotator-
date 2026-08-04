@@ -1842,6 +1842,7 @@ class TaskService:
             due_date=task.due_date,
             language=task.language,
             speaker_role=task.speaker_role,
+            duration_seconds=task.duration_seconds,
             version=task.version,
         )
 

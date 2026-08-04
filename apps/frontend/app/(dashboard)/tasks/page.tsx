@@ -52,7 +52,7 @@ function assignmentLoadClass(load: AdminUser["assignment_load"]) {
   return "border-[#f0c8c8] bg-[#fff3f3] text-[#a13a3a]";
 }
 
-function formatDuration(seconds: number | undefined): string {
+function formatDuration(seconds: number | null | undefined): string {
   const totalSeconds = Math.max(0, Math.round(seconds ?? 0));
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -67,6 +67,10 @@ function nextAssignmentLoad(openCount: number): AdminUser["assignment_load"] {
   if (openCount <= 5) return "light";
   if (openCount <= 15) return "normal";
   return "heavy";
+}
+
+function assignmentOptionLabel(account: AdminUser): string {
+  return `${account.full_name} (${account.role}, ${account.open_assigned_task_count} open, ${formatDuration(account.open_assigned_duration_seconds)})`;
 }
 
 function taskCallKey(task: TaskListItem): string {
@@ -141,7 +145,7 @@ export default function TasksPage() {
         setUsers([]);
       }
     })();
-  }, [accessToken, isAdmin]);
+  }, [accessToken, isAdmin, activeOrganizationId]);
 
   useEffect(() => {
     setAllMatchingSelected(false);
@@ -241,6 +245,7 @@ export default function TasksPage() {
         })
         .sort(
           (a, b) =>
+            a.open_assigned_duration_seconds - b.open_assigned_duration_seconds ||
             a.open_assigned_task_count - b.open_assigned_task_count ||
             a.full_name.localeCompare(b.full_name)
         ),
@@ -321,6 +326,7 @@ export default function TasksPage() {
           previous_assignee_id: previousTask?.assignee_id ?? null,
           assignee_id: response.task.assignee_id,
           status: response.task.status,
+          duration_seconds: response.task.duration_seconds ?? previousTask?.duration_seconds ?? null,
         },
       ]);
       setError(null);
@@ -350,6 +356,7 @@ export default function TasksPage() {
           previous_assignee_id: null,
           assignee_id: response.task.assignee_id,
           status: response.task.status,
+          duration_seconds: response.task.duration_seconds,
         },
       ]);
       setBulkResult(`Created a separate assignment for ${response.task.assignee_name || "the selected user"}.`);
@@ -437,6 +444,7 @@ export default function TasksPage() {
           previous_assignee_id: null,
           assignee_id: task.assignee_id,
           status: task.status,
+          duration_seconds: task.duration_seconds,
         }))
       );
       setBulkResult(`${response.created.length} copies created, ${response.errors.length} conflict/error${response.errors.length === 1 ? "" : "s"}.`);
@@ -603,6 +611,7 @@ export default function TasksPage() {
           previous_assignee_id: previousByTaskId.get(task.id)?.assignee_id ?? null,
           assignee_id: task.assignee_id,
           status: task.status,
+          duration_seconds: task.duration_seconds,
         }))
       );
       setAllMatchingSelected(false);
@@ -753,38 +762,115 @@ export default function TasksPage() {
   }
 
   function adjustUserAssignmentCounts(
-    changes: Array<{ previous_assignee_id: string | null; assignee_id: string | null; status: TaskStatus }>
+    changes: Array<{
+      previous_assignee_id: string | null;
+      assignee_id: string | null;
+      status: TaskStatus;
+      duration_seconds?: number | null;
+    }>
   ) {
     const assignedDeltas: Record<string, number> = {};
     const openDeltas: Record<string, number> = {};
+    const completedDeltas: Record<string, number> = {};
+    const approvedDeltas: Record<string, number> = {};
+    const assignedDurationDeltas: Record<string, number> = {};
+    const openDurationDeltas: Record<string, number> = {};
+    const completedDurationDeltas: Record<string, number> = {};
+    const approvedDurationDeltas: Record<string, number> = {};
     changes.forEach((change) => {
       if (change.previous_assignee_id === change.assignee_id) return;
       const isOpenTask = change.status !== "Approved";
+      const isCompletedTask = progressStatuses.includes(change.status);
+      const isApprovedTask = change.status === "Approved";
+      const duration = Math.max(0, change.duration_seconds ?? 0);
       if (change.previous_assignee_id) {
         assignedDeltas[change.previous_assignee_id] = (assignedDeltas[change.previous_assignee_id] ?? 0) - 1;
+        assignedDurationDeltas[change.previous_assignee_id] =
+          (assignedDurationDeltas[change.previous_assignee_id] ?? 0) - duration;
         if (isOpenTask) {
           openDeltas[change.previous_assignee_id] = (openDeltas[change.previous_assignee_id] ?? 0) - 1;
+          openDurationDeltas[change.previous_assignee_id] =
+            (openDurationDeltas[change.previous_assignee_id] ?? 0) - duration;
+        }
+        if (isCompletedTask) {
+          completedDeltas[change.previous_assignee_id] = (completedDeltas[change.previous_assignee_id] ?? 0) - 1;
+          completedDurationDeltas[change.previous_assignee_id] =
+            (completedDurationDeltas[change.previous_assignee_id] ?? 0) - duration;
+        }
+        if (isApprovedTask) {
+          approvedDeltas[change.previous_assignee_id] = (approvedDeltas[change.previous_assignee_id] ?? 0) - 1;
+          approvedDurationDeltas[change.previous_assignee_id] =
+            (approvedDurationDeltas[change.previous_assignee_id] ?? 0) - duration;
         }
       }
       if (change.assignee_id) {
         assignedDeltas[change.assignee_id] = (assignedDeltas[change.assignee_id] ?? 0) + 1;
+        assignedDurationDeltas[change.assignee_id] = (assignedDurationDeltas[change.assignee_id] ?? 0) + duration;
         if (isOpenTask) {
           openDeltas[change.assignee_id] = (openDeltas[change.assignee_id] ?? 0) + 1;
+          openDurationDeltas[change.assignee_id] = (openDurationDeltas[change.assignee_id] ?? 0) + duration;
+        }
+        if (isCompletedTask) {
+          completedDeltas[change.assignee_id] = (completedDeltas[change.assignee_id] ?? 0) + 1;
+          completedDurationDeltas[change.assignee_id] = (completedDurationDeltas[change.assignee_id] ?? 0) + duration;
+        }
+        if (isApprovedTask) {
+          approvedDeltas[change.assignee_id] = (approvedDeltas[change.assignee_id] ?? 0) + 1;
+          approvedDurationDeltas[change.assignee_id] = (approvedDurationDeltas[change.assignee_id] ?? 0) + duration;
         }
       }
     });
-    if (Object.keys(assignedDeltas).length === 0 && Object.keys(openDeltas).length === 0) return;
+    const affectedUserIds = new Set([
+      ...Object.keys(assignedDeltas),
+      ...Object.keys(openDeltas),
+      ...Object.keys(completedDeltas),
+      ...Object.keys(approvedDeltas),
+      ...Object.keys(assignedDurationDeltas),
+      ...Object.keys(openDurationDeltas),
+      ...Object.keys(completedDurationDeltas),
+      ...Object.keys(approvedDurationDeltas),
+    ]);
+    if (affectedUserIds.size === 0) return;
     setUsers((prev) =>
       prev.map((account) => {
         const assignedDelta = assignedDeltas[account.id] ?? 0;
         const openDelta = openDeltas[account.id] ?? 0;
-        if (assignedDelta === 0 && openDelta === 0) return account;
+        const completedDelta = completedDeltas[account.id] ?? 0;
+        const approvedDelta = approvedDeltas[account.id] ?? 0;
+        const assignedDurationDelta = assignedDurationDeltas[account.id] ?? 0;
+        const openDurationDelta = openDurationDeltas[account.id] ?? 0;
+        const completedDurationDelta = completedDurationDeltas[account.id] ?? 0;
+        const approvedDurationDelta = approvedDurationDeltas[account.id] ?? 0;
+        if (
+          assignedDelta === 0 &&
+          openDelta === 0 &&
+          completedDelta === 0 &&
+          approvedDelta === 0 &&
+          assignedDurationDelta === 0 &&
+          openDurationDelta === 0 &&
+          completedDurationDelta === 0 &&
+          approvedDurationDelta === 0
+        ) {
+          return account;
+        }
         const assigned = Math.max(0, account.assigned_task_count + assignedDelta);
         const openAssigned = Math.max(0, account.open_assigned_task_count + openDelta);
+        const completed = Math.max(0, account.completed_task_count + completedDelta);
+        const approved = Math.max(0, account.approved_task_count + approvedDelta);
+        const assignedDuration = Math.max(0, account.assigned_duration_seconds + assignedDurationDelta);
+        const openDuration = Math.max(0, account.open_assigned_duration_seconds + openDurationDelta);
+        const completedDuration = Math.max(0, account.completed_duration_seconds + completedDurationDelta);
+        const approvedDuration = Math.max(0, account.approved_duration_seconds + approvedDurationDelta);
         return {
           ...account,
           assigned_task_count: assigned,
           open_assigned_task_count: openAssigned,
+          completed_task_count: completed,
+          approved_task_count: approved,
+          assigned_duration_seconds: assignedDuration,
+          open_assigned_duration_seconds: openDuration,
+          completed_duration_seconds: completedDuration,
+          approved_duration_seconds: approvedDuration,
           assignment_load: nextAssignmentLoad(openAssigned),
         };
       })
@@ -992,7 +1078,7 @@ export default function TasksPage() {
                     <option value="">Unassigned</option>
                     {assignableUsers.map((account) => (
                       <option key={account.id} value={account.id}>
-                        {account.full_name} ({account.role}, {account.open_assigned_task_count} open)
+                        {assignmentOptionLabel(account)}
                       </option>
                     ))}
                   </select>
@@ -1208,9 +1294,25 @@ export default function TasksPage() {
                         {account.assignment_load}
                       </span>
                     </div>
-                    <div className="mt-2 flex items-center gap-2 text-xs text-[#5f5a76]">
-                      <span>{account.open_assigned_task_count} open</span>
-                      <span>{account.completed_task_count} completed</span>
+                    <div className="mt-2 grid grid-cols-1 gap-1 text-xs text-[#5f5a76]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span>Open</span>
+                        <span className="font-medium text-[#292441]">
+                          {account.open_assigned_task_count} / {formatDuration(account.open_assigned_duration_seconds)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span>Done</span>
+                        <span className="font-medium text-[#292441]">
+                          {account.completed_task_count} / {formatDuration(account.completed_duration_seconds)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2 border-t border-[#eee6f7] pt-1">
+                        <span>Total</span>
+                        <span className="font-semibold text-[#292441]">
+                          {account.assigned_task_count} / {formatDuration(account.assigned_duration_seconds)}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -1401,7 +1503,7 @@ export default function TasksPage() {
                             <option value="">Unassigned</option>
                             {assignableUsers.map((account) => (
                               <option key={account.id} value={account.id}>
-                                {account.full_name}
+                                {assignmentOptionLabel(account)}
                               </option>
                             ))}
                           </select>

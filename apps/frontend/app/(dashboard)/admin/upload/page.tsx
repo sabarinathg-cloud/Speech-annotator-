@@ -77,6 +77,16 @@ function formatGateLabel(gateKey: string): string {
     .join(" ");
 }
 
+function formatDuration(seconds: number | null | undefined): string {
+  const totalSeconds = Math.max(0, Math.round(seconds ?? 0));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${remainingSeconds}s`;
+  return `${remainingSeconds}s`;
+}
+
 function chooseColumn(columns: string[], preferredNames: string[], fallback = ""): string {
   const normalized = new Map(columns.map((column) => [column.toLowerCase(), column]));
   for (const name of preferredNames) {
@@ -831,12 +841,14 @@ export default function AdminUploadPage() {
                       <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${assignmentLoadClass(account.assignment_load)}`}>
                         {account.assignment_load}
                       </span>
-                      <p className="mt-1 text-xs text-[#6f6a88]">{account.open_assigned_task_count} open</p>
+                      <p className="mt-1 text-xs text-[#6f6a88]">
+                        {account.open_assigned_task_count} open / {formatDuration(account.open_assigned_duration_seconds)}
+                      </p>
                     </td>
                     <td className="px-3 py-2 text-xs text-[#4a4564]">
-                      <p>Assigned: {account.assigned_task_count}</p>
-                      <p>Completed: {account.completed_task_count}</p>
-                      <p>Approved: {account.approved_task_count}</p>
+                      <p>Assigned: {account.assigned_task_count} / {formatDuration(account.assigned_duration_seconds)}</p>
+                      <p>Completed: {account.completed_task_count} / {formatDuration(account.completed_duration_seconds)}</p>
+                      <p>Approved: {account.approved_task_count} / {formatDuration(account.approved_duration_seconds)}</p>
                     </td>
                     <td className="px-3 py-2 text-xs text-[#645f7d]">
                       {formatUserTimestamp(account.last_login_at, "No recorded login")}

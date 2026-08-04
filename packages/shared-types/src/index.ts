@@ -269,6 +269,7 @@ export interface TaskListItem {
   due_date: string | null;
   language: string | null;
   speaker_role: string | null;
+  duration_seconds: number | null;
   version: number;
 }
 
@@ -394,6 +395,10 @@ export interface AdminUser {
   open_assigned_task_count: number;
   completed_task_count: number;
   approved_task_count: number;
+  assigned_duration_seconds: number;
+  open_assigned_duration_seconds: number;
+  completed_duration_seconds: number;
+  approved_duration_seconds: number;
   assignment_load: AssignmentLoad;
   organizations?: UserOrganizationAccess[];
   created_at: string;

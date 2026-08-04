@@ -139,12 +139,16 @@ class UserService:
         self.db.refresh(user)
         return self._build_admin_response(user)
 
-    def _build_admin_response(self, user: User, counts: dict[str, int] | None = None) -> UserAdminResponse:
+    def _build_admin_response(self, user: User, counts: dict[str, int | float] | None = None) -> UserAdminResponse:
         counts = counts or {
             "assigned_task_count": 0,
             "open_assigned_task_count": 0,
             "completed_task_count": 0,
             "approved_task_count": 0,
+            "assigned_duration_seconds": 0.0,
+            "open_assigned_duration_seconds": 0.0,
+            "completed_duration_seconds": 0.0,
+            "approved_duration_seconds": 0.0,
         }
         open_count = counts["open_assigned_task_count"]
         if open_count == 0:

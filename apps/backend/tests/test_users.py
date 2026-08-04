@@ -25,13 +25,14 @@ def _create_upload_job(db_session, admin):
     return upload_job
 
 
-def _create_task(db_session, upload_job, *, external_id, assignee_id, status):
+def _create_task(db_session, upload_job, *, external_id, assignee_id, status, duration_seconds=None):
     task = AnnotationTask(
         external_id=external_id,
         upload_job_id=upload_job.id,
         file_location=f"local:///tmp/{external_id}.wav",
         status=status,
         assignee_id=assignee_id,
+        duration_seconds=duration_seconds,
         custom_metadata={},
         original_row={"id": external_id, "file_location": f"local:///tmp/{external_id}.wav"},
         pii_annotations=[],
@@ -51,6 +52,10 @@ def test_admin_can_list_and_create_users(client, auth_headers):
         "open_assigned_task_count",
         "completed_task_count",
         "approved_task_count",
+        "assigned_duration_seconds",
+        "open_assigned_duration_seconds",
+        "completed_duration_seconds",
+        "approved_duration_seconds",
         "assignment_load",
     }.issubset(list_response.json()["items"][0].keys())
 
@@ -114,6 +119,7 @@ def test_user_admin_response_includes_real_assignment_counts(client, auth_header
         external_id="OPEN-001",
         assignee_id=seed_users["annotator"].id,
         status=TaskStatusEnum.IN_PROGRESS,
+        duration_seconds=125.5,
     )
     _create_task(
         db_session,
@@ -121,6 +127,7 @@ def test_user_admin_response_includes_real_assignment_counts(client, auth_header
         external_id="DONE-001",
         assignee_id=seed_users["annotator"].id,
         status=TaskStatusEnum.APPROVED,
+        duration_seconds=74.5,
     )
     _create_task(
         db_session,
@@ -139,6 +146,10 @@ def test_user_admin_response_includes_real_assignment_counts(client, auth_header
     assert annotator["open_assigned_task_count"] == 1
     assert annotator["completed_task_count"] == 1
     assert annotator["approved_task_count"] == 1
+    assert annotator["assigned_duration_seconds"] == 200
+    assert annotator["open_assigned_duration_seconds"] == 125.5
+    assert annotator["completed_duration_seconds"] == 74.5
+    assert annotator["approved_duration_seconds"] == 74.5
     assert annotator["assignment_load"] == "light"
 
 
