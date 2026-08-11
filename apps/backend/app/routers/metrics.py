@@ -70,7 +70,7 @@ def get_admin_metrics(
 
 @router.get("/people-activity", response_model=PeopleActivityResponse)
 def get_people_activity(
-    user_id: str | None = Query(default=None),
+    user_id: list[str] | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     db: Session = Depends(get_db_session),
@@ -78,7 +78,7 @@ def get_people_activity(
 ):
     try:
         return MetricsService(db).get_people_activity(
-            user_id=user_id,
+            user_ids=user_id,
             date_from=date_from,
             date_to=date_to,
         )
@@ -88,7 +88,7 @@ def get_people_activity(
 
 @router.get("/people-activity/export")
 def export_people_activity(
-    user_id: str | None = Query(default=None),
+    user_id: list[str] | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     db: Session = Depends(get_db_session),
@@ -96,7 +96,7 @@ def export_people_activity(
 ):
     try:
         report = MetricsService(db).get_people_activity(
-            user_id=user_id,
+            user_ids=user_id,
             date_from=date_from,
             date_to=date_to,
         )

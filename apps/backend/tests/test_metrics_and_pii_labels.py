@@ -430,6 +430,58 @@ def test_people_activity_returns_zero_user_and_rejects_non_admin(
     assert item["organizations"] == []
 
 
+def test_people_activity_filters_to_multiple_requested_users(client, auth_headers, seed_users):
+    response = client.get(
+        "/api/v1/metrics/people-activity",
+        headers=auth_headers["admin"],
+        params=[
+            ("user_id", seed_users["annotator"].id),
+            ("user_id", seed_users["reviewer"].id),
+            ("date_from", "2026-08-05"),
+            ("date_to", "2026-08-11"),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert {item["user_id"] for item in response.json()["items"]} == {
+        seed_users["annotator"].id,
+        seed_users["reviewer"].id,
+    }
+
+
+def test_people_activity_deduplicates_requested_users(client, auth_headers, seed_users):
+    response = client.get(
+        "/api/v1/metrics/people-activity",
+        headers=auth_headers["admin"],
+        params=[
+            ("user_id", seed_users["annotator"].id),
+            ("user_id", seed_users["annotator"].id),
+            ("date_from", "2026-08-05"),
+            ("date_to", "2026-08-11"),
+        ],
+    )
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [item["user_id"] for item in items] == [seed_users["annotator"].id]
+
+
+def test_people_activity_rejects_unknown_requested_user(client, auth_headers, seed_users):
+    response = client.get(
+        "/api/v1/metrics/people-activity",
+        headers=auth_headers["admin"],
+        params=[
+            ("user_id", seed_users["annotator"].id),
+            ("user_id", "missing-user"),
+            ("date_from", "2026-08-05"),
+            ("date_to", "2026-08-11"),
+        ],
+    )
+
+    assert response.status_code == 404
+    assert "User not found: missing-user" in response.json()["detail"]
+
+
 def test_admin_metrics_scope_counts_to_selected_organization(client, auth_headers, db_session, seed_users):
     iris2 = Organization(
         name="Iris2",

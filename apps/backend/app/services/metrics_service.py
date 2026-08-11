@@ -390,7 +390,7 @@ class MetricsService:
     def get_people_activity(
         self,
         *,
-        user_id: str | None,
+        user_ids: list[str] | None,
         date_from: date | None,
         date_to: date | None,
     ) -> PeopleActivityResponse:
@@ -400,14 +400,17 @@ class MetricsService:
         if resolved_date_from > resolved_date_to:
             raise ServiceError("From date must be on or before to date", status_code=422)
 
+        requested_user_ids = list(dict.fromkeys(user_ids or []))
         user_query = select(User).order_by(User.full_name.asc(), User.email.asc())
-        if user_id:
-            user_query = user_query.where(User.id == user_id)
+        if requested_user_ids:
+            user_query = user_query.where(User.id.in_(requested_user_ids))
         else:
             user_query = user_query.where(User.is_active.is_(True))
         users = list(self.db.execute(user_query).scalars().all())
-        if user_id and not users:
-            raise ServiceError("User not found", status_code=404)
+        found_ids = {user.id for user in users}
+        missing_ids = [user_id for user_id in requested_user_ids if user_id not in found_ids]
+        if missing_ids:
+            raise ServiceError(f"User not found: {missing_ids[0]}", status_code=404)
 
         selected_user_ids = [user.id for user in users]
         period_start = datetime.combine(resolved_date_from, datetime.min.time(), tzinfo=timezone.utc)
