@@ -1,5 +1,6 @@
 import csv
 import io
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -392,12 +393,16 @@ def test_people_activity_combines_user_time_across_organizations(
         'filename="people_activity_2026-08-05_to_2026-08-11.csv"'
     )
     rows = list(csv.DictReader(io.StringIO(export_response.text)))
-    assert [row["scope"] for row in rows] == ["overall", "organization", "organization"]
-    assert rows[0]["user_email"] == annotator.email
-    assert rows[0]["organization_name"] == "All organizations"
-    assert rows[0]["active_seconds"] == "900"
-    assert rows[0]["completed_segments"] == "2"
-    assert {row["organization_name"] for row in rows[1:]} == {
+    assert rows[0]["scope"] == "range_total"
+    overall_rows = [row for row in rows if row["scope"] == "overall"]
+    organization_rows = [row for row in rows if row["scope"] == "organization"]
+    assert len(overall_rows) == 1
+    assert len(organization_rows) == 2
+    assert overall_rows[0]["user_email"] == annotator.email
+    assert overall_rows[0]["organization_name"] == "All organizations"
+    assert overall_rows[0]["active_seconds"] == "900"
+    assert overall_rows[0]["completed_segments"] == "2"
+    assert {row["organization_name"] for row in organization_rows} == {
         "Default Organization",
         "Second Organization",
     }
@@ -635,6 +640,34 @@ def test_people_activity_deduplicates_requested_users(client, auth_headers, seed
     assert response.status_code == 200
     items = response.json()["items"]
     assert [item["user_id"] for item in items] == [seed_users["annotator"].id]
+
+
+def test_people_activity_export_includes_filtered_daily_scope_rows(client, auth_headers, seed_users):
+    selected_user_ids = [seed_users["annotator"].id, seed_users["reviewer"].id]
+    export_response = client.get(
+        "/api/v1/metrics/people-activity/export",
+        headers=auth_headers["admin"],
+        params=[
+            ("user_id", selected_user_ids[0]),
+            ("user_id", selected_user_ids[1]),
+            ("user_id", selected_user_ids[0]),
+            ("user_id", selected_user_ids[1]),
+            ("date_from", "2026-08-09"),
+            ("date_to", "2026-08-11"),
+        ],
+    )
+
+    assert export_response.status_code == 200
+    rows = list(csv.DictReader(io.StringIO(export_response.text)))
+    assert "report_date" in rows[0]
+
+    scope_counts = Counter(row["scope"] for row in rows)
+    assert scope_counts["range_total"] == 1
+    assert scope_counts["overall"] == 2
+    assert scope_counts["daily_team"] == 3
+    assert scope_counts["daily_person"] == 6
+    assert {row["user_id"] for row in rows if row["scope"] == "overall"} == set(selected_user_ids)
+    assert {row["user_id"] for row in rows if row["scope"] == "daily_person"} == set(selected_user_ids)
 
 
 def test_people_activity_rejects_unknown_requested_user(client, auth_headers, seed_users):

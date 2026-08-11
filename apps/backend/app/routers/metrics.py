@@ -107,6 +107,7 @@ def export_people_activity(
     fieldnames = [
         "date_from",
         "date_to",
+        "report_date",
         "user_id",
         "user_name",
         "user_email",
@@ -126,6 +127,13 @@ def export_people_activity(
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
+    writer.writerow(
+        _people_activity_csv_row(
+            report=report,
+            summary=report.overall,
+            scope="range_total",
+        )
+    )
     for item in report.items:
         writer.writerow(
             _people_activity_csv_row(
@@ -148,6 +156,24 @@ def export_people_activity(
                     organization_name=organization.organization_name,
                 )
             )
+    for daily in report.daily:
+        writer.writerow(
+            _people_activity_csv_row(
+                report=report,
+                summary=daily,
+                scope="daily_team",
+            )
+        )
+    for item in report.items:
+        for daily in item.daily:
+            writer.writerow(
+                _people_activity_csv_row(
+                    report=report,
+                    item=item,
+                    summary=daily,
+                    scope="daily_person",
+                )
+            )
 
     filename = f"people_activity_{report.date_from.isoformat()}_to_{report.date_to.isoformat()}.csv"
     return StreamingResponse(
@@ -157,14 +183,24 @@ def export_people_activity(
     )
 
 
-def _people_activity_csv_row(*, report, item, summary, scope, organization_id, organization_name):
+def _people_activity_csv_row(
+    *,
+    report,
+    summary,
+    scope,
+    item=None,
+    organization_id="",
+    organization_name="",
+):
+    report_date = getattr(summary, "date", None)
     return {
         "date_from": report.date_from.isoformat(),
         "date_to": report.date_to.isoformat(),
-        "user_id": item.user_id,
-        "user_name": item.user_name,
-        "user_email": item.user_email,
-        "role": item.role,
+        "report_date": report_date.isoformat() if report_date else "",
+        "user_id": item.user_id if item else "",
+        "user_name": item.user_name if item else "",
+        "user_email": item.user_email if item else "",
+        "role": item.role if item else "",
         "scope": scope,
         "organization_id": organization_id,
         "organization_name": organization_name,
