@@ -508,8 +508,6 @@ class MetricsService:
                 )
                 .where(TaskStatusHistory.changed_by_id.in_(selected_user_ids))
                 .where(TaskStatusHistory.new_status.in_(terminal_statuses))
-                .where(TaskStatusHistory.changed_at >= period_start)
-                .where(TaskStatusHistory.changed_at <= period_end)
                 .group_by(TaskStatusHistory.changed_by_id, TaskStatusHistory.task_id)
                 .subquery()
             )
@@ -522,6 +520,8 @@ class MetricsService:
                     func.count().label("completed_segments"),
                 )
                 .join(AnnotationTask, AnnotationTask.id == first_completion.c.task_id)
+                .where(first_completion.c.first_completed_at >= period_start)
+                .where(first_completion.c.first_completed_at <= period_end)
                 .group_by(first_completion.c.user_id, AnnotationTask.organization_id, completion_date_expr)
             ).all()
 

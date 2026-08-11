@@ -358,7 +358,7 @@ export default function PeopleActivityPage() {
       <section className="oa-card overflow-hidden">
         <div className="flex items-center justify-between border-b border-[#ece5f4] px-5 py-3">
           <div>
-            <h3 className="font-semibold text-[#241f43]">Last 7 days by person</h3>
+            <h3 className="font-semibold text-[#241f43]">Selected range by person</h3>
             <p className="text-xs text-[#706a87]">Expand a person to see each organization contribution.</p>
           </div>
           <span className="text-xs text-[#706a87]">

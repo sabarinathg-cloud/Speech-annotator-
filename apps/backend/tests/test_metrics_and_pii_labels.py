@@ -494,6 +494,15 @@ def test_people_activity_returns_daily_and_overall_range_totals(
         status=TaskStatusEnum.COMPLETED,
         last_tagger_id=reviewer.id,
     )
+    previously_completed_task = _create_metrics_task(
+        db_session,
+        upload_job=upload_job,
+        external_id="DAILY-PREVIOUSLY-COMPLETED",
+        final_transcript="already counted",
+        variants=[],
+        status=TaskStatusEnum.REVIEWED,
+        last_tagger_id=reviewer.id,
+    )
     day_one = datetime(2026, 8, 9, 9, 0, tzinfo=timezone.utc)
     day_three = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
     db_session.add_all(
@@ -558,6 +567,20 @@ def test_people_activity_returns_daily_and_overall_range_totals(
                 new_status=TaskStatusEnum.APPROVED,
                 changed_by_id=reviewer.id,
                 changed_at=day_three + timedelta(hours=1, minutes=5),
+            ),
+            TaskStatusHistory(
+                task_id=previously_completed_task.id,
+                old_status=TaskStatusEnum.IN_PROGRESS,
+                new_status=TaskStatusEnum.COMPLETED,
+                changed_by_id=reviewer.id,
+                changed_at=day_one - timedelta(days=1),
+            ),
+            TaskStatusHistory(
+                task_id=previously_completed_task.id,
+                old_status=TaskStatusEnum.COMPLETED,
+                new_status=TaskStatusEnum.REVIEWED,
+                changed_by_id=reviewer.id,
+                changed_at=day_three + timedelta(hours=2),
             ),
         ]
     )
