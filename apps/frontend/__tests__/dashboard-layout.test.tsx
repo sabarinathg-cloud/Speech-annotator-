@@ -140,6 +140,10 @@ describe("DashboardLayout role navigation", () => {
     );
 
     expect(screen.getByRole("link", { name: "Security" })).toHaveAttribute("href", "/admin/security");
+    expect(screen.getByRole("link", { name: "People Activity" })).toHaveAttribute(
+      "href",
+      "/admin/people-activity"
+    );
   });
 
   it("shows organization instructions to annotators and keeps them reopenable", async () => {

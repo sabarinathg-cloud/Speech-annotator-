@@ -191,6 +191,41 @@ class ActivityHeartbeatResponse(BaseModel):
     recorded: bool
 
 
+class PeopleActivitySummary(BaseModel):
+    active_seconds: int
+    task_active_seconds: int
+    idle_seconds: int
+    total_tracked_seconds: int
+    completed_segments: int
+    average_active_seconds_per_segment: float | None
+    efficiency_segments_per_active_hour: float | None
+    focus_rate: float | None
+    last_activity_at: datetime | None
+
+
+class PeopleActivityOrganization(PeopleActivitySummary):
+    organization_id: str
+    organization_name: str
+    organization_slug: str
+
+
+class PeopleActivityUser(BaseModel):
+    user_id: str
+    user_name: str
+    user_email: str
+    role: str
+    is_active: bool
+    overall: PeopleActivitySummary
+    organizations: list[PeopleActivityOrganization]
+
+
+class PeopleActivityResponse(BaseModel):
+    generated_at: datetime
+    date_from: date
+    date_to: date
+    items: list[PeopleActivityUser]
+
+
 class TaskSourceErrorMetric(BaseModel):
     source_key: str
     source_label: str

@@ -40,6 +40,7 @@ import type {
   OrganizationQuestionnaire,
   OrganizationQuestionnaireUpsertRequest,
   OrganizationSettings,
+  PeopleActivityResponse,
   PIIAnnotation,
   PIILabel,
   PIILabelCreateRequest,
@@ -79,13 +80,19 @@ export class APIError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}, token?: string, allowRefresh = true): Promise<T> {
-  const { response, payload } = await performRequest(path, init, token);
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  token?: string,
+  allowRefresh = true,
+  organizationScoped = true
+): Promise<T> {
+  const { response, payload } = await performRequest(path, init, token, organizationScoped);
   if (!response.ok) {
     if (response.status === 401 && token && allowRefresh && path !== "/auth/refresh") {
       const refreshed = await refreshStoredSession();
       if (refreshed) {
-        return request<T>(path, init, refreshed.access_token, false);
+        return request<T>(path, init, refreshed.access_token, false, organizationScoped);
       }
     }
     const message = extractErrorMessage(payload, response.statusText || `HTTP ${response.status}`);
@@ -97,7 +104,8 @@ async function request<T>(path: string, init: RequestInit = {}, token?: string, 
 async function performRequest(
   path: string,
   init: RequestInit = {},
-  token?: string
+  token?: string,
+  organizationScoped = true
 ): Promise<{ response: Response; payload: unknown }> {
   const headers = new Headers(init.headers || {});
   if (!headers.has("Content-Type") && !(init.body instanceof FormData)) {
@@ -105,7 +113,7 @@ async function performRequest(
   }
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
-    const organizationId = activeOrganizationHeaderValue();
+    const organizationId = organizationScoped ? activeOrganizationHeaderValue() : null;
     if (organizationId && !headers.has("X-Organization-ID")) {
       headers.set("X-Organization-ID", organizationId);
     }
@@ -129,10 +137,11 @@ async function performRequest(
 async function requestBlob(
   path: string,
   token: string,
-  allowRefresh = true
+  allowRefresh = true,
+  organizationScoped = true
 ): Promise<{ blob: Blob; filename: string | null }> {
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
-  const organizationId = activeOrganizationHeaderValue();
+  const organizationId = organizationScoped ? activeOrganizationHeaderValue() : null;
   if (organizationId) {
     headers["X-Organization-ID"] = organizationId;
   }
@@ -141,7 +150,7 @@ async function requestBlob(
     if (response.status === 401 && allowRefresh) {
       const refreshed = await refreshStoredSession();
       if (refreshed) {
-        return requestBlob(path, refreshed.access_token, false);
+        return requestBlob(path, refreshed.access_token, false, organizationScoped);
       }
     }
     let payload: unknown = null;
@@ -814,6 +823,51 @@ export async function fetchAdminMetrics(
     { method: "GET", headers },
     token
   );
+}
+
+export async function fetchPeopleActivity(
+  token: string,
+  params: { userId?: string | null; dateFrom?: string | null; dateTo?: string | null } = {}
+): Promise<PeopleActivityResponse> {
+  const query = peopleActivityQuery(params);
+  const suffix = query.toString();
+  return request<PeopleActivityResponse>(
+    `/metrics/people-activity${suffix ? `?${suffix}` : ""}`,
+    { method: "GET" },
+    token,
+    true,
+    false
+  );
+}
+
+export async function exportPeopleActivity(
+  token: string,
+  params: { userId?: string | null; dateFrom?: string | null; dateTo?: string | null } = {}
+): Promise<{ blob: Blob; filename: string }> {
+  const query = peopleActivityQuery(params);
+  const suffix = query.toString();
+  const response = await requestBlob(
+    `/metrics/people-activity/export${suffix ? `?${suffix}` : ""}`,
+    token,
+    true,
+    false
+  );
+  return {
+    blob: response.blob,
+    filename: response.filename ?? "people_activity.csv",
+  };
+}
+
+function peopleActivityQuery(params: {
+  userId?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+}): URLSearchParams {
+  const query = new URLSearchParams();
+  if (params.userId) query.set("user_id", params.userId);
+  if (params.dateFrom) query.set("date_from", params.dateFrom);
+  if (params.dateTo) query.set("date_to", params.dateTo);
+  return query;
 }
 
 export async function recordActivityHeartbeat(

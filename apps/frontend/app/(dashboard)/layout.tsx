@@ -170,6 +170,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 ...(orgSettings?.hiring_enabled === false ? [] : [{ href: "/admin/hiring", label: "Hiring" }]),
                 { href: "/admin/upload", label: "Admin Upload" },
                 { href: "/admin/metrics", label: "Metrics" },
+                { href: "/admin/people-activity", label: "People Activity" },
                 { href: "/admin/security", label: "Security" },
                 { href: "/admin/organizations", label: "Organizations" },
               ]

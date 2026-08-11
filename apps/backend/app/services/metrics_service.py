@@ -1,7 +1,7 @@
 import re
 import unicodedata
 from collections import Counter, defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import and_, case, func, or_, select
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload, load_only, selectinload
 
 from app.models.activity import UserActivityEntry
 from app.models.enums import RoleEnum, TaskStatusEnum
-from app.models.organization import OrganizationMembership
+from app.models.organization import Organization, OrganizationMembership
 from app.models.security import SecurityAuditEvent
 from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory, TaskTranscriptVariant
 from app.models.user import User
@@ -26,6 +26,10 @@ from app.schemas.metrics import (
     ModelBenchmarkSummary,
     ModelTranscriptMetric,
     PIIMetrics,
+    PeopleActivityOrganization,
+    PeopleActivityResponse,
+    PeopleActivitySummary,
+    PeopleActivityUser,
     TaggerMetric,
     TaskSourceErrorMetric,
     UserProductivityMetric,
@@ -382,6 +386,184 @@ class MetricsService:
             actor.last_activity_at = ended_at
         self.db.commit()
         return ActivityHeartbeatResponse(recorded=True)
+
+    def get_people_activity(
+        self,
+        *,
+        user_id: str | None,
+        date_from: date | None,
+        date_to: date | None,
+    ) -> PeopleActivityResponse:
+        today = datetime.now(timezone.utc).date()
+        resolved_date_to = date_to or today
+        resolved_date_from = date_from or (resolved_date_to - timedelta(days=6))
+        if resolved_date_from > resolved_date_to:
+            raise ServiceError("From date must be on or before to date", status_code=422)
+
+        user_query = select(User).order_by(User.full_name.asc(), User.email.asc())
+        if user_id:
+            user_query = user_query.where(User.id == user_id)
+        else:
+            user_query = user_query.where(User.is_active.is_(True))
+        users = list(self.db.execute(user_query).scalars().all())
+        if user_id and not users:
+            raise ServiceError("User not found", status_code=404)
+
+        selected_user_ids = [user.id for user in users]
+        period_start = datetime.combine(resolved_date_from, datetime.min.time(), tzinfo=timezone.utc)
+        period_end = datetime.combine(resolved_date_to, datetime.max.time(), tzinfo=timezone.utc)
+
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        organizations: dict[str, Organization] = {}
+        if selected_user_ids:
+            activity_rows = self.db.execute(
+                select(
+                    UserActivityEntry.user_id,
+                    UserActivityEntry.organization_id,
+                    func.coalesce(func.sum(UserActivityEntry.active_seconds), 0).label("active_seconds"),
+                    func.coalesce(func.sum(UserActivityEntry.idle_seconds), 0).label("idle_seconds"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (UserActivityEntry.task_id.is_not(None), UserActivityEntry.active_seconds),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("task_active_seconds"),
+                    func.max(UserActivityEntry.ended_at).label("last_activity_at"),
+                )
+                .where(UserActivityEntry.user_id.in_(selected_user_ids))
+                .where(UserActivityEntry.started_at >= period_start)
+                .where(UserActivityEntry.started_at <= period_end)
+                .group_by(UserActivityEntry.user_id, UserActivityEntry.organization_id)
+            ).all()
+            completion_rows = self.db.execute(
+                select(
+                    TaskStatusHistory.changed_by_id.label("user_id"),
+                    AnnotationTask.organization_id,
+                    func.count(func.distinct(TaskStatusHistory.task_id)).label("completed_segments"),
+                )
+                .join(AnnotationTask, AnnotationTask.id == TaskStatusHistory.task_id)
+                .where(TaskStatusHistory.changed_by_id.in_(selected_user_ids))
+                .where(
+                    TaskStatusHistory.new_status.in_(
+                        [
+                            TaskStatusEnum.COMPLETED,
+                            TaskStatusEnum.NEEDS_REVIEW,
+                            TaskStatusEnum.REVIEWED,
+                            TaskStatusEnum.APPROVED,
+                        ]
+                    )
+                )
+                .where(TaskStatusHistory.changed_at >= period_start)
+                .where(TaskStatusHistory.changed_at <= period_end)
+                .group_by(TaskStatusHistory.changed_by_id, AnnotationTask.organization_id)
+            ).all()
+
+            organization_ids = {
+                row.organization_id for row in [*activity_rows, *completion_rows]
+            }
+            if organization_ids:
+                organizations = {
+                    organization.id: organization
+                    for organization in self.db.execute(
+                        select(Organization).where(Organization.id.in_(organization_ids))
+                    ).scalars()
+                }
+
+            for row in activity_rows:
+                grouped[(row.user_id, row.organization_id)] = {
+                    "active_seconds": int(row.active_seconds or 0),
+                    "task_active_seconds": int(row.task_active_seconds or 0),
+                    "idle_seconds": int(row.idle_seconds or 0),
+                    "completed_segments": 0,
+                    "last_activity_at": _as_aware_utc(row.last_activity_at),
+                }
+            for row in completion_rows:
+                stats = grouped.setdefault(
+                    (row.user_id, row.organization_id),
+                    {
+                        "active_seconds": 0,
+                        "task_active_seconds": 0,
+                        "idle_seconds": 0,
+                        "completed_segments": 0,
+                        "last_activity_at": None,
+                    },
+                )
+                stats["completed_segments"] = int(row.completed_segments or 0)
+
+        items: list[PeopleActivityUser] = []
+        for user in users:
+            organization_rows: list[PeopleActivityOrganization] = []
+            for (row_user_id, organization_id), stats in grouped.items():
+                if row_user_id != user.id:
+                    continue
+                organization = organizations.get(organization_id)
+                if not organization:
+                    continue
+                organization_rows.append(
+                    PeopleActivityOrganization(
+                        organization_id=organization.id,
+                        organization_name=organization.name,
+                        organization_slug=organization.slug,
+                        **self._people_activity_summary(stats).model_dump(),
+                    )
+                )
+            organization_rows.sort(key=lambda row: row.organization_name.lower())
+
+            overall_stats = {
+                "active_seconds": sum(row.active_seconds for row in organization_rows),
+                "task_active_seconds": sum(row.task_active_seconds for row in organization_rows),
+                "idle_seconds": sum(row.idle_seconds for row in organization_rows),
+                "completed_segments": sum(row.completed_segments for row in organization_rows),
+                "last_activity_at": max(
+                    (row.last_activity_at for row in organization_rows if row.last_activity_at),
+                    default=None,
+                ),
+            }
+            items.append(
+                PeopleActivityUser(
+                    user_id=user.id,
+                    user_name=user.full_name,
+                    user_email=user.email,
+                    role=user.role.value,
+                    is_active=user.is_active,
+                    overall=self._people_activity_summary(overall_stats),
+                    organizations=organization_rows,
+                )
+            )
+
+        return PeopleActivityResponse(
+            generated_at=datetime.now(timezone.utc),
+            date_from=resolved_date_from,
+            date_to=resolved_date_to,
+            items=items,
+        )
+
+    @staticmethod
+    def _people_activity_summary(stats: dict[str, Any]) -> PeopleActivitySummary:
+        active_seconds = int(stats.get("active_seconds") or 0)
+        task_active_seconds = int(stats.get("task_active_seconds") or 0)
+        idle_seconds = int(stats.get("idle_seconds") or 0)
+        completed_segments = int(stats.get("completed_segments") or 0)
+        return PeopleActivitySummary(
+            active_seconds=active_seconds,
+            task_active_seconds=task_active_seconds,
+            idle_seconds=idle_seconds,
+            total_tracked_seconds=active_seconds + idle_seconds,
+            completed_segments=completed_segments,
+            average_active_seconds_per_segment=round(task_active_seconds / completed_segments, 1)
+            if task_active_seconds and completed_segments
+            else None,
+            efficiency_segments_per_active_hour=round(
+                completed_segments / (task_active_seconds / 3600), 2
+            )
+            if task_active_seconds and completed_segments
+            else None,
+            focus_rate=round(task_active_seconds / active_seconds, 4) if active_seconds else None,
+            last_activity_at=_as_aware_utc(stats.get("last_activity_at")),
+        )
 
     def get_admin_metrics(
         self,

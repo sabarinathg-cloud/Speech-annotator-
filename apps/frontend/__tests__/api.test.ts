@@ -12,11 +12,13 @@ import {
   downloadTaskExport,
   fetchAdminMetrics,
   fetchCurrentUser,
+  fetchPeopleActivity,
   fetchSecurityAuditEvents,
   logClientSecurityEvent,
   maskTaskPIIAudio,
   fetchTasks,
   fetchUsers,
+  exportPeopleActivity,
   login,
   resetUserPassword,
   startTask,
@@ -273,6 +275,77 @@ describe("API client error handling", () => {
     expect(url.searchParams.get("date_from")).toBe("2026-04-01");
     expect(url.searchParams.get("date_to")).toBe("2026-04-24");
     expect(headers.get("X-Organization-ID")).toBe("org-iris2");
+
+    fetchMock.mockRestore();
+  });
+
+  it("loads and exports people activity without an organization header", async () => {
+    writeSession("admin-token", "refresh-token", {
+      id: "admin-1",
+      email: "admin@test.com",
+      full_name: "Admin",
+      role: "ADMIN",
+      default_organization_id: "org-1",
+      organizations: [
+        {
+          id: "org-1",
+          name: "Organization One",
+          slug: "organization-one",
+          is_active: true,
+          settings: {
+            metadata_enabled: false,
+            pii_enabled: false,
+            transcript_redaction_enabled: false,
+            audio_masking_enabled: false,
+            hiring_enabled: false,
+            instructions: null,
+          },
+        },
+      ],
+    });
+    const report = {
+      generated_at: "2026-08-11T12:00:00Z",
+      date_from: "2026-08-05",
+      date_to: "2026-08-11",
+      items: [],
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(report), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response("user_email,active_seconds\n", {
+          status: 200,
+          headers: { "Content-Disposition": 'attachment; filename="people.csv"' },
+        })
+      );
+
+    await fetchPeopleActivity("admin-token", {
+      userId: "user-1",
+      dateFrom: "2026-08-05",
+      dateTo: "2026-08-11",
+    });
+    await expect(
+      exportPeopleActivity("admin-token", {
+        userId: "user-1",
+        dateFrom: "2026-08-05",
+        dateTo: "2026-08-11",
+      })
+    ).resolves.toMatchObject({ filename: "people.csv" });
+
+    for (const call of fetchMock.mock.calls) {
+      const url = new URL(String(call[0]));
+      const headers = new Headers(call[1]?.headers);
+      expect(url.searchParams.get("user_id")).toBe("user-1");
+      expect(url.searchParams.get("date_from")).toBe("2026-08-05");
+      expect(url.searchParams.get("date_to")).toBe("2026-08-11");
+      expect(headers.has("X-Organization-ID")).toBe(false);
+    }
+    expect(new URL(String(fetchMock.mock.calls[0]?.[0])).pathname).toBe(
+      "/api/v1/metrics/people-activity"
+    );
+    expect(new URL(String(fetchMock.mock.calls[1]?.[0])).pathname).toBe(
+      "/api/v1/metrics/people-activity/export"
+    );
 
     fetchMock.mockRestore();
   });

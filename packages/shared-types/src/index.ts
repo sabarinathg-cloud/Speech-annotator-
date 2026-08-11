@@ -737,6 +737,41 @@ export interface AdminMetricsResponse {
   masking_interval_drilldowns: MaskingIntervalMetric[];
 }
 
+export interface PeopleActivitySummary {
+  active_seconds: number;
+  task_active_seconds: number;
+  idle_seconds: number;
+  total_tracked_seconds: number;
+  completed_segments: number;
+  average_active_seconds_per_segment: number | null;
+  efficiency_segments_per_active_hour: number | null;
+  focus_rate: number | null;
+  last_activity_at: string | null;
+}
+
+export interface PeopleActivityOrganization extends PeopleActivitySummary {
+  organization_id: string;
+  organization_name: string;
+  organization_slug: string;
+}
+
+export interface PeopleActivityUser {
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  role: Role;
+  is_active: boolean;
+  overall: PeopleActivitySummary;
+  organizations: PeopleActivityOrganization[];
+}
+
+export interface PeopleActivityResponse {
+  generated_at: string;
+  date_from: string;
+  date_to: string;
+  items: PeopleActivityUser[];
+}
+
 export type HiringAssessmentStatus = "DRAFT" | "ACTIVE" | "CLOSED";
 export type HiringAssignmentStatus = "ASSIGNED" | "IN_PROGRESS" | "SUBMITTED" | "EVALUATED";
 export type HiringSubmissionValidationStatus = "PENDING" | "VALIDATED" | "REJECTED";

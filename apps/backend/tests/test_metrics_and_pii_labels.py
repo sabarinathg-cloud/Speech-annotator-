@@ -1,10 +1,12 @@
+import csv
+import io
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
 from app.models.activity import UserActivityEntry
 from app.models.enums import TaskStatusEnum, UploadJobStatusEnum
-from app.models.organization import Organization
+from app.models.organization import Organization, OrganizationMembership
 from app.models.security import SecurityAuditEvent
 from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory, TaskTranscriptVariant
 from app.models.upload import UploadFile, UploadJob
@@ -218,6 +220,214 @@ def test_admin_metrics_compare_model_transcripts_against_corrected_ground_truth(
 def test_metrics_endpoint_is_admin_only(client, auth_headers):
     response = client.get("/api/v1/metrics/admin", headers=auth_headers["annotator"])
     assert response.status_code == 403
+
+
+def test_people_activity_combines_user_time_across_organizations(
+    client,
+    auth_headers,
+    db_session,
+    seed_users,
+):
+    annotator = seed_users["annotator"]
+    second_org = Organization(
+        name="Second Organization",
+        slug="second-organization",
+        is_active=True,
+    )
+    db_session.add(second_org)
+    db_session.flush()
+    db_session.add(
+        OrganizationMembership(
+            organization_id=second_org.id,
+            user_id=annotator.id,
+            is_active=True,
+        )
+    )
+
+    default_job = _create_metrics_upload_job(db_session, seed_users["admin"])
+    second_job = _create_metrics_upload_job(
+        db_session,
+        seed_users["admin"],
+        organization_id=second_org.id,
+    )
+    default_task = _create_metrics_task(
+        db_session,
+        upload_job=default_job,
+        external_id="CROSS-ORG-DEFAULT",
+        final_transcript="default",
+        variants=[],
+        status=TaskStatusEnum.COMPLETED,
+        last_tagger_id=annotator.id,
+    )
+    second_task = _create_metrics_task(
+        db_session,
+        upload_job=second_job,
+        external_id="CROSS-ORG-SECOND",
+        final_transcript="second",
+        variants=[],
+        status=TaskStatusEnum.COMPLETED,
+        last_tagger_id=annotator.id,
+    )
+    inside_period = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    db_session.add_all(
+        [
+            UserActivityEntry(
+                organization_id=default_task.organization_id,
+                user_id=annotator.id,
+                task_id=default_task.id,
+                route=f"/tasks/{default_task.id}",
+                active_seconds=300,
+                idle_seconds=60,
+                event_count=1,
+                started_at=inside_period,
+                ended_at=inside_period + timedelta(minutes=6),
+            ),
+            UserActivityEntry(
+                organization_id=second_org.id,
+                user_id=annotator.id,
+                task_id=second_task.id,
+                route=f"/tasks/{second_task.id}",
+                active_seconds=420,
+                idle_seconds=60,
+                event_count=1,
+                started_at=inside_period + timedelta(hours=1),
+                ended_at=inside_period + timedelta(hours=1, minutes=8),
+            ),
+            UserActivityEntry(
+                organization_id=second_org.id,
+                user_id=annotator.id,
+                task_id=None,
+                route="/tasks",
+                active_seconds=180,
+                idle_seconds=60,
+                event_count=1,
+                started_at=inside_period + timedelta(hours=2),
+                ended_at=inside_period + timedelta(hours=2, minutes=4),
+            ),
+            UserActivityEntry(
+                organization_id=second_org.id,
+                user_id=annotator.id,
+                task_id=second_task.id,
+                route=f"/tasks/{second_task.id}",
+                active_seconds=999,
+                idle_seconds=999,
+                event_count=1,
+                started_at=datetime(2026, 8, 4, 23, 59, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 8, 5, 0, 1, tzinfo=timezone.utc),
+            ),
+            TaskStatusHistory(
+                task_id=default_task.id,
+                old_status=TaskStatusEnum.IN_PROGRESS,
+                new_status=TaskStatusEnum.COMPLETED,
+                changed_by_id=annotator.id,
+                changed_at=inside_period,
+            ),
+            TaskStatusHistory(
+                task_id=second_task.id,
+                old_status=TaskStatusEnum.IN_PROGRESS,
+                new_status=TaskStatusEnum.COMPLETED,
+                changed_by_id=annotator.id,
+                changed_at=inside_period + timedelta(hours=1),
+            ),
+            TaskStatusHistory(
+                task_id=second_task.id,
+                old_status=TaskStatusEnum.NEEDS_REVIEW,
+                new_status=TaskStatusEnum.COMPLETED,
+                changed_by_id=annotator.id,
+                changed_at=inside_period + timedelta(hours=2),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/metrics/people-activity",
+        headers=auth_headers["admin"],
+        params={
+            "user_id": annotator.id,
+            "date_from": "2026-08-05",
+            "date_to": "2026-08-11",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["date_from"] == "2026-08-05"
+    assert payload["date_to"] == "2026-08-11"
+    assert len(payload["items"]) == 1
+    item = payload["items"][0]
+    assert item["user_email"] == annotator.email
+    assert item["overall"] == {
+        "active_seconds": 900,
+        "task_active_seconds": 720,
+        "idle_seconds": 180,
+        "total_tracked_seconds": 1080,
+        "completed_segments": 2,
+        "average_active_seconds_per_segment": 360.0,
+        "efficiency_segments_per_active_hour": 10.0,
+        "focus_rate": 0.8,
+        "last_activity_at": "2026-08-10T14:04:00Z",
+    }
+    organizations = {row["organization_name"]: row for row in item["organizations"]}
+    assert set(organizations) == {"Default Organization", "Second Organization"}
+    assert organizations["Default Organization"]["active_seconds"] == 300
+    assert organizations["Default Organization"]["completed_segments"] == 1
+    assert organizations["Second Organization"]["active_seconds"] == 600
+    assert organizations["Second Organization"]["task_active_seconds"] == 420
+    assert organizations["Second Organization"]["completed_segments"] == 1
+
+    export_response = client.get(
+        "/api/v1/metrics/people-activity/export",
+        headers=auth_headers["admin"],
+        params={
+            "user_id": annotator.id,
+            "date_from": "2026-08-05",
+            "date_to": "2026-08-11",
+        },
+    )
+    assert export_response.status_code == 200
+    assert export_response.headers["content-disposition"].endswith(
+        'filename="people_activity_2026-08-05_to_2026-08-11.csv"'
+    )
+    rows = list(csv.DictReader(io.StringIO(export_response.text)))
+    assert [row["scope"] for row in rows] == ["overall", "organization", "organization"]
+    assert rows[0]["user_email"] == annotator.email
+    assert rows[0]["organization_name"] == "All organizations"
+    assert rows[0]["active_seconds"] == "900"
+    assert rows[0]["completed_segments"] == "2"
+    assert {row["organization_name"] for row in rows[1:]} == {
+        "Default Organization",
+        "Second Organization",
+    }
+
+
+def test_people_activity_returns_zero_user_and_rejects_non_admin(
+    client,
+    auth_headers,
+    seed_users,
+):
+    params = {
+        "user_id": seed_users["reviewer"].id,
+        "date_from": "2026-08-05",
+        "date_to": "2026-08-11",
+    }
+    denied = client.get(
+        "/api/v1/metrics/people-activity",
+        headers=auth_headers["annotator"],
+        params=params,
+    )
+    assert denied.status_code == 403
+
+    response = client.get(
+        "/api/v1/metrics/people-activity",
+        headers=auth_headers["admin"],
+        params=params,
+    )
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["overall"]["total_tracked_seconds"] == 0
+    assert item["overall"]["completed_segments"] == 0
+    assert item["organizations"] == []
 
 
 def test_admin_metrics_scope_counts_to_selected_organization(client, auth_headers, db_session, seed_users):
