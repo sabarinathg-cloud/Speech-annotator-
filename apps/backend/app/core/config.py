@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     failed_job_output_cleanup_hours: int = Field(default=24, alias="FAILED_JOB_OUTPUT_CLEANUP_HOURS")
     export_file_cleanup_hours: int = Field(default=168, alias="EXPORT_FILE_CLEANUP_HOURS")
     task_manifest_import_roots: str = Field(default="", alias="TASK_MANIFEST_IMPORT_ROOTS")
+    activity_report_timezone: str = Field(default="Asia/Kolkata", alias="ACTIVITY_REPORT_TIMEZONE")
     pii_ml_detection_enabled: bool = Field(default=False, alias="PII_ML_DETECTION_ENABLED")
     pii_model_preload_enabled: bool = Field(default=False, alias="PII_MODEL_PRELOAD_ENABLED")
     hiring_audio_import_roots: str = Field(default="", alias="HIRING_AUDIO_IMPORT_ROOTS")

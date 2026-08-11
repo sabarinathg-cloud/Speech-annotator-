@@ -1,7 +1,7 @@
 import csv
 import io
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.dialects import postgresql, sqlite
@@ -315,8 +315,8 @@ def test_people_activity_combines_user_time_across_organizations(
                 active_seconds=999,
                 idle_seconds=999,
                 event_count=1,
-                started_at=datetime(2026, 8, 4, 23, 59, tzinfo=timezone.utc),
-                ended_at=datetime(2026, 8, 5, 0, 1, tzinfo=timezone.utc),
+                started_at=datetime(2026, 8, 4, 18, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 8, 4, 18, 2, tzinfo=timezone.utc),
             ),
             TaskStatusHistory(
                 task_id=default_task.id,
@@ -437,25 +437,95 @@ def test_people_activity_returns_zero_user_and_rejects_non_admin(
     assert item["organizations"] == []
 
 
-def test_people_activity_date_grouping_uses_utc_for_postgres():
-    assert hasattr(metrics_service, "_utc_date_expression")
+def test_people_activity_date_grouping_uses_report_timezone_for_postgres():
+    assert hasattr(metrics_service, "_report_date_expression")
+    report_timezone = metrics_service._report_timezone()
 
     postgres_sql = str(
-        metrics_service._utc_date_expression(UserActivityEntry.started_at, "postgresql").compile(
+        metrics_service._report_date_expression(
+            UserActivityEntry.started_at,
+            "postgresql",
+            report_timezone,
+            date(2026, 8, 12),
+        ).compile(
             dialect=postgresql.dialect(),
             compile_kwargs={"literal_binds": True},
         )
     )
     sqlite_sql = str(
-        metrics_service._utc_date_expression(UserActivityEntry.started_at, "sqlite").compile(
+        metrics_service._report_date_expression(
+            UserActivityEntry.started_at,
+            "sqlite",
+            report_timezone,
+            date(2026, 8, 12),
+        ).compile(
             dialect=sqlite.dialect(),
             compile_kwargs={"literal_binds": True},
         )
     )
 
-    assert "timezone('UTC'" in postgres_sql
+    assert "timezone('Asia/Kolkata'" in postgres_sql
     assert "date(timezone(" in postgres_sql
-    assert sqlite_sql == "date(user_activity_entries.started_at)"
+    assert sqlite_sql == "date(user_activity_entries.started_at, '+05:30')"
+
+
+def test_people_activity_uses_local_calendar_dates_for_midnight_activity(
+    client,
+    auth_headers,
+    db_session,
+    seed_users,
+):
+    annotator = seed_users["annotator"]
+    upload_job = _create_metrics_upload_job(db_session, seed_users["admin"])
+    task = _create_metrics_task(
+        db_session,
+        upload_job=upload_job,
+        external_id="LOCAL-MIDNIGHT",
+        final_transcript="local midnight",
+        variants=[],
+        status=TaskStatusEnum.COMPLETED,
+        last_tagger_id=annotator.id,
+    )
+    local_midnight_as_utc = datetime(2026, 8, 11, 19, 12, tzinfo=timezone.utc)
+    db_session.add_all(
+        [
+            UserActivityEntry(
+                organization_id=upload_job.organization_id,
+                user_id=annotator.id,
+                task_id=task.id,
+                route=f"/tasks/{task.id}",
+                active_seconds=600,
+                idle_seconds=60,
+                event_count=4,
+                started_at=local_midnight_as_utc,
+                ended_at=local_midnight_as_utc + timedelta(minutes=11),
+            ),
+            TaskStatusHistory(
+                task_id=task.id,
+                old_status=TaskStatusEnum.IN_PROGRESS,
+                new_status=TaskStatusEnum.COMPLETED,
+                changed_by_id=annotator.id,
+                changed_at=local_midnight_as_utc + timedelta(minutes=5),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/metrics/people-activity",
+        headers=auth_headers["admin"],
+        params=[
+            ("user_id", annotator.id),
+            ("date_from", "2026-08-12"),
+            ("date_to", "2026-08-12"),
+        ],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["daily"][0]["date"] == "2026-08-12"
+    assert payload["daily"][0]["active_seconds"] == 600
+    assert payload["daily"][0]["completed_segments"] == 1
 
 
 def test_people_activity_returns_daily_and_overall_range_totals(

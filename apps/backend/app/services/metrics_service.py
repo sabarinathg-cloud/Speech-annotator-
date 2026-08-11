@@ -3,10 +3,12 @@ import unicodedata
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, joinedload, load_only, selectinload
 
+from app.core.config import get_settings
 from app.models.activity import UserActivityEntry
 from app.models.enums import RoleEnum, TaskStatusEnum
 from app.models.organization import Organization, OrganizationMembership
@@ -234,10 +236,36 @@ def _as_date(value: Any) -> date:
     return date.fromisoformat(str(value))
 
 
-def _utc_date_expression(timestamp_column: Any, dialect_name: str):
+def _report_timezone() -> ZoneInfo:
+    timezone_name = (get_settings().activity_report_timezone or "UTC").strip()
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise ServiceError(f"Invalid ACTIVITY_REPORT_TIMEZONE: {timezone_name}", status_code=500) from exc
+
+
+def _local_day_start_utc(day: date, report_timezone: ZoneInfo) -> datetime:
+    return datetime.combine(day, datetime.min.time(), tzinfo=report_timezone).astimezone(timezone.utc)
+
+
+def _local_day_end_utc(day: date, report_timezone: ZoneInfo) -> datetime:
+    return datetime.combine(day, datetime.max.time(), tzinfo=report_timezone).astimezone(timezone.utc)
+
+
+def _sqlite_timezone_modifier(report_timezone: ZoneInfo, reference_date: date) -> str:
+    reference_time = datetime.combine(reference_date, datetime.min.time(), tzinfo=report_timezone)
+    offset = reference_time.utcoffset() or timedelta(0)
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
+
+
+def _report_date_expression(timestamp_column: Any, dialect_name: str, report_timezone: ZoneInfo, reference_date: date):
     if dialect_name.startswith("postgres"):
-        return func.date(func.timezone("UTC", timestamp_column))
-    return func.date(timestamp_column)
+        return func.date(func.timezone(report_timezone.key, timestamp_column))
+    return func.date(timestamp_column, _sqlite_timezone_modifier(report_timezone, reference_date))
 
 
 def _minutes_between(start: datetime | None, end: datetime | None) -> float | None:
@@ -409,7 +437,8 @@ class MetricsService:
         date_from: date | None,
         date_to: date | None,
     ) -> PeopleActivityResponse:
-        today = datetime.now(timezone.utc).date()
+        report_timezone = _report_timezone()
+        today = datetime.now(report_timezone).date()
         resolved_date_to = date_to or today
         resolved_date_from = date_from or (resolved_date_to - timedelta(days=6))
         if resolved_date_from > resolved_date_to:
@@ -428,8 +457,8 @@ class MetricsService:
             raise ServiceError(f"User not found: {missing_ids[0]}", status_code=404)
 
         selected_user_ids = [user.id for user in users]
-        period_start = datetime.combine(resolved_date_from, datetime.min.time(), tzinfo=timezone.utc)
-        period_end = datetime.combine(resolved_date_to, datetime.max.time(), tzinfo=timezone.utc)
+        period_start = _local_day_start_utc(resolved_date_from, report_timezone)
+        period_end = _local_day_end_utc(resolved_date_to, report_timezone)
 
         report_dates = [
             resolved_date_from + timedelta(days=offset)
@@ -469,7 +498,12 @@ class MetricsService:
         organizations: dict[str, Organization] = {}
         if selected_user_ids:
             dialect_name = self.db.get_bind().dialect.name
-            activity_date_expr = _utc_date_expression(UserActivityEntry.started_at, dialect_name)
+            activity_date_expr = _report_date_expression(
+                UserActivityEntry.started_at,
+                dialect_name,
+                report_timezone,
+                resolved_date_from,
+            )
             activity_rows = self.db.execute(
                 select(
                     UserActivityEntry.user_id,
@@ -511,7 +545,12 @@ class MetricsService:
                 .group_by(TaskStatusHistory.changed_by_id, TaskStatusHistory.task_id)
                 .subquery()
             )
-            completion_date_expr = _utc_date_expression(first_completion.c.first_completed_at, dialect_name)
+            completion_date_expr = _report_date_expression(
+                first_completion.c.first_completed_at,
+                dialect_name,
+                report_timezone,
+                resolved_date_from,
+            )
             completion_rows = self.db.execute(
                 select(
                     first_completion.c.user_id,

@@ -116,6 +116,7 @@ Copy `.env.example` to `.env` and replace all production secrets before deployin
 | `REDIS_URL` | Queue and rate-limit Redis connection. |
 | `UPLOAD_DIR` | Backend upload storage location. |
 | `TASK_MANIFEST_IMPORT_ROOTS` | Comma-separated backend-accessible folders admins may load task CSV/XLSX/XLS/Parquet manifests from by path. |
+| `ACTIVITY_REPORT_TIMEZONE` | Timezone used for People Activity daily buckets and date filters. Defaults to `Asia/Kolkata`. |
 | `HIRING_AUDIO_IMPORT_ROOTS` | Comma-separated backend-accessible folders admins may import hiring WAV files from. Mount host folders into Docker before using these paths. |
 | `HIRING_AUDIO_IMPORT_MAX_FILES` | Maximum WAV files accepted in one hiring import. Defaults to `5000`. |
 | `HIRING_AUDIO_IMPORT_MIN_FREE_BYTES` | Minimum disk space to keep free after hiring audio import preflight. Defaults to `1073741824` bytes. |
