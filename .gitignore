@@ -36,6 +36,7 @@ pnpm-debug.log*
 test-results/
 
 # Local runtime data
+.worktrees/
 .omc/
 postgres_data/
 redis_data/
