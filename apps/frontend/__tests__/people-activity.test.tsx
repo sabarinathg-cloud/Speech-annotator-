@@ -1,5 +1,5 @@
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import PeopleActivityPage from "@/app/(dashboard)/admin/people-activity/page";
@@ -40,6 +40,28 @@ describe("PeopleActivityPage", () => {
     focus_rate: 0.8333,
     last_activity_at: "2026-08-11T11:30:00Z",
   };
+  const backendOverall = {
+    active_seconds: 25200,
+    task_active_seconds: 21600,
+    idle_seconds: 3600,
+    total_tracked_seconds: 28800,
+    completed_segments: 75,
+    average_active_seconds_per_segment: 288,
+    efficiency_segments_per_active_hour: 10.71,
+    focus_rate: 0.8571,
+    last_activity_at: "2026-08-11T11:45:00Z",
+  };
+  const emptyDaily = {
+    active_seconds: 0,
+    task_active_seconds: 0,
+    idle_seconds: 0,
+    total_tracked_seconds: 0,
+    completed_segments: 0,
+    average_active_seconds_per_segment: null,
+    efficiency_segments_per_active_hour: null,
+    focus_rate: null,
+    last_activity_at: null,
+  };
 
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -66,8 +88,23 @@ describe("PeopleActivityPage", () => {
       generated_at: "2026-08-11T12:00:00Z",
       date_from: "2026-08-05",
       date_to: "2026-08-11",
-      overall: summary,
-      daily: [{ date: "2026-08-11", ...summary }],
+      overall: backendOverall,
+      daily: [
+        { date: "2026-08-09", ...emptyDaily },
+        {
+          date: "2026-08-10",
+          active_seconds: 14400,
+          task_active_seconds: 12600,
+          idle_seconds: 1800,
+          total_tracked_seconds: 16200,
+          completed_segments: 44,
+          average_active_seconds_per_segment: 327.2727,
+          efficiency_segments_per_active_hour: 11,
+          focus_rate: 0.875,
+          last_activity_at: "2026-08-10T16:00:00Z",
+        },
+        { date: "2026-08-11", ...backendOverall },
+      ],
       items: [
         {
           user_id: "user-1",
@@ -76,7 +113,22 @@ describe("PeopleActivityPage", () => {
           role: "ANNOTATOR",
           is_active: true,
           overall: summary,
-          daily: [{ date: "2026-08-11", ...summary }],
+          daily: [
+            { date: "2026-08-09", ...emptyDaily },
+            {
+              date: "2026-08-10",
+              active_seconds: 7200,
+              task_active_seconds: 6000,
+              idle_seconds: 1200,
+              total_tracked_seconds: 8400,
+              completed_segments: 30,
+              average_active_seconds_per_segment: 240,
+              efficiency_segments_per_active_hour: 15,
+              focus_rate: 0.8333,
+              last_activity_at: "2026-08-10T14:00:00Z",
+            },
+            { date: "2026-08-11", ...summary },
+          ],
           organizations: [
             {
               organization_id: "org-1",
@@ -126,7 +178,33 @@ describe("PeopleActivityPage", () => {
             focus_rate: 0.8889,
             last_activity_at: "2026-08-11T10:15:00Z",
           },
-          daily: [{ date: "2026-08-11", ...summary }],
+          daily: [
+            { date: "2026-08-09", ...emptyDaily },
+            {
+              date: "2026-08-10",
+              active_seconds: 7200,
+              task_active_seconds: 6600,
+              idle_seconds: 600,
+              total_tracked_seconds: 7800,
+              completed_segments: 14,
+              average_active_seconds_per_segment: 514.2857,
+              efficiency_segments_per_active_hour: 7,
+              focus_rate: 0.9167,
+              last_activity_at: "2026-08-10T16:00:00Z",
+            },
+            {
+              date: "2026-08-11",
+              active_seconds: 5400,
+              task_active_seconds: 4800,
+              idle_seconds: 600,
+              total_tracked_seconds: 6000,
+              completed_segments: 18,
+              average_active_seconds_per_segment: 266.6667,
+              efficiency_segments_per_active_hour: 12,
+              focus_rate: 0.8889,
+              last_activity_at: "2026-08-11T10:15:00Z",
+            },
+          ],
           organizations: [
             {
               organization_id: "org-2",
@@ -168,9 +246,22 @@ describe("PeopleActivityPage", () => {
     expect(fetchUsers).toHaveBeenCalledWith("admin-token", { scope: "all" });
     expect(screen.getAllByText("Annotator One").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Reviewer Two").length).toBeGreaterThan(0);
-    expect(screen.getByText("4h 30m")).toBeInTheDocument();
-    expect(screen.getByText("68")).toBeInTheDocument();
-    expect(screen.getByText("20.00/hr")).toBeInTheDocument();
+    expect(screen.getByText("Selected range total")).toBeInTheDocument();
+    expect(screen.getByText("Daily activity")).toBeInTheDocument();
+
+    const rangeTotals = screen.getByRole("region", { name: "Selected range total" });
+    expect(within(rangeTotals).getByText("7h 0m")).toBeInTheDocument();
+    expect(within(rangeTotals).getByText("6h 0m")).toBeInTheDocument();
+    expect(within(rangeTotals).getByText("1h 0m")).toBeInTheDocument();
+    expect(within(rangeTotals).getByText("75")).toBeInTheDocument();
+    expect(within(rangeTotals).getByText("4m")).toBeInTheDocument();
+    expect(within(rangeTotals).getByText("10.71/hr")).toBeInTheDocument();
+    expect(within(rangeTotals).getByText("85.7%")).toBeInTheDocument();
+
+    expect(screen.getByRole("row", { name: /Aug 9, 2026 Team total 0s 0s 0s 0/ })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /Aug 10, 2026 Annotator One/ })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /Aug 10, 2026 Reviewer Two/ })).toBeInTheDocument();
+    expect(screen.getAllByText("No activity").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Show organization breakdown for Annotator One" }));
     expect(screen.getByText("Iris")).toBeInTheDocument();

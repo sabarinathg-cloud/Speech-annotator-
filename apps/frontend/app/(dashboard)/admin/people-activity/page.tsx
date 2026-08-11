@@ -1,6 +1,11 @@
 "use client";
 
-import type { AdminUser, PeopleActivityResponse, PeopleActivitySummary } from "@outcomes/shared-types";
+import type {
+  AdminUser,
+  PeopleActivityDaily,
+  PeopleActivityResponse,
+  PeopleActivitySummary,
+} from "@outcomes/shared-types";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
@@ -44,6 +49,18 @@ function formatDateTime(value: string | null): string {
   if (!value) return "No activity";
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? "No activity" : parsed.toLocaleString();
+}
+
+function formatDate(value: string): string {
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : parsed.toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+        timeZone: "UTC",
+        year: "numeric",
+      });
 }
 
 function formatOptional(value: number | null, suffix = ""): string {
@@ -92,6 +109,33 @@ function MetricCells({ summary }: { summary: PeopleActivitySummary }) {
   );
 }
 
+function DailyRows({ daily, report }: { daily: PeopleActivityDaily; report: PeopleActivityResponse }) {
+  const dateLabel = formatDate(daily.date);
+  return (
+    <Fragment>
+      <tr className="bg-[#f5effb]">
+        <td className="whitespace-nowrap px-3 py-3 font-semibold text-[#241f43]">{dateLabel}</td>
+        <td className="min-w-[220px] px-3 py-3 font-semibold text-[#241f43]">Team total</td>
+        <MetricCells summary={daily} />
+      </tr>
+      {report.items.map((item) => {
+        const userDaily = item.daily.find((entry) => entry.date === daily.date);
+        if (!userDaily) return null;
+        return (
+          <tr className="bg-white" key={`${daily.date}-${item.user_id}`}>
+            <td className="whitespace-nowrap px-3 py-3 text-[#706a87]">{dateLabel}</td>
+            <td className="min-w-[220px] px-3 py-3">
+              <p className="font-semibold text-[#241f43]">{item.user_name}</p>
+              <p className="text-xs text-[#706a87]">{item.role}</p>
+            </td>
+            <MetricCells summary={userDaily} />
+          </tr>
+        );
+      })}
+    </Fragment>
+  );
+}
+
 export default function PeopleActivityPage() {
   const { accessToken, user } = useAuth();
   const initialFilters = useMemo(defaultFilters, []);
@@ -130,16 +174,6 @@ export default function PeopleActivityPage() {
     void loadReport();
   }, [loadReport]);
 
-  const totals = useMemo(() => {
-    const items = report?.items ?? [];
-    return {
-      people: items.length,
-      active: items.reduce((sum, item) => sum + item.overall.active_seconds, 0),
-      idle: items.reduce((sum, item) => sum + item.overall.idle_seconds, 0),
-      completed: items.reduce((sum, item) => sum + item.overall.completed_segments, 0),
-    };
-  }, [report]);
-
   function applyFilters(): void {
     if (filters.dateFrom > filters.dateTo) {
       setError("From date must be on or before to date.");
@@ -174,6 +208,24 @@ export default function PeopleActivityPage() {
       return next;
     });
   }
+
+  const rangeCards: Array<[string, string]> = report
+    ? [
+        ["People", report.items.length.toLocaleString()],
+        ["Active time", formatDuration(report.overall.active_seconds)],
+        ["Task time", formatDuration(report.overall.task_active_seconds)],
+        ["Idle time", formatDuration(report.overall.idle_seconds)],
+        ["Segments done", report.overall.completed_segments.toLocaleString()],
+        [
+          "Avg / segment",
+          report.overall.average_active_seconds_per_segment === null
+            ? "-"
+            : formatDuration(report.overall.average_active_seconds_per_segment),
+        ],
+        ["Efficiency", formatOptional(report.overall.efficiency_segments_per_active_hour, "/hr")],
+        ["Focus", report.overall.focus_rate === null ? "-" : `${(report.overall.focus_rate * 100).toFixed(1)}%`],
+      ]
+    : [];
 
   return (
     <div className="space-y-4">
@@ -232,18 +284,75 @@ export default function PeopleActivityPage() {
 
       {error ? <div className="oa-alert-error">{error}</div> : null}
 
-      <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {[
-          ["People", totals.people.toLocaleString()],
-          ["Active time", formatDuration(totals.active)],
-          ["Idle time", formatDuration(totals.idle)],
-          ["Segments done", totals.completed.toLocaleString()],
-        ].map(([label, value]) => (
-          <div className="oa-card px-4 py-3" key={label}>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7a7193]">{label}</p>
-            <p className="mt-1 text-xl font-semibold text-[#241f43]">{loading ? "..." : value}</p>
+      <section aria-labelledby="range-total-heading" className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 id="range-total-heading" className="font-semibold text-[#241f43]">
+            Selected range total
+          </h3>
+          <span className="text-xs text-[#706a87]">
+            {report ? `${report.date_from} to ${report.date_to}` : "Loading"}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
+          {(loading || !report
+            ? [
+                ["People", "..."],
+                ["Active time", "..."],
+                ["Task time", "..."],
+                ["Idle time", "..."],
+              ]
+            : rangeCards
+          ).map(([label, value]) => (
+            <div className="oa-card min-h-[82px] px-4 py-3" key={label}>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7a7193]">{label}</p>
+              <p className="mt-1 text-xl font-semibold text-[#241f43]">{value}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="oa-card overflow-hidden">
+        <div className="flex items-center justify-between border-b border-[#ece5f4] px-5 py-3">
+          <div>
+            <h3 className="font-semibold text-[#241f43]">Daily activity</h3>
+            <p className="text-xs text-[#706a87]">Team totals with each selected person underneath.</p>
           </div>
-        ))}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1260px] text-left text-sm">
+            <thead className="bg-[#faf7fd] text-[11px] uppercase tracking-[0.1em] text-[#746c8d]">
+              <tr>
+                <th className="px-3 py-3">Date</th>
+                <th className="px-3 py-3">Person</th>
+                <th className="px-3 py-3">Active</th>
+                <th className="px-3 py-3">Task time</th>
+                <th className="px-3 py-3">Idle</th>
+                <th className="px-3 py-3">Done</th>
+                <th className="px-3 py-3">Avg / segment</th>
+                <th className="px-3 py-3">Efficiency</th>
+                <th className="px-3 py-3">Focus</th>
+                <th className="px-3 py-3">Last activity</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#eee8f5]">
+              {loading ? (
+                <tr>
+                  <td className="px-4 py-8 text-center text-[#706a87]" colSpan={10}>
+                    Loading activity...
+                  </td>
+                </tr>
+              ) : report?.daily.length ? (
+                report.daily.map((daily) => <DailyRows daily={daily} key={daily.date} report={report} />)
+              ) : (
+                <tr>
+                  <td className="px-4 py-8 text-center text-[#706a87]" colSpan={10}>
+                    No daily activity was recorded for this period.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section className="oa-card overflow-hidden">
