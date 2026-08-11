@@ -1,0 +1,128 @@
+# Cross-Organization People Activity
+
+## Goal
+
+Give global admins an accurate view of each person's work time across every organization they used during a selected period. The default period is the trailing seven days. Existing organization-scoped task, quality, security, and hiring metrics remain isolated.
+
+## Approaches Considered
+
+### 1. Separate People Activity report (selected)
+
+Add a global-admin report backed by a dedicated cross-organization endpoint. It returns one overall row per user and an organization breakdown for auditability.
+
+This keeps the existing organization Metrics page semantically correct while making cross-org totals explicit.
+
+### 2. All Organizations toggle on the existing Metrics page
+
+This is more compact, but it makes task counts, WER, PII, security, and productivity filters ambiguous because most of that dashboard is intentionally organization-scoped.
+
+### 3. Aggregate in the browser
+
+The frontend could request metrics for every organization and add the numbers. This creates many API calls, can omit inactive organizations, and risks double-counting derived metrics. It is not suitable for an authoritative report.
+
+## User Experience
+
+Add a global-admin navigation entry named `People Activity`.
+
+The page includes:
+
+- Date range, defaulting to the trailing seven calendar days including today.
+- User filter, defaulting to all active users.
+- Overall totals per user for active time, task-linked active time, idle time, total tracked time, completed segments, average active time per completed segment, efficiency, focus rate, and last activity.
+- An expandable organization breakdown for each user showing the same time and completion measures for each organization with activity in the period.
+- CSV export using the current filters, with one overall row and organization detail rows.
+
+Time is displayed in hours and minutes. Empty periods show zero totals instead of removing the selected user.
+
+## Backend API
+
+Add:
+
+`GET /api/v1/metrics/people-activity`
+
+Query parameters:
+
+- `user_id`: optional user filter.
+- `date_from`: optional inclusive UTC calendar date.
+- `date_to`: optional inclusive UTC calendar date.
+- When dates are omitted, use the trailing seven calendar days including today.
+
+Authorization:
+
+- Global `ADMIN` role only.
+- The endpoint deliberately does not use `X-Organization-ID` for aggregation.
+- Non-admin users receive `403`.
+
+Response:
+
+- Applied date range and generation timestamp.
+- One item per selected user.
+- Each item contains an `overall` summary and `organizations` breakdown.
+- Organization breakdowns include active and inactive organizations when activity exists in the selected period so historical work is not hidden.
+
+## Counting Rules
+
+Use `user_activity_entries` as the source for tracked time:
+
+- `active_seconds`: sum across all organizations.
+- `task_active_seconds`: sum active seconds only where `task_id` is present.
+- `idle_seconds`: sum across all organizations.
+- `total_tracked_seconds`: active plus idle.
+- `focus_rate`: task-active seconds divided by active seconds; null when active time is zero.
+
+Use `task_status_history` joined through `annotation_tasks.organization_id` for completed segments:
+
+- Count a task once per user and organization in the selected period when that user first moves it into `Completed`, `Needs Review`, `Reviewed`, or `Approved`.
+- Repeated transitions of the same task in the period do not increase the count.
+- Overall completed segments are the sum of distinct organization-owned tasks; task IDs are globally unique, so a task is never double-counted across organizations.
+
+Derived values:
+
+- `average_active_minutes_per_segment`: task-linked active minutes divided by completed segments.
+- `efficiency_segments_per_active_hour`: completed segments divided by task-linked active hours.
+- Both are null when their denominator is zero.
+
+The report does not infer historical activity from task timestamps. It only reports heartbeat data recorded after activity tracking was deployed.
+
+## Performance
+
+Aggregate in SQL by `user_id` and `organization_id`; do not load individual heartbeat rows into Python. Reuse the existing activity indexes. The completion query aggregates status history separately and merges the small grouped result sets in the service.
+
+The initial response is limited to users matching the optional filter. Pagination is unnecessary for the current user volume, but the endpoint keeps aggregation independent of the organization Metrics response so pagination can be added later.
+
+## Frontend Data Flow
+
+The page requests the report whenever the applied date or user filter changes. The request must explicitly omit `X-Organization-ID`; the generic API helper needs an opt-out for this global endpoint.
+
+The overall table is rendered first. Organization details are collapsed by default and expanded per user. CSV export is generated by the backend so displayed and exported calculations use the same rules.
+
+## Error Handling
+
+- Reject `date_from > date_to` with `422`.
+- Reject unknown `user_id` with `404`.
+- Return a normal zero-valued user row when the selected user exists but has no activity.
+- Surface API failures without clearing the previously loaded report.
+
+## Tests
+
+Backend tests cover:
+
+- One user active in two organizations receives the combined overall total.
+- Organization breakdown values match their source rows.
+- Completion events are deduplicated per task.
+- Date boundaries are inclusive.
+- A selected user with no activity returns zero values.
+- Non-admin access is rejected.
+- Existing `/metrics/admin` remains organization-scoped.
+
+Frontend tests cover:
+
+- The default seven-day range.
+- Overall combined values and expandable organization details.
+- User and date filters.
+- Empty and error states.
+- CSV export invocation.
+
+## Migration And Compatibility
+
+No database migration is required. Existing activity entries already include user and organization ownership. Existing organization metrics APIs and pages remain unchanged.
