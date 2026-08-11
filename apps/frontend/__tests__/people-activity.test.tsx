@@ -53,6 +53,13 @@ describe("PeopleActivityPage", () => {
           role: "ANNOTATOR",
           is_active: true,
         },
+        {
+          id: "user-2",
+          email: "reviewer@test.com",
+          full_name: "Reviewer Two",
+          role: "REVIEWER",
+          is_active: true,
+        },
       ],
     });
     fetchPeopleActivity.mockResolvedValue({
@@ -101,6 +108,42 @@ describe("PeopleActivityPage", () => {
             },
           ],
         },
+        {
+          user_id: "user-2",
+          user_name: "Reviewer Two",
+          user_email: "reviewer@test.com",
+          role: "REVIEWER",
+          is_active: true,
+          overall: {
+            ...summary,
+            active_seconds: 5400,
+            task_active_seconds: 4800,
+            idle_seconds: 600,
+            total_tracked_seconds: 6000,
+            completed_segments: 18,
+            average_active_seconds_per_segment: 266.6667,
+            efficiency_segments_per_active_hour: 12,
+            focus_rate: 0.8889,
+            last_activity_at: "2026-08-11T10:15:00Z",
+          },
+          daily: [{ date: "2026-08-11", ...summary }],
+          organizations: [
+            {
+              organization_id: "org-2",
+              organization_name: "Flora",
+              organization_slug: "flora",
+              active_seconds: 5400,
+              task_active_seconds: 4800,
+              idle_seconds: 600,
+              total_tracked_seconds: 6000,
+              completed_segments: 18,
+              average_active_seconds_per_segment: 266.6667,
+              efficiency_segments_per_active_hour: 12,
+              focus_rate: 0.8889,
+              last_activity_at: "2026-08-11T10:15:00Z",
+            },
+          ],
+        },
       ],
     });
   });
@@ -123,9 +166,10 @@ describe("PeopleActivityPage", () => {
       })
     );
     expect(fetchUsers).toHaveBeenCalledWith("admin-token", { scope: "all" });
-    expect(screen.getAllByText("Annotator One")).toHaveLength(2);
-    expect(screen.getAllByText("3h 0m")).toHaveLength(2);
-    expect(screen.getAllByText("50")).toHaveLength(2);
+    expect(screen.getAllByText("Annotator One").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Reviewer Two").length).toBeGreaterThan(0);
+    expect(screen.getByText("4h 30m")).toBeInTheDocument();
+    expect(screen.getByText("68")).toBeInTheDocument();
     expect(screen.getByText("20.00/hr")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Show organization breakdown for Annotator One" }));
@@ -134,34 +178,69 @@ describe("PeopleActivityPage", () => {
     expect(screen.getByText("1h 40m task time")).toBeInTheDocument();
   });
 
-  it("sends the selected single person as a userIds array for load and export", async () => {
+  it("applies multiple selected people and exports with the applied userIds array", async () => {
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     exportPeopleActivity.mockResolvedValue({ blob: new Blob(["csv"]), filename: "people.csv" });
 
     render(<PeopleActivityPage />);
     await screen.findByRole("heading", { name: "People Activity" });
+    await screen.findByRole("button", { name: "People: All people" });
 
-    fireEvent.change(screen.getByLabelText("Person"), { target: { value: "user-1" } });
+    const initialLoadCount = fetchPeopleActivity.mock.calls.length;
+    const peopleButton = screen.getByRole("button", { name: "People: All people" });
+    expect(peopleButton).toHaveAttribute("aria-haspopup", "dialog");
+    fireEvent.click(peopleButton);
+    expect(screen.getByRole("dialog", { name: "People filter" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "People options" })).toBeInTheDocument();
+
+    const search = screen.getByRole("searchbox", { name: "Search people" });
+    fireEvent.change(search, { target: { value: "two" } });
+    expect(fetchPeopleActivity).toHaveBeenCalledTimes(initialLoadCount);
+
+    fireEvent.change(search, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Annotator One" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Reviewer Two" }));
+
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
     await waitFor(() =>
-      expect(fetchPeopleActivity).toHaveBeenCalledWith("admin-token", {
-        userIds: ["user-1"],
+      expect(fetchPeopleActivity).toHaveBeenLastCalledWith("admin-token", {
+        userIds: ["user-1", "user-2"],
         dateFrom: "2026-08-05",
         dateTo: "2026-08-11",
       })
     );
+    expect(screen.getByRole("button", { name: "People: 2 people selected" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
 
     await waitFor(() =>
       expect(exportPeopleActivity).toHaveBeenCalledWith("admin-token", {
-        userIds: ["user-1"],
+        userIds: ["user-1", "user-2"],
         dateFrom: "2026-08-05",
         dateTo: "2026-08-11",
       })
     );
 
     clickSpy.mockRestore();
+  });
+
+  it("applies cleared people selections as all people", async () => {
+    render(<PeopleActivityPage />);
+    await screen.findByRole("button", { name: "People: All people" });
+
+    fireEvent.click(screen.getByRole("button", { name: "People: All people" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Annotator One" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Reviewer Two" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() =>
+      expect(fetchPeopleActivity).toHaveBeenLastCalledWith("admin-token", {
+        userIds: [],
+        dateFrom: "2026-08-05",
+        dateTo: "2026-08-11",
+      })
+    );
   });
 });

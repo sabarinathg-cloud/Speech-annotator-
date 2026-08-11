@@ -4,10 +4,11 @@ import type { AdminUser, PeopleActivityResponse, PeopleActivitySummary } from "@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
+import { PeopleMultiSelect } from "@/components/people-multi-select";
 import { exportPeopleActivity, fetchPeopleActivity, fetchUsers } from "@/lib/api";
 
 interface ActivityFilters {
-  userId: string;
+  userIds: string[];
   dateFrom: string;
   dateTo: string;
 }
@@ -24,14 +25,10 @@ function defaultFilters(): ActivityFilters {
   const dateFrom = new Date(dateTo);
   dateFrom.setDate(dateFrom.getDate() - 6);
   return {
-    userId: "all",
+    userIds: [],
     dateFrom: dateInputValue(dateFrom),
     dateTo: dateInputValue(dateTo),
   };
-}
-
-function selectedUserIds(userId: string): string[] {
-  return userId === "all" ? [] : [userId];
 }
 
 function formatDuration(seconds: number): string {
@@ -115,7 +112,7 @@ export default function PeopleActivityPage() {
       const [userResponse, activityResponse] = await Promise.all([
         fetchUsers(accessToken, { scope: "all" }),
         fetchPeopleActivity(accessToken, {
-          userIds: selectedUserIds(appliedFilters.userId),
+          userIds: appliedFilters.userIds,
           dateFrom: appliedFilters.dateFrom,
           dateTo: appliedFilters.dateTo,
         }),
@@ -148,7 +145,7 @@ export default function PeopleActivityPage() {
       setError("From date must be on or before to date.");
       return;
     }
-    setAppliedFilters(filters);
+    setAppliedFilters({ ...filters, userIds: [...filters.userIds] });
   }
 
   async function handleExport(): Promise<void> {
@@ -157,7 +154,7 @@ export default function PeopleActivityPage() {
     setError(null);
     try {
       const result = await exportPeopleActivity(accessToken, {
-        userIds: selectedUserIds(appliedFilters.userId),
+        userIds: appliedFilters.userIds,
         dateFrom: appliedFilters.dateFrom,
         dateTo: appliedFilters.dateTo,
       });
@@ -188,22 +185,14 @@ export default function PeopleActivityPage() {
             <p className="mt-1 text-sm text-[#68627e]">Combined work time across every organization.</p>
           </div>
           <div className="grid gap-3 sm:grid-cols-4 lg:min-w-[760px]">
-            <label className="text-xs font-semibold text-[#5f5878]">
-              Person
-              <select
-                aria-label="Person"
-                className="oa-input mt-1 w-full"
-                value={filters.userId}
-                onChange={(event) => setFilters((current) => ({ ...current, userId: event.target.value }))}
-              >
-                <option value="all">All people</option>
-                {users.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.full_name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="text-xs font-semibold text-[#5f5878]">
+              <span>People</span>
+              <PeopleMultiSelect
+                users={users}
+                selectedIds={filters.userIds}
+                onChange={(userIds) => setFilters((current) => ({ ...current, userIds }))}
+              />
+            </div>
             <label className="text-xs font-semibold text-[#5f5878]">
               From
               <input
