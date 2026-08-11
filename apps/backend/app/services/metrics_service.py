@@ -26,6 +26,7 @@ from app.schemas.metrics import (
     ModelBenchmarkSummary,
     ModelTranscriptMetric,
     PIIMetrics,
+    PeopleActivityDaily,
     PeopleActivityOrganization,
     PeopleActivityResponse,
     PeopleActivitySummary,
@@ -225,6 +226,20 @@ def _as_aware_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
+def _as_date(value: Any) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value))
+
+
+def _utc_date_expression(timestamp_column: Any, dialect_name: str):
+    if dialect_name.startswith("postgres"):
+        return func.date(func.timezone("UTC", timestamp_column))
+    return func.date(timestamp_column)
+
+
 def _minutes_between(start: datetime | None, end: datetime | None) -> float | None:
     start_utc = _as_aware_utc(start)
     end_utc = _as_aware_utc(end)
@@ -416,13 +431,50 @@ class MetricsService:
         period_start = datetime.combine(resolved_date_from, datetime.min.time(), tzinfo=timezone.utc)
         period_end = datetime.combine(resolved_date_to, datetime.max.time(), tzinfo=timezone.utc)
 
-        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        report_dates = [
+            resolved_date_from + timedelta(days=offset)
+            for offset in range((resolved_date_to - resolved_date_from).days + 1)
+        ]
+
+        def new_stats() -> dict[str, Any]:
+            return {
+                "active_seconds": 0,
+                "task_active_seconds": 0,
+                "idle_seconds": 0,
+                "completed_segments": 0,
+                "last_activity_at": None,
+            }
+
+        def sum_stats(stats_rows: list[dict[str, Any]]) -> dict[str, Any]:
+            total = new_stats()
+            for stats in stats_rows:
+                total["active_seconds"] += int(stats.get("active_seconds") or 0)
+                total["task_active_seconds"] += int(stats.get("task_active_seconds") or 0)
+                total["idle_seconds"] += int(stats.get("idle_seconds") or 0)
+                total["completed_segments"] += int(stats.get("completed_segments") or 0)
+                last_activity_at = _as_aware_utc(stats.get("last_activity_at"))
+                if last_activity_at and (
+                    not total["last_activity_at"] or last_activity_at > total["last_activity_at"]
+                ):
+                    total["last_activity_at"] = last_activity_at
+            return total
+
+        def daily_summary(activity_date: date, stats_rows: list[dict[str, Any]]) -> PeopleActivityDaily:
+            return PeopleActivityDaily(
+                date=activity_date,
+                **self._people_activity_summary(sum_stats(stats_rows)).model_dump(),
+            )
+
+        grouped: dict[tuple[str, str, date], dict[str, Any]] = {}
         organizations: dict[str, Organization] = {}
         if selected_user_ids:
+            dialect_name = self.db.get_bind().dialect.name
+            activity_date_expr = _utc_date_expression(UserActivityEntry.started_at, dialect_name)
             activity_rows = self.db.execute(
                 select(
                     UserActivityEntry.user_id,
                     UserActivityEntry.organization_id,
+                    activity_date_expr.label("activity_date"),
                     func.coalesce(func.sum(UserActivityEntry.active_seconds), 0).label("active_seconds"),
                     func.coalesce(func.sum(UserActivityEntry.idle_seconds), 0).label("idle_seconds"),
                     func.coalesce(
@@ -439,29 +491,38 @@ class MetricsService:
                 .where(UserActivityEntry.user_id.in_(selected_user_ids))
                 .where(UserActivityEntry.started_at >= period_start)
                 .where(UserActivityEntry.started_at <= period_end)
-                .group_by(UserActivityEntry.user_id, UserActivityEntry.organization_id)
+                .group_by(UserActivityEntry.user_id, UserActivityEntry.organization_id, activity_date_expr)
             ).all()
-            completion_rows = self.db.execute(
+
+            terminal_statuses = [
+                TaskStatusEnum.COMPLETED,
+                TaskStatusEnum.NEEDS_REVIEW,
+                TaskStatusEnum.REVIEWED,
+                TaskStatusEnum.APPROVED,
+            ]
+            first_completion = (
                 select(
                     TaskStatusHistory.changed_by_id.label("user_id"),
-                    AnnotationTask.organization_id,
-                    func.count(func.distinct(TaskStatusHistory.task_id)).label("completed_segments"),
+                    TaskStatusHistory.task_id.label("task_id"),
+                    func.min(TaskStatusHistory.changed_at).label("first_completed_at"),
                 )
-                .join(AnnotationTask, AnnotationTask.id == TaskStatusHistory.task_id)
                 .where(TaskStatusHistory.changed_by_id.in_(selected_user_ids))
-                .where(
-                    TaskStatusHistory.new_status.in_(
-                        [
-                            TaskStatusEnum.COMPLETED,
-                            TaskStatusEnum.NEEDS_REVIEW,
-                            TaskStatusEnum.REVIEWED,
-                            TaskStatusEnum.APPROVED,
-                        ]
-                    )
-                )
+                .where(TaskStatusHistory.new_status.in_(terminal_statuses))
                 .where(TaskStatusHistory.changed_at >= period_start)
                 .where(TaskStatusHistory.changed_at <= period_end)
-                .group_by(TaskStatusHistory.changed_by_id, AnnotationTask.organization_id)
+                .group_by(TaskStatusHistory.changed_by_id, TaskStatusHistory.task_id)
+                .subquery()
+            )
+            completion_date_expr = _utc_date_expression(first_completion.c.first_completed_at, dialect_name)
+            completion_rows = self.db.execute(
+                select(
+                    first_completion.c.user_id,
+                    AnnotationTask.organization_id,
+                    completion_date_expr.label("activity_date"),
+                    func.count().label("completed_segments"),
+                )
+                .join(AnnotationTask, AnnotationTask.id == first_completion.c.task_id)
+                .group_by(first_completion.c.user_id, AnnotationTask.organization_id, completion_date_expr)
             ).all()
 
             organization_ids = {
@@ -476,55 +537,77 @@ class MetricsService:
                 }
 
             for row in activity_rows:
-                grouped[(row.user_id, row.organization_id)] = {
-                    "active_seconds": int(row.active_seconds or 0),
-                    "task_active_seconds": int(row.task_active_seconds or 0),
-                    "idle_seconds": int(row.idle_seconds or 0),
-                    "completed_segments": 0,
-                    "last_activity_at": _as_aware_utc(row.last_activity_at),
-                }
+                stats = grouped.setdefault(
+                    (row.user_id, row.organization_id, _as_date(row.activity_date)),
+                    new_stats(),
+                )
+                stats["active_seconds"] += int(row.active_seconds or 0)
+                stats["task_active_seconds"] += int(row.task_active_seconds or 0)
+                stats["idle_seconds"] += int(row.idle_seconds or 0)
+                last_activity_at = _as_aware_utc(row.last_activity_at)
+                if last_activity_at and (
+                    not stats["last_activity_at"] or last_activity_at > stats["last_activity_at"]
+                ):
+                    stats["last_activity_at"] = last_activity_at
             for row in completion_rows:
                 stats = grouped.setdefault(
-                    (row.user_id, row.organization_id),
-                    {
-                        "active_seconds": 0,
-                        "task_active_seconds": 0,
-                        "idle_seconds": 0,
-                        "completed_segments": 0,
-                        "last_activity_at": None,
-                    },
+                    (row.user_id, row.organization_id, _as_date(row.activity_date)),
+                    new_stats(),
                 )
-                stats["completed_segments"] = int(row.completed_segments or 0)
+                stats["completed_segments"] += int(row.completed_segments or 0)
+
+        team_daily = [
+            daily_summary(
+                report_date,
+                [stats for (*_, row_date), stats in grouped.items() if row_date == report_date],
+            )
+            for report_date in report_dates
+        ]
+        team_overall = self._people_activity_summary(sum_stats(list(grouped.values())))
 
         items: list[PeopleActivityUser] = []
         for user in users:
             organization_rows: list[PeopleActivityOrganization] = []
-            for (row_user_id, organization_id), stats in grouped.items():
-                if row_user_id != user.id:
-                    continue
+            user_stats = [
+                stats for (row_user_id, _, _), stats in grouped.items() if row_user_id == user.id
+            ]
+            user_daily = [
+                daily_summary(
+                    report_date,
+                    [
+                        stats
+                        for (row_user_id, _, row_date), stats in grouped.items()
+                        if row_user_id == user.id and row_date == report_date
+                    ],
+                )
+                for report_date in report_dates
+            ]
+            user_organization_ids = {
+                organization_id
+                for (row_user_id, organization_id, _), stats in grouped.items()
+                if row_user_id == user.id
+            }
+            for organization_id in user_organization_ids:
                 organization = organizations.get(organization_id)
                 if not organization:
                     continue
+                organization_stats = sum_stats(
+                    [
+                        stats
+                        for (row_user_id, row_organization_id, _), stats in grouped.items()
+                        if row_user_id == user.id and row_organization_id == organization_id
+                    ]
+                )
                 organization_rows.append(
                     PeopleActivityOrganization(
                         organization_id=organization.id,
                         organization_name=organization.name,
                         organization_slug=organization.slug,
-                        **self._people_activity_summary(stats).model_dump(),
+                        **self._people_activity_summary(organization_stats).model_dump(),
                     )
                 )
             organization_rows.sort(key=lambda row: row.organization_name.lower())
 
-            overall_stats = {
-                "active_seconds": sum(row.active_seconds for row in organization_rows),
-                "task_active_seconds": sum(row.task_active_seconds for row in organization_rows),
-                "idle_seconds": sum(row.idle_seconds for row in organization_rows),
-                "completed_segments": sum(row.completed_segments for row in organization_rows),
-                "last_activity_at": max(
-                    (row.last_activity_at for row in organization_rows if row.last_activity_at),
-                    default=None,
-                ),
-            }
             items.append(
                 PeopleActivityUser(
                     user_id=user.id,
@@ -532,7 +615,8 @@ class MetricsService:
                     user_email=user.email,
                     role=user.role.value,
                     is_active=user.is_active,
-                    overall=self._people_activity_summary(overall_stats),
+                    overall=self._people_activity_summary(sum_stats(user_stats)),
+                    daily=user_daily,
                     organizations=organization_rows,
                 )
             )
@@ -541,6 +625,8 @@ class MetricsService:
             generated_at=datetime.now(timezone.utc),
             date_from=resolved_date_from,
             date_to=resolved_date_to,
+            overall=team_overall,
+            daily=team_daily,
             items=items,
         )
 

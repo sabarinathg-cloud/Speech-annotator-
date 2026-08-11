@@ -203,6 +203,10 @@ class PeopleActivitySummary(BaseModel):
     last_activity_at: datetime | None
 
 
+class PeopleActivityDaily(PeopleActivitySummary):
+    date: date
+
+
 class PeopleActivityOrganization(PeopleActivitySummary):
     organization_id: str
     organization_name: str
@@ -216,6 +220,7 @@ class PeopleActivityUser(BaseModel):
     role: str
     is_active: bool
     overall: PeopleActivitySummary
+    daily: list[PeopleActivityDaily]
     organizations: list[PeopleActivityOrganization]
 
 
@@ -223,6 +228,8 @@ class PeopleActivityResponse(BaseModel):
     generated_at: datetime
     date_from: date
     date_to: date
+    overall: PeopleActivitySummary
+    daily: list[PeopleActivityDaily]
     items: list[PeopleActivityUser]
 
 

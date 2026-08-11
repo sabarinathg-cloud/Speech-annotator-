@@ -3,6 +3,7 @@ import io
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
+from sqlalchemy.dialects import postgresql, sqlite
 
 from app.models.activity import UserActivityEntry
 from app.models.enums import TaskStatusEnum, UploadJobStatusEnum
@@ -10,6 +11,7 @@ from app.models.organization import Organization, OrganizationMembership
 from app.models.security import SecurityAuditEvent
 from app.models.task import AnnotationTask, TaskAuditLog, TaskStatusHistory, TaskTranscriptVariant
 from app.models.upload import UploadFile, UploadJob
+from app.services import metrics_service
 
 
 def _mapping():
@@ -428,6 +430,175 @@ def test_people_activity_returns_zero_user_and_rejects_non_admin(
     assert item["overall"]["total_tracked_seconds"] == 0
     assert item["overall"]["completed_segments"] == 0
     assert item["organizations"] == []
+
+
+def test_people_activity_date_grouping_uses_utc_for_postgres():
+    assert hasattr(metrics_service, "_utc_date_expression")
+
+    postgres_sql = str(
+        metrics_service._utc_date_expression(UserActivityEntry.started_at, "postgresql").compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    sqlite_sql = str(
+        metrics_service._utc_date_expression(UserActivityEntry.started_at, "sqlite").compile(
+            dialect=sqlite.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "timezone('UTC'" in postgres_sql
+    assert "date(timezone(" in postgres_sql
+    assert sqlite_sql == "date(user_activity_entries.started_at)"
+
+
+def test_people_activity_returns_daily_and_overall_range_totals(
+    client,
+    auth_headers,
+    db_session,
+    seed_users,
+):
+    annotator = seed_users["annotator"]
+    reviewer = seed_users["reviewer"]
+    upload_job = _create_metrics_upload_job(db_session, seed_users["admin"])
+    annotator_task = _create_metrics_task(
+        db_session,
+        upload_job=upload_job,
+        external_id="DAILY-ANNOTATOR",
+        final_transcript="annotator",
+        variants=[],
+        status=TaskStatusEnum.COMPLETED,
+        last_tagger_id=annotator.id,
+    )
+    reviewer_task_one = _create_metrics_task(
+        db_session,
+        upload_job=upload_job,
+        external_id="DAILY-REVIEWER-ONE",
+        final_transcript="reviewer one",
+        variants=[],
+        status=TaskStatusEnum.COMPLETED,
+        last_tagger_id=reviewer.id,
+    )
+    reviewer_task_two = _create_metrics_task(
+        db_session,
+        upload_job=upload_job,
+        external_id="DAILY-REVIEWER-TWO",
+        final_transcript="reviewer two",
+        variants=[],
+        status=TaskStatusEnum.COMPLETED,
+        last_tagger_id=reviewer.id,
+    )
+    day_one = datetime(2026, 8, 9, 9, 0, tzinfo=timezone.utc)
+    day_three = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
+    db_session.add_all(
+        [
+            UserActivityEntry(
+                organization_id=upload_job.organization_id,
+                user_id=annotator.id,
+                task_id=annotator_task.id,
+                route=f"/tasks/{annotator_task.id}",
+                active_seconds=3600,
+                idle_seconds=0,
+                event_count=3,
+                started_at=day_one,
+                ended_at=day_one + timedelta(hours=1),
+            ),
+            UserActivityEntry(
+                organization_id=upload_job.organization_id,
+                user_id=reviewer.id,
+                task_id=reviewer_task_one.id,
+                route=f"/tasks/{reviewer_task_one.id}",
+                active_seconds=900,
+                idle_seconds=120,
+                event_count=2,
+                started_at=day_three,
+                ended_at=day_three + timedelta(minutes=17),
+            ),
+            UserActivityEntry(
+                organization_id=upload_job.organization_id,
+                user_id=reviewer.id,
+                task_id=reviewer_task_two.id,
+                route=f"/tasks/{reviewer_task_two.id}",
+                active_seconds=900,
+                idle_seconds=180,
+                event_count=2,
+                started_at=day_three + timedelta(hours=1),
+                ended_at=day_three + timedelta(hours=1, minutes=18),
+            ),
+            TaskStatusHistory(
+                task_id=annotator_task.id,
+                old_status=TaskStatusEnum.IN_PROGRESS,
+                new_status=TaskStatusEnum.COMPLETED,
+                changed_by_id=annotator.id,
+                changed_at=day_one + timedelta(minutes=30),
+            ),
+            TaskStatusHistory(
+                task_id=annotator_task.id,
+                old_status=TaskStatusEnum.COMPLETED,
+                new_status=TaskStatusEnum.NEEDS_REVIEW,
+                changed_by_id=annotator.id,
+                changed_at=day_three + timedelta(hours=3),
+            ),
+            TaskStatusHistory(
+                task_id=reviewer_task_one.id,
+                old_status=TaskStatusEnum.IN_PROGRESS,
+                new_status=TaskStatusEnum.COMPLETED,
+                changed_by_id=reviewer.id,
+                changed_at=day_three + timedelta(minutes=5),
+            ),
+            TaskStatusHistory(
+                task_id=reviewer_task_two.id,
+                old_status=TaskStatusEnum.IN_PROGRESS,
+                new_status=TaskStatusEnum.APPROVED,
+                changed_by_id=reviewer.id,
+                changed_at=day_three + timedelta(hours=1, minutes=5),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/metrics/people-activity",
+        headers=auth_headers["admin"],
+        params=[
+            ("user_id", annotator.id),
+            ("user_id", reviewer.id),
+            ("date_from", "2026-08-09"),
+            ("date_to", "2026-08-11"),
+        ],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["overall"]["completed_segments"] == 3
+    assert payload["overall"]["task_active_seconds"] == 5400
+    assert payload["overall"]["efficiency_segments_per_active_hour"] == 2.0
+    assert [row["date"] for row in payload["daily"]] == [
+        "2026-08-09",
+        "2026-08-10",
+        "2026-08-11",
+    ]
+    assert payload["daily"][1]["active_seconds"] == 0
+    assert payload["daily"][1]["completed_segments"] == 0
+    assert sum(row["completed_segments"] for row in payload["daily"]) == payload["overall"]["completed_segments"]
+
+    items_by_email = {item["user_email"]: item for item in payload["items"]}
+    assert set(items_by_email) == {annotator.email, reviewer.email}
+    for item in items_by_email.values():
+        assert [row["date"] for row in item["daily"]] == [
+            "2026-08-09",
+            "2026-08-10",
+            "2026-08-11",
+        ]
+        assert sum(row["completed_segments"] for row in item["daily"]) == item["overall"]["completed_segments"]
+
+    annotator_item = items_by_email[annotator.email]
+    reviewer_item = items_by_email[reviewer.email]
+    assert [row["completed_segments"] for row in annotator_item["daily"]] == [1, 0, 0]
+    assert [row["completed_segments"] for row in reviewer_item["daily"]] == [0, 0, 2]
+    assert annotator_item["overall"]["efficiency_segments_per_active_hour"] == 1.0
+    assert reviewer_item["overall"]["efficiency_segments_per_active_hour"] == 4.0
 
 
 def test_people_activity_filters_to_multiple_requested_users(client, auth_headers, seed_users):
