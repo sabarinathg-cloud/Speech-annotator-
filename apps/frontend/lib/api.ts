@@ -827,7 +827,7 @@ export async function fetchAdminMetrics(
 
 export async function fetchPeopleActivity(
   token: string,
-  params: { userId?: string | null; dateFrom?: string | null; dateTo?: string | null } = {}
+  params: { userIds?: string[] | null; dateFrom?: string | null; dateTo?: string | null } = {}
 ): Promise<PeopleActivityResponse> {
   const query = peopleActivityQuery(params);
   const suffix = query.toString();
@@ -842,7 +842,7 @@ export async function fetchPeopleActivity(
 
 export async function exportPeopleActivity(
   token: string,
-  params: { userId?: string | null; dateFrom?: string | null; dateTo?: string | null } = {}
+  params: { userIds?: string[] | null; dateFrom?: string | null; dateTo?: string | null } = {}
 ): Promise<{ blob: Blob; filename: string }> {
   const query = peopleActivityQuery(params);
   const suffix = query.toString();
@@ -859,12 +859,14 @@ export async function exportPeopleActivity(
 }
 
 function peopleActivityQuery(params: {
-  userId?: string | null;
+  userIds?: string[] | null;
   dateFrom?: string | null;
   dateTo?: string | null;
 }): URLSearchParams {
   const query = new URLSearchParams();
-  if (params.userId) query.set("user_id", params.userId);
+  for (const userId of params.userIds ?? []) {
+    query.append("user_id", userId);
+  }
   if (params.dateFrom) query.set("date_from", params.dateFrom);
   if (params.dateTo) query.set("date_to", params.dateTo);
   return query;

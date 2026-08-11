@@ -29,6 +29,18 @@ vi.mock("@/lib/api", () => ({
 }));
 
 describe("PeopleActivityPage", () => {
+  const summary = {
+    active_seconds: 10800,
+    task_active_seconds: 9000,
+    idle_seconds: 1800,
+    total_tracked_seconds: 12600,
+    completed_segments: 50,
+    average_active_seconds_per_segment: 180,
+    efficiency_segments_per_active_hour: 20,
+    focus_rate: 0.8333,
+    last_activity_at: "2026-08-11T11:30:00Z",
+  };
+
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-08-11T12:00:00Z"));
@@ -47,6 +59,8 @@ describe("PeopleActivityPage", () => {
       generated_at: "2026-08-11T12:00:00Z",
       date_from: "2026-08-05",
       date_to: "2026-08-11",
+      overall: summary,
+      daily: [{ date: "2026-08-11", ...summary }],
       items: [
         {
           user_id: "user-1",
@@ -54,17 +68,8 @@ describe("PeopleActivityPage", () => {
           user_email: "annotator@test.com",
           role: "ANNOTATOR",
           is_active: true,
-          overall: {
-            active_seconds: 10800,
-            task_active_seconds: 9000,
-            idle_seconds: 1800,
-            total_tracked_seconds: 12600,
-            completed_segments: 50,
-            average_active_seconds_per_segment: 180,
-            efficiency_segments_per_active_hour: 20,
-            focus_rate: 0.8333,
-            last_activity_at: "2026-08-11T11:30:00Z",
-          },
+          overall: summary,
+          daily: [{ date: "2026-08-11", ...summary }],
           organizations: [
             {
               organization_id: "org-1",
@@ -112,7 +117,7 @@ describe("PeopleActivityPage", () => {
     expect(await screen.findByRole("heading", { name: "People Activity" })).toBeInTheDocument();
     await waitFor(() =>
       expect(fetchPeopleActivity).toHaveBeenCalledWith("admin-token", {
-        userId: null,
+        userIds: [],
         dateFrom: "2026-08-05",
         dateTo: "2026-08-11",
       })
@@ -127,5 +132,36 @@ describe("PeopleActivityPage", () => {
     expect(screen.getByText("Iris")).toBeInTheDocument();
     expect(screen.getByText("Flora")).toBeInTheDocument();
     expect(screen.getByText("1h 40m task time")).toBeInTheDocument();
+  });
+
+  it("sends the selected single person as a userIds array for load and export", async () => {
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    exportPeopleActivity.mockResolvedValue({ blob: new Blob(["csv"]), filename: "people.csv" });
+
+    render(<PeopleActivityPage />);
+    await screen.findByRole("heading", { name: "People Activity" });
+
+    fireEvent.change(screen.getByLabelText("Person"), { target: { value: "user-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() =>
+      expect(fetchPeopleActivity).toHaveBeenCalledWith("admin-token", {
+        userIds: ["user-1"],
+        dateFrom: "2026-08-05",
+        dateTo: "2026-08-11",
+      })
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+
+    await waitFor(() =>
+      expect(exportPeopleActivity).toHaveBeenCalledWith("admin-token", {
+        userIds: ["user-1"],
+        dateFrom: "2026-08-05",
+        dateTo: "2026-08-11",
+      })
+    );
+
+    clickSpy.mockRestore();
   });
 });

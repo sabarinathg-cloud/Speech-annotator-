@@ -749,6 +749,10 @@ export interface PeopleActivitySummary {
   last_activity_at: string | null;
 }
 
+export interface PeopleActivityDaily extends PeopleActivitySummary {
+  date: string;
+}
+
 export interface PeopleActivityOrganization extends PeopleActivitySummary {
   organization_id: string;
   organization_name: string;
@@ -762,6 +766,7 @@ export interface PeopleActivityUser {
   role: Role;
   is_active: boolean;
   overall: PeopleActivitySummary;
+  daily: PeopleActivityDaily[];
   organizations: PeopleActivityOrganization[];
 }
 
@@ -769,6 +774,8 @@ export interface PeopleActivityResponse {
   generated_at: string;
   date_from: string;
   date_to: string;
+  overall: PeopleActivitySummary;
+  daily: PeopleActivityDaily[];
   items: PeopleActivityUser[];
 }
 

@@ -30,6 +30,10 @@ function defaultFilters(): ActivityFilters {
   };
 }
 
+function selectedUserIds(userId: string): string[] {
+  return userId === "all" ? [] : [userId];
+}
+
 function formatDuration(seconds: number): string {
   const safeSeconds = Math.max(0, Math.round(seconds));
   const hours = Math.floor(safeSeconds / 3600);
@@ -111,7 +115,7 @@ export default function PeopleActivityPage() {
       const [userResponse, activityResponse] = await Promise.all([
         fetchUsers(accessToken, { scope: "all" }),
         fetchPeopleActivity(accessToken, {
-          userId: appliedFilters.userId === "all" ? null : appliedFilters.userId,
+          userIds: selectedUserIds(appliedFilters.userId),
           dateFrom: appliedFilters.dateFrom,
           dateTo: appliedFilters.dateTo,
         }),
@@ -153,7 +157,7 @@ export default function PeopleActivityPage() {
     setError(null);
     try {
       const result = await exportPeopleActivity(accessToken, {
-        userId: appliedFilters.userId === "all" ? null : appliedFilters.userId,
+        userIds: selectedUserIds(appliedFilters.userId),
         dateFrom: appliedFilters.dateFrom,
         dateTo: appliedFilters.dateTo,
       });

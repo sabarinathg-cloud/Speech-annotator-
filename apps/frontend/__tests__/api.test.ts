@@ -307,6 +307,8 @@ describe("API client error handling", () => {
       generated_at: "2026-08-11T12:00:00Z",
       date_from: "2026-08-05",
       date_to: "2026-08-11",
+      overall: {},
+      daily: [],
       items: [],
     };
     const fetchMock = vi
@@ -320,13 +322,13 @@ describe("API client error handling", () => {
       );
 
     await fetchPeopleActivity("admin-token", {
-      userId: "user-1",
+      userIds: ["user-1", "user-2"],
       dateFrom: "2026-08-05",
       dateTo: "2026-08-11",
     });
     await expect(
       exportPeopleActivity("admin-token", {
-        userId: "user-1",
+        userIds: ["user-1", "user-2"],
         dateFrom: "2026-08-05",
         dateTo: "2026-08-11",
       })
@@ -335,7 +337,7 @@ describe("API client error handling", () => {
     for (const call of fetchMock.mock.calls) {
       const url = new URL(String(call[0]));
       const headers = new Headers(call[1]?.headers);
-      expect(url.searchParams.get("user_id")).toBe("user-1");
+      expect(url.searchParams.getAll("user_id")).toEqual(["user-1", "user-2"]);
       expect(url.searchParams.get("date_from")).toBe("2026-08-05");
       expect(url.searchParams.get("date_to")).toBe("2026-08-11");
       expect(headers.has("X-Organization-ID")).toBe(false);
@@ -346,6 +348,32 @@ describe("API client error handling", () => {
     expect(new URL(String(fetchMock.mock.calls[1]?.[0])).pathname).toBe(
       "/api/v1/metrics/people-activity/export"
     );
+
+    fetchMock.mockRestore();
+  });
+
+  it("omits people activity user filters for an empty user selection", async () => {
+    const report = {
+      generated_at: "2026-08-11T12:00:00Z",
+      date_from: "2026-08-05",
+      date_to: "2026-08-11",
+      overall: {},
+      daily: [],
+      items: [],
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(report), { status: 200 }))
+      .mockResolvedValueOnce(new Response("user_email,active_seconds\n", { status: 200 }));
+
+    await fetchPeopleActivity("admin-token", { userIds: [] });
+    await exportPeopleActivity("admin-token", { userIds: [] });
+
+    for (const call of fetchMock.mock.calls) {
+      const url = new URL(String(call[0]));
+      expect(url.searchParams.has("user_id")).toBe(false);
+      expect(url.searchParams.getAll("user_id")).toEqual([]);
+    }
 
     fetchMock.mockRestore();
   });
